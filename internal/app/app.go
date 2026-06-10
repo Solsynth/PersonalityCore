@@ -48,7 +48,10 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	executor := agent.NewExecutor(cfg)
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
 	conversations := service.NewConversationService(db, cfg, registry, executor)
 	router := server.NewRouter(cfg, conversations)
 	httpSrv := &http.Server{

@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"src.solsynth.dev/sosys/personality/internal/config"
@@ -18,11 +18,33 @@ type RunRequest struct {
 }
 
 type Executor struct {
-	cfg *config.Config
+	providers map[string]config.ProviderConfig
 }
 
-func NewExecutor(cfg *config.Config) *Executor {
-	return &Executor{cfg: cfg}
+func NewExecutor(cfg *config.Config) (*Executor, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("executor config is missing")
+	}
+
+	providers := make(map[string]config.ProviderConfig, len(cfg.Providers))
+	for _, provider := range cfg.Providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == "" {
+			return nil, fmt.Errorf("provider id is required")
+		}
+		if _, exists := providers[id]; exists {
+			return nil, fmt.Errorf("duplicate provider id %q", id)
+		}
+		if strings.TrimSpace(provider.Type) == "" {
+			return nil, fmt.Errorf("provider %q type is required", id)
+		}
+		providers[id] = provider
+	}
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("at least one provider is required")
+	}
+
+	return &Executor{providers: providers}, nil
 }
 
 func (e *Executor) Generate(ctx context.Context, req RunRequest) (*schema.Message, error) {
@@ -41,72 +63,72 @@ func (e *Executor) Stream(ctx context.Context, req RunRequest) (*schema.StreamRe
 	return model.Stream(ctx, req.Messages)
 }
 
-func (e *Executor) newChatModel(ctx context.Context, agent Definition) (*einoopenai.ChatModel, error) {
-	if e == nil || e.cfg == nil {
+func (e *Executor) newChatModel(ctx context.Context, agent Definition) (model.BaseChatModel, error) {
+	if e == nil {
 		return nil, fmt.Errorf("executor config is missing")
 	}
-	if strings.TrimSpace(e.cfg.LLM.APIKey) == "" && !e.cfg.LLM.ByAzure {
-		return nil, fmt.Errorf("llm api key is required")
+	provider, modelName, err := e.resolveModel(agent.Model)
+	if err != nil {
+		return nil, err
 	}
 
-	modelName := strings.TrimSpace(agent.Model)
-	if modelName == "" {
-		modelName = strings.TrimSpace(e.cfg.LLM.Model)
+	switch strings.ToLower(strings.TrimSpace(provider.Type)) {
+	case "openai", "openai-compatible":
+		return e.newOpenAIChatModel(ctx, provider, modelName, agent)
+	default:
+		return nil, fmt.Errorf("provider %q uses unsupported type %q", provider.ID, provider.Type)
 	}
-	if modelName == "" {
-		return nil, fmt.Errorf("llm model is required")
+}
+
+func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.ProviderConfig, modelName string, agent Definition) (*einoopenai.ChatModel, error) {
+	if strings.TrimSpace(provider.APIKey) == "" && !provider.ByAzure {
+		return nil, fmt.Errorf("provider %q apiKey is required", provider.ID)
 	}
 
-	temperature := e.cfg.LLM.Temperature
+	temperature := provider.Temperature
 	if agent.Temperature != nil {
 		temperature = *agent.Temperature
 	}
-	topP := e.cfg.LLM.TopP
+	topP := provider.TopP
 	if agent.TopP != nil {
 		topP = *agent.TopP
 	}
-	maxTokens := e.cfg.LLM.MaxCompletionTokens
+	maxTokens := provider.MaxCompletionTokens
 	if agent.MaxCompletionTokens != nil {
 		maxTokens = *agent.MaxCompletionTokens
 	}
 
 	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
-		APIKey:              e.cfg.LLM.APIKey,
-		BaseURL:             e.cfg.LLM.BaseURL,
-		ByAzure:             e.cfg.LLM.ByAzure,
-		APIVersion:          e.cfg.LLM.APIVersion,
+		APIKey:              provider.APIKey,
+		BaseURL:             provider.BaseURL,
+		ByAzure:             provider.ByAzure,
+		APIVersion:          provider.APIVersion,
 		Model:               modelName,
-		Timeout:             e.cfg.LLM.Timeout,
+		Timeout:             provider.Timeout,
 		MaxCompletionTokens: intPtr(maxTokens),
 		Temperature:         float32Ptr(temperature),
 		TopP:                float32Ptr(topP),
 	})
 }
 
-func CollectStreamContent(reader *schema.StreamReader[*schema.Message]) (*schema.Message, error) {
-	if reader == nil {
-		return nil, fmt.Errorf("stream reader is nil")
-	}
-	defer reader.Close()
-
-	var chunks []*schema.Message
-	for {
-		chunk, err := reader.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		if chunk != nil {
-			chunks = append(chunks, chunk)
-		}
+func (e *Executor) resolveModel(raw string) (config.ProviderConfig, string, error) {
+	modelRef := strings.TrimSpace(raw)
+	if modelRef == "" {
+		return config.ProviderConfig{}, "", fmt.Errorf("agent model is required and must use provider/model format")
 	}
 
-	if len(chunks) == 0 {
-		return &schema.Message{Role: schema.Assistant, Content: ""}, nil
+	parts := strings.SplitN(modelRef, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return config.ProviderConfig{}, "", fmt.Errorf("invalid model %q, expected provider/model", modelRef)
 	}
-	return schema.ConcatMessages(chunks)
+
+	providerID := strings.TrimSpace(parts[0])
+	modelName := strings.TrimSpace(parts[1])
+	provider, ok := e.providers[providerID]
+	if !ok {
+		return config.ProviderConfig{}, "", fmt.Errorf("unknown provider %q", providerID)
+	}
+	return provider, modelName, nil
 }
 
 func float32Ptr(v float32) *float32 { return &v }

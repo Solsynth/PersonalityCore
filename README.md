@@ -58,11 +58,14 @@ Important sections:
 - `http.port`
 - `grpc.port`
 - `auth.target`
-- `llm.apiKey`
-- `llm.baseUrl`
-- `llm.model`
+- `providersDir`
+- `providers`
 - `agents.items`
 - `agents.dir`
+
+Models are referenced by agents in `<provider>/<model>` form, for example:
+- `openai/gpt-4.1-mini`
+- `azure/gpt-4.1`
 
 You can define agents in two ways:
 
@@ -74,7 +77,7 @@ id = "support"
 name = "Support"
 description = "General support assistant"
 systemPrompt = "You are the Solar Network support assistant."
-model = "gpt-4.1-mini"
+model = "openai/gpt-4.1-mini"
 toolScopes = []
 enabled = true
 ```
@@ -95,17 +98,57 @@ id = "writer"
 name = "Writer"
 description = "Writing assistant"
 systemPrompt = "You help users draft clean copy."
-model = "gpt-4.1-mini"
+model = "openai/gpt-4.1-mini"
 toolScopes = []
 enabled = true
 ```
 
 The service merges inline agents and `agents.dir/*.toml` at startup.
 
+Providers can also be defined in two ways.
+
+1. Inline in the main config:
+
+```toml
+providersDir = "./models.d"
+
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "..."
+baseUrl = ""
+byAzure = false
+apiVersion = ""
+timeout = "90s"
+maxCompletionTokens = 2048
+temperature = 0.7
+topP = 1.0
+```
+
+2. Split across multiple files in `providersDir`, for example `./models.d/azure.toml`:
+
+```toml
+[[providers]]
+id = "azure"
+type = "openai"
+apiKey = "..."
+baseUrl = "https://YOUR-RESOURCE.openai.azure.com"
+byAzure = true
+apiVersion = "2024-06-01"
+timeout = "90s"
+maxCompletionTokens = 2048
+temperature = 0.7
+topP = 1.0
+```
+
+The service merges inline providers and `providersDir/*.toml` at startup.
+
 Startup fails when:
 - no enabled agents exist
 - an agent id is duplicated
 - required fields like `id` or `name` are missing
+- no providers exist
+- a provider id is duplicated
 
 ## Auth
 
@@ -163,9 +206,6 @@ Useful environment variables:
 - `CONFIG_PATH`
 - `ZEROLOG_PRETTY=true`
 - `LOG_LEVEL=debug`
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
 - `DATABASE_DSN`
 
 For fully local testing, a common setup is:
@@ -174,8 +214,18 @@ For fully local testing, a common setup is:
 [auth]
 offline = true
 
-[llm]
+providersDir = "./models.d"
+
+[[providers]]
+id = "openai"
+type = "openai"
 apiKey = "..."
+
+[[agents.items]]
+id = "support"
+name = "Support"
+systemPrompt = "You are a helpful assistant."
+model = "openai/gpt-4.1-mini"
 ```
 
 ## HTTP API
@@ -301,6 +351,8 @@ Current behavior:
 ## Notes
 
 - The current model adapter uses `github.com/cloudwego/eino-ext/components/model/openai`.
+- Multiple providers are now resolved from `[[providers]]` plus `providersDir/*.toml`.
+- Provider type support is currently implemented for OpenAI-compatible backends via `type = "openai"` or `type = "openai-compatible"`.
 - `toolScopes` are stored on agent definitions now for future rollout, but no tool calling is performed yet.
 - The gRPC service is intended for internal Solar usage; the primary client API is REST + SSE.
 

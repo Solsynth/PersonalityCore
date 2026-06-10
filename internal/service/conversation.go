@@ -291,7 +291,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		return nil, err
 	}
 
-	run.Model = coalesceTitle(agentDef.Model, s.cfg.LLM.Model)
+	run.Model = agentDef.Model
 	response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
@@ -328,7 +328,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		return nil, err
 	}
 
-	run.Model = coalesceTitle(agentDef.Model, s.cfg.LLM.Model)
+	run.Model = agentDef.Model
 	stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)

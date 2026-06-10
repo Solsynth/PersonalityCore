@@ -12,15 +12,16 @@ import (
 )
 
 type Config struct {
-	App         AppConfig         `mapstructure:"app"`
-	HTTP        HTTPConfig        `mapstructure:"http"`
-	GRPC        GRPCConfig        `mapstructure:"grpc"`
-	Database    DatabaseConfig    `mapstructure:"database"`
-	Auth        AuthConfig        `mapstructure:"auth"`
-	LLM         LLMConfig         `mapstructure:"llm"`
-	Personality PersonalityConfig `mapstructure:"personality"`
-	Sentry      SentryConfig      `mapstructure:"sentry"`
-	Agents      AgentsConfig      `mapstructure:"agents"`
+	App          AppConfig         `mapstructure:"app"`
+	HTTP         HTTPConfig        `mapstructure:"http"`
+	GRPC         GRPCConfig        `mapstructure:"grpc"`
+	Database     DatabaseConfig    `mapstructure:"database"`
+	Auth         AuthConfig        `mapstructure:"auth"`
+	Personality  PersonalityConfig `mapstructure:"personality"`
+	Sentry       SentryConfig      `mapstructure:"sentry"`
+	Agents       AgentsConfig      `mapstructure:"agents"`
+	ProvidersDir string            `mapstructure:"providersDir"`
+	Providers    []ProviderConfig  `mapstructure:"providers"`
 }
 
 type AppConfig struct {
@@ -49,19 +50,6 @@ type AuthConfig struct {
 	AllowDevIDs      bool   `mapstructure:"allowDevIds"`
 	Offline          bool   `mapstructure:"offline"`
 	OfflineAccountID string `mapstructure:"offlineAccountId"`
-}
-
-type LLMConfig struct {
-	Provider            string        `mapstructure:"provider"`
-	APIKey              string        `mapstructure:"apiKey"`
-	BaseURL             string        `mapstructure:"baseUrl"`
-	Model               string        `mapstructure:"model"`
-	ByAzure             bool          `mapstructure:"byAzure"`
-	APIVersion          string        `mapstructure:"apiVersion"`
-	Timeout             time.Duration `mapstructure:"timeout"`
-	MaxCompletionTokens int           `mapstructure:"maxCompletionTokens"`
-	Temperature         float32       `mapstructure:"temperature"`
-	TopP                float32       `mapstructure:"topP"`
 }
 
 type PersonalityConfig struct {
@@ -94,8 +82,25 @@ type AgentConfig struct {
 	Enabled             bool     `mapstructure:"enabled"`
 }
 
+type ProviderConfig struct {
+	ID                  string        `mapstructure:"id"`
+	Type                string        `mapstructure:"type"`
+	APIKey              string        `mapstructure:"apiKey"`
+	BaseURL             string        `mapstructure:"baseUrl"`
+	ByAzure             bool          `mapstructure:"byAzure"`
+	APIVersion          string        `mapstructure:"apiVersion"`
+	Timeout             time.Duration `mapstructure:"timeout"`
+	MaxCompletionTokens int           `mapstructure:"maxCompletionTokens"`
+	Temperature         float32       `mapstructure:"temperature"`
+	TopP                float32       `mapstructure:"topP"`
+}
+
 type agentFile struct {
 	Agents AgentsConfig `mapstructure:"agents"`
+}
+
+type providerFile struct {
+	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
 func Load(configPath string) (*Config, error) {
@@ -119,6 +124,9 @@ func Load(configPath string) (*Config, error) {
 	if err := loadAgentFiles(&cfg); err != nil {
 		return nil, err
 	}
+	if err := loadProviderFiles(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -137,16 +145,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.allowDevIds", true)
 	v.SetDefault("auth.offline", false)
 	v.SetDefault("auth.offlineAccountId", "local-dev")
-	v.SetDefault("llm.provider", "openai")
-	v.SetDefault("llm.apiKey", "")
-	v.SetDefault("llm.baseUrl", "")
-	v.SetDefault("llm.model", "gpt-4.1-mini")
-	v.SetDefault("llm.byAzure", false)
-	v.SetDefault("llm.apiVersion", "")
-	v.SetDefault("llm.timeout", 90*time.Second)
-	v.SetDefault("llm.maxCompletionTokens", 2048)
-	v.SetDefault("llm.temperature", 0.7)
-	v.SetDefault("llm.topP", 1.0)
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
 	v.SetDefault("sentry.dsn", "")
@@ -155,13 +153,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sentry.release", "")
 	v.SetDefault("agents.dir", "")
 	v.SetDefault("agents.items", []AgentConfig{})
+	v.SetDefault("providersDir", "")
+	v.SetDefault("providers", []ProviderConfig{})
 }
 
 func applyEnvOverrides(v *viper.Viper) {
 	setEnvIfPresent(v, "database.dsn", "DATABASE_DSN")
-	setEnvIfPresent(v, "llm.apiKey", "OPENAI_API_KEY")
-	setEnvIfPresent(v, "llm.baseUrl", "OPENAI_BASE_URL")
-	setEnvIfPresent(v, "llm.model", "OPENAI_MODEL")
 	setEnvIfPresent(v, "auth.target", "AUTH_TARGET")
 }
 
@@ -196,6 +193,36 @@ func loadAgentFiles(cfg *Config) error {
 			return fmt.Errorf("unmarshal agent config %s: %w", path, err)
 		}
 		cfg.Agents.Items = append(cfg.Agents.Items, extra.Agents.Items...)
+	}
+
+	return nil
+}
+
+func loadProviderFiles(cfg *Config) error {
+	dir := strings.TrimSpace(cfg.ProvidersDir)
+	if dir == "" {
+		return nil
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.toml"))
+	if err != nil {
+		return fmt.Errorf("glob provider configs: %w", err)
+	}
+	sort.Strings(matches)
+
+	for _, path := range matches {
+		v := viper.New()
+		v.SetConfigFile(path)
+		v.SetConfigType("toml")
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("read provider config %s: %w", path, err)
+		}
+
+		var extra providerFile
+		if err := v.Unmarshal(&extra); err != nil {
+			return fmt.Errorf("unmarshal provider config %s: %w", path, err)
+		}
+		cfg.Providers = append(cfg.Providers, extra.Providers...)
 	}
 
 	return nil

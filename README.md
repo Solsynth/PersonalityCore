@@ -129,6 +129,20 @@ offline = true
 offlineAccountId = "local-dev"
 ```
 
+Solar Network note:
+- Solar gRPC commonly uses self-signed TLS certificates
+- when dialing Solar auth over TLS, set `auth.useTLS = true` and `auth.tlsSkipVerify = true`
+
+Example Solar auth config:
+
+```toml
+[auth]
+target = "grpcs://padlock:7003"
+useTLS = true
+tlsSkipVerify = true
+offline = false
+```
+
 Example dev request header:
 
 ```http

@@ -20,6 +20,11 @@ allowDevIds = true
 offline = false
 offlineAccountId = "local-dev"
 
+# Solar Network gRPC commonly uses self-signed certs.
+# When connecting to Solar auth over TLS, set:
+# useTLS = true
+# tlsSkipVerify = true
+
 [llm]
 provider = "openai"
 apiKey = ""

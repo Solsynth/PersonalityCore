@@ -30,7 +30,7 @@ func NewRouter(cfg *config.Config, conversations *service.ConversationService) *
 
 func authMiddleware(cfg *config.Config) gin.HandlerFunc {
 	var authenticator sharedauth.TokenAuthenticator
-	if cfg.Auth.Target != "" {
+	if !cfg.Auth.Offline && cfg.Auth.Target != "" {
 		client, err := sharedauth.NewGrpcTokenAuthenticator(sharedauth.GrpcAuthDialConfig{
 			Target:        cfg.Auth.Target,
 			UseTLS:        cfg.Auth.UseTLS,
@@ -43,6 +43,15 @@ func authMiddleware(cfg *config.Config) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
+		if cfg.Auth.Offline {
+			accountID := strings.TrimSpace(cfg.Auth.OfflineAccountID)
+			if accountID != "" {
+				identity.SetAccountID(c, accountID)
+			}
+			c.Next()
+			return
+		}
+
 		if authenticator != nil {
 			tokenInfo, tokenOK := sharedauth.ExtractToken(c.Request)
 			result, err := sharedauth.AuthenticateRequest(c.Request.Context(), authenticator, c.Request)

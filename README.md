@@ -112,8 +112,22 @@ Startup fails when:
 HTTP routes require an account identity.
 
 Supported modes:
+- offline mode: set `auth.offline = true` to skip Solar auth entirely for local testing
 - production mode: configure `auth.target` to use Solar auth via `src.solsynth.dev/sosys/go/pkg/auth`
 - local/dev mode: if `auth.allowDevIds = true`, send `X-Account-Id: your-account-id`
+
+Offline mode behavior:
+- no auth token is required
+- every request uses the same `auth.offlineAccountId`
+- this is meant to simulate one fixed local user across the whole service instance
+
+Example offline config:
+
+```toml
+[auth]
+offline = true
+offlineAccountId = "local-dev"
+```
 
 Example dev request header:
 
@@ -139,6 +153,16 @@ Useful environment variables:
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
 - `DATABASE_DSN`
+
+For fully local testing, a common setup is:
+
+```toml
+[auth]
+offline = true
+
+[llm]
+apiKey = "..."
+```
 
 ## HTTP API
 

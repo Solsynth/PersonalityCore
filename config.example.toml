@@ -17,6 +17,8 @@ target = ""
 useTLS = false
 tlsSkipVerify = false
 allowDevIds = true
+offline = false
+offlineAccountId = "local-dev"
 
 [llm]
 provider = "openai"

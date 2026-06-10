@@ -43,10 +43,12 @@ type DatabaseConfig struct {
 }
 
 type AuthConfig struct {
-	Target        string `mapstructure:"target"`
-	UseTLS        bool   `mapstructure:"useTLS"`
-	TLSSkipVerify bool   `mapstructure:"tlsSkipVerify"`
-	AllowDevIDs   bool   `mapstructure:"allowDevIds"`
+	Target           string `mapstructure:"target"`
+	UseTLS           bool   `mapstructure:"useTLS"`
+	TLSSkipVerify    bool   `mapstructure:"tlsSkipVerify"`
+	AllowDevIDs      bool   `mapstructure:"allowDevIds"`
+	Offline          bool   `mapstructure:"offline"`
+	OfflineAccountID string `mapstructure:"offlineAccountId"`
 }
 
 type LLMConfig struct {
@@ -133,6 +135,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.useTLS", false)
 	v.SetDefault("auth.tlsSkipVerify", false)
 	v.SetDefault("auth.allowDevIds", true)
+	v.SetDefault("auth.offline", false)
+	v.SetDefault("auth.offlineAccountId", "local-dev")
 	v.SetDefault("llm.provider", "openai")
 	v.SetDefault("llm.apiKey", "")
 	v.SetDefault("llm.baseUrl", "")

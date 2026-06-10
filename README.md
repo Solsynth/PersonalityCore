@@ -228,6 +228,50 @@ systemPrompt = "You are a helpful assistant."
 model = "openai/gpt-4.1-mini"
 ```
 
+## Local TUI Client
+
+There is also a minimal terminal client for local testing.
+
+It is designed for the offline mock-user mode:
+
+```toml
+[auth]
+offline = true
+offlineAccountId = "local-dev"
+```
+
+Start the server:
+
+```bash
+go run ./cmd --config ./config.toml
+```
+
+Then open the TUI in another terminal:
+
+```bash
+go run ./cmd/tui --base-url http://127.0.0.1:8090
+```
+
+Useful flags:
+- `--base-url http://127.0.0.1:8090`
+- `--agent-id support`
+- `--stream=true`
+- `--account-id user-123`
+
+The `--account-id` flag is only useful when you are not using offline mode and want to send `X-Account-Id` in local dev mode.
+
+Controls:
+- `Enter`: send the current message
+- `Ctrl+N`: create a new conversation for the current agent
+- `Tab` / `Shift+Tab`: switch agents and start a fresh conversation
+- `Ctrl+S`: toggle streaming SSE vs non-streaming JSON runs
+- `Q`: quit
+
+The TUI will:
+- load enabled agents from `/api/agents`
+- create a conversation automatically on startup
+- append replies live when streaming is enabled
+
 ## HTTP API
 
 All endpoints live under `/api`.

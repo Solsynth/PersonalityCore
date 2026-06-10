@@ -1,0 +1,47 @@
+app = { name = "PersonalityCore" }
+
+[http]
+port = "8090"
+
+[grpc]
+port = "9095"
+useTLS = false
+certFile = ""
+keyFile = ""
+
+[database]
+dsn = "host=postgres port=5432 user=dyson password=dyson dbname=personality_core sslmode=disable"
+
+[auth]
+target = ""
+useTLS = false
+tlsSkipVerify = false
+allowDevIds = true
+
+[llm]
+provider = "openai"
+apiKey = ""
+baseUrl = ""
+model = "gpt-4.1-mini"
+byAzure = false
+apiVersion = ""
+timeout = "90s"
+maxCompletionTokens = 2048
+temperature = 0.7
+topP = 1.0
+
+[personality]
+maxHistoryMessages = 24
+sseHeartbeat = "15s"
+
+[agents]
+dir = "./agents.d"
+
+[[agents.items]]
+id = "support"
+name = "Support"
+description = "General support assistant"
+systemPrompt = "You are the Solar Network support assistant."
+model = "gpt-4.1-mini"
+toolScopes = []
+enabled = true

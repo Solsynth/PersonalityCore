@@ -154,8 +154,15 @@ func (c *Client) Run(ctx context.Context, conversationID, message string, stream
 }
 
 func (c *Client) newRequest(ctx context.Context, method, route string, body io.Reader) (*http.Request, error) {
+	parsedRoute, err := url.Parse(route)
+	if err != nil {
+		return nil, fmt.Errorf("parse route: %w", err)
+	}
+
 	endpoint := *c.baseURL
-	endpoint.Path = path.Join(strings.TrimSuffix(c.baseURL.Path, "/"), route)
+	endpoint.Path = path.Join(strings.TrimSuffix(c.baseURL.Path, "/"), parsedRoute.Path)
+	endpoint.RawPath = endpoint.Path
+	endpoint.RawQuery = parsedRoute.RawQuery
 
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {

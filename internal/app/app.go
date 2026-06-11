@@ -19,6 +19,7 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/logging"
 	"src.solsynth.dev/sosys/personality/internal/server"
 	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/personality/internal/solar"
 
 	gen "src.solsynth.dev/sosys/go/proto"
 )
@@ -29,6 +30,7 @@ type App struct {
 	httpSrv *http.Server
 	grpcSrv *grpc.Server
 	grpcLn  net.Listener
+	solar   *solar.Manager
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -53,6 +55,37 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 	conversations := service.NewConversationService(db, cfg, registry, executor)
+	solarManager := solar.NewManager(
+		cfg,
+		registry,
+		func(ctx context.Context, agentID string) ([]solar.TrackedRoomState, error) {
+			rooms, err := conversations.ListTrackedSolarRooms(ctx, agentID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]solar.TrackedRoomState, 0, len(rooms))
+			for _, room := range rooms {
+				out = append(out, solar.TrackedRoomState{
+					RoomID:        room.RoomID,
+					LastMessageAt: room.LastMessageAt,
+				})
+			}
+			return out, nil
+		},
+		func(ctx context.Context, agentID string, msg solar.InboundMessage) error {
+			return conversations.HandleSolarInboundMessage(ctx, agentID, service.ExternalInboundMessage{
+				RoomID:          msg.RoomID,
+				MessageID:       msg.MessageID,
+				MessageType:     msg.MessageType,
+				Content:         msg.Content,
+				SenderAccountID: msg.SenderAccountID,
+				SenderName:      msg.SenderName,
+				SenderNick:      msg.SenderNick,
+				CreatedAt:       msg.CreatedAt,
+			})
+		},
+	)
+	conversations.SetSolarChatBridge(solarManager)
 	router := server.NewRouter(cfg, conversations)
 	httpSrv := &http.Server{
 		Addr:    ":" + cfg.HTTP.Port,
@@ -77,7 +110,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, httpSrv: httpSrv, grpcSrv: grpcSrv}, nil
+	return &App{cfg: cfg, db: db, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager}, nil
 }
 
 func (a *App) Start(context.Context) error {
@@ -86,6 +119,12 @@ func (a *App) Start(context.Context) error {
 		return err
 	}
 	a.grpcLn = ln
+
+	if a.solar != nil {
+		if err := a.solar.Start(context.Background()); err != nil {
+			return err
+		}
+	}
 
 	go func() {
 		if err := a.grpcSrv.Serve(ln); err != nil {
@@ -114,6 +153,9 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if a.grpcLn != nil {
 		_ = a.grpcLn.Close()
+	}
+	if a.solar != nil {
+		_ = a.solar.Stop(ctx)
 	}
 	return nil
 }

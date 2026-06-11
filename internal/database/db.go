@@ -30,5 +30,12 @@ func Open(cfg *config.Config) (*DB, error) {
 }
 
 func (d *DB) AutoMigrate() error {
-	return d.DB.AutoMigrate(&ConversationThread{}, &ConversationMessage{}, &ConversationRun{})
+	return d.DB.AutoMigrate(
+		&ConversationThread{},
+		&ConversationMessage{},
+		&ConversationRun{},
+		&AgentHumanState{},
+		&AgentManualMemory{},
+		&ExternalChatBinding{},
+	)
 }

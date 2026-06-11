@@ -52,3 +52,44 @@ type ConversationRun struct {
 	CreatedAt         time.Time      `gorm:"index:idx_runs_thread_deleted_created,priority:3" json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
 }
+
+type AgentHumanState struct {
+	ID                  string         `gorm:"primaryKey;size:26" json:"id"`
+	AccountID           string         `gorm:"size:128;uniqueIndex:idx_human_states_account_agent,priority:1" json:"account_id"`
+	AgentID             string         `gorm:"size:64;uniqueIndex:idx_human_states_account_agent,priority:2" json:"agent_id"`
+	MemorySummary       string         `gorm:"type:text" json:"memory_summary"`
+	MemoryItems         datatypes.JSON `gorm:"type:jsonb" json:"memory_items"`
+	RelationshipSummary string         `gorm:"type:text" json:"relationship_summary"`
+	CurrentMood         string         `gorm:"size:128" json:"current_mood"`
+	MoodReason          string         `gorm:"type:text" json:"mood_reason"`
+	InteractionCount    int64          `json:"interaction_count"`
+	LastUserMessageAt   *time.Time     `json:"last_user_message_at"`
+	LastAssistantAt     *time.Time     `json:"last_assistant_at"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+}
+
+type AgentManualMemory struct {
+	ID        string         `gorm:"primaryKey;size:26" json:"id"`
+	AccountID string         `gorm:"size:128;index:idx_manual_memories_account_agent_deleted,priority:1" json:"account_id"`
+	AgentID   string         `gorm:"size:64;index:idx_manual_memories_account_agent_deleted,priority:2" json:"agent_id"`
+	Category  string         `gorm:"size:64" json:"category"`
+	Content   string         `gorm:"type:text" json:"content"`
+	DeletedAt gorm.DeletedAt `gorm:"index:idx_manual_memories_account_agent_deleted,priority:3" json:"deleted_at"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+type ExternalChatBinding struct {
+	ID              string         `gorm:"primaryKey;size:26" json:"id"`
+	AgentID         string         `gorm:"size:64;uniqueIndex:idx_external_chat_bindings_agent_room,priority:1" json:"agent_id"`
+	RemoteRoomID    string         `gorm:"size:128;uniqueIndex:idx_external_chat_bindings_agent_room,priority:2" json:"remote_room_id"`
+	ThreadID        string         `gorm:"size:26;index" json:"thread_id"`
+	AccountID       string         `gorm:"size:128;index" json:"account_id"`
+	RemoteAccountID string         `gorm:"size:128" json:"remote_account_id"`
+	RemoteAccount   string         `gorm:"size:128" json:"remote_account"`
+	LastMessageAt   *time.Time     `json:"last_message_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+}

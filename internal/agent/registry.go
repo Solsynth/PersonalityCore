@@ -9,16 +9,17 @@ import (
 )
 
 type Definition struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	SystemPrompt        string   `json:"system_prompt"`
-	Model               string   `json:"model"`
-	Temperature         *float32 `json:"temperature,omitempty"`
-	TopP                *float32 `json:"top_p,omitempty"`
-	MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
-	ToolScopes          []string `json:"tool_scopes"`
-	Enabled             bool     `json:"enabled"`
+	ID                  string                              `json:"id"`
+	Name                string                              `json:"name"`
+	Description         string                              `json:"description"`
+	SystemPrompt        string                              `json:"system_prompt"`
+	Model               string                              `json:"model"`
+	Temperature         *float32                            `json:"temperature,omitempty"`
+	TopP                *float32                            `json:"top_p,omitempty"`
+	MaxCompletionTokens *int                                `json:"max_completion_tokens,omitempty"`
+	Abilities           []string                            `json:"abilities"`
+	Enabled             bool                                `json:"enabled"`
+	SolarIntegration    config.AgentSolarNetworkIntegration `json:"-"`
 }
 
 type Registry struct {
@@ -51,14 +52,25 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 			Temperature:         cfg.Temperature,
 			TopP:                cfg.TopP,
 			MaxCompletionTokens: cfg.MaxCompletionTokens,
-			ToolScopes:          append([]string(nil), cfg.ToolScopes...),
+			Abilities:           append([]string(nil), cfg.Abilities...),
 			Enabled:             cfg.Enabled,
+			SolarIntegration:    cfg.SolarNetworkIntegration,
 		}
 		order = append(order, id)
 	}
 
 	sort.Strings(order)
 	return &Registry{agents: agents, order: order}, nil
+}
+
+func HasAbility(def Definition, ability string) bool {
+	want := strings.TrimSpace(strings.ToLower(ability))
+	for _, item := range def.Abilities {
+		if strings.TrimSpace(strings.ToLower(item)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Registry) List() []Definition {

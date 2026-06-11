@@ -18,9 +18,10 @@ Each agent can define:
 - `name`
 - `description`
 - `systemPrompt`
+- `systemPromptFile`
 - `model`
 - model defaults such as `temperature`, `topP`, and `maxCompletionTokens`
-- `toolScopes`
+- `abilities`
 - `enabled`
 
 At runtime:
@@ -29,7 +30,26 @@ At runtime:
 - clients send messages and trigger runs
 - runs can be non-streaming JSON or streaming SSE
 
-Tool scope is already part of the agent definition, but actual tool execution is not enabled yet.
+Abilities are part of the agent definition.
+
+Current humanization-related abilities:
+- `humanizer`: composite ability that enables all humanization features below
+- `memory`: passive fact extraction and long-term remembered facts
+- `saved_memory`: agent-owned deliberately saved memories
+- `cross_conversation_memory`: recall from other recent conversations for the same account + agent
+- `mood`: rolling emotional tone
+- `relationship`: familiarity and relationship posture
+
+Chat integration ability:
+- `chat`: enables Solar Network bot messaging through a configured bot account and keeps one websocket connection open per enabled integrated agent
+
+These are server-side systems. They do not require client-side function-calling support.
+For humanization, the current server behavior includes:
+- passive fact extraction from user messages
+- cross-conversation recall from other recent threads owned by the same account + agent
+- a distinct agent-owned saved-memory bucket for messages like `remember that ...`, `please remember ...`, or `don't forget ...`
+
+The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
 
 ## Project Layout
 
@@ -58,6 +78,7 @@ Important sections:
 - `http.port`
 - `grpc.port`
 - `auth.target`
+- `solarNetwork.baseUrl`
 - `providersDir`
 - `providers`
 - `agents.items`
@@ -78,7 +99,20 @@ name = "Support"
 description = "General support assistant"
 systemPrompt = "You are the Solar Network support assistant."
 model = "openai/gpt-4.1-mini"
-toolScopes = []
+abilities = []
+enabled = true
+```
+
+If you want the prompt in a separate file:
+
+```toml
+[[agents.items]]
+id = "support"
+name = "Support"
+description = "General support assistant"
+systemPromptFile = "./prompts/support.md"
+model = "openai/gpt-4.1-mini"
+abilities = []
 enabled = true
 ```
 
@@ -97,13 +131,37 @@ Example extra file:
 id = "writer"
 name = "Writer"
 description = "Writing assistant"
-systemPrompt = "You help users draft clean copy."
+systemPromptFile = "../prompts/writer.md"
 model = "openai/gpt-4.1-mini"
-toolScopes = []
+abilities = []
 enabled = true
 ```
 
 The service merges inline agents and `agents.dir/*.toml` at startup.
+`systemPromptFile` is resolved relative to the config file that declares the agent, so split agent files can safely point at nearby prompt files.
+
+Agents with `abilities = ["chat"]` also require a Solar bot integration block:
+
+```toml
+[solarNetwork]
+baseUrl = "https://api.dyson.example"
+
+[[agents.items]]
+id = "support-bot"
+name = "Support Bot"
+description = "Replies in Solar chat as a bot"
+systemPrompt = "You are the Solar support bot."
+model = "openai/gpt-4.1-mini"
+abilities = ["chat"]
+enabled = true
+
+[agents.items.solar-network-integration]
+accountName = "support-bot"
+accessToken = "..."
+```
+
+The integration block is server-only: public HTTP and gRPC agent metadata expose `abilities`, but never return the bot credentials.
+Each enabled integrated agent maintains one websocket connection to `{solarNetwork.baseUrl}/ws`.
 
 Providers can also be defined in two ways.
 
@@ -142,6 +200,115 @@ topP = 1.0
 ```
 
 The service merges inline providers and `providersDir/*.toml` at startup.
+
+Example separated layout:
+
+```text
+config.toml
+agents.d/
+  support.toml
+  writer.toml
+models.d/
+  openai.toml
+  azure.toml
+prompts/
+  support.md
+  writer.md
+```
+
+Example `config.toml`:
+
+```toml
+providersDir = "./models.d"
+
+[agents]
+dir = "./agents.d"
+
+[auth]
+offline = true
+offlineAccountId = "local-dev"
+```
+
+Example `agents.d/support.toml`:
+
+```toml
+[agents]
+[[agents.items]]
+id = "support"
+name = "Support"
+description = "General support assistant"
+systemPromptFile = "../prompts/support.md"
+model = "openai/gpt-4.1-mini"
+abilities = []
+enabled = true
+```
+
+Example with humanization scopes enabled:
+
+```toml
+[agents]
+[[agents.items]]
+id = "michan"
+name = "Michan"
+description = "A more person-like companion agent"
+systemPromptFile = "../prompts/michan.md"
+model = "deepseek/deepseek-v4-flash"
+abilities = ["humanizer"]
+enabled = true
+```
+
+Example `agents.d/writer.toml`:
+
+```toml
+[agents]
+[[agents.items]]
+id = "writer"
+name = "Writer"
+description = "Writing assistant"
+systemPromptFile = "../prompts/writer.md"
+model = "azure/gpt-4.1"
+abilities = []
+enabled = true
+```
+
+Example `models.d/openai.toml`:
+
+```toml
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "YOUR_OPENAI_KEY"
+baseUrl = ""
+byAzure = false
+apiVersion = ""
+timeout = "90s"
+maxCompletionTokens = 2048
+temperature = 0.7
+topP = 1.0
+```
+
+Example `models.d/azure.toml`:
+
+```toml
+[[providers]]
+id = "azure"
+type = "openai"
+apiKey = "YOUR_AZURE_OPENAI_KEY"
+baseUrl = "https://YOUR-RESOURCE.openai.azure.com"
+byAzure = true
+apiVersion = "2024-06-01"
+timeout = "90s"
+maxCompletionTokens = 2048
+temperature = 0.7
+topP = 1.0
+```
+
+Example `prompts/support.md`:
+
+```md
+You are the Solar Network support assistant.
+Answer clearly and keep replies operational.
+```
 
 Startup fails when:
 - no enabled agents exist
@@ -207,6 +374,16 @@ Useful environment variables:
 - `ZEROLOG_PRETTY=true`
 - `LOG_LEVEL=debug`
 - `DATABASE_DSN`
+
+Generation logging:
+- `LOG_LEVEL=info`: run creation, generation start, completion, and failure
+- `LOG_LEVEL=debug`: model preparation, humanizer overlay injection, model invocation, and stream chunk summary
+
+Example:
+
+```bash
+LOG_LEVEL=debug go run ./cmd --config ./config.toml --pretty
+```
 
 For fully local testing, a common setup is:
 
@@ -397,7 +574,8 @@ Current behavior:
 - The current model adapter uses `github.com/cloudwego/eino-ext/components/model/openai`.
 - Multiple providers are now resolved from `[[providers]]` plus `providersDir/*.toml`.
 - Provider type support is currently implemented for OpenAI-compatible backends via `type = "openai"` or `type = "openai-compatible"`.
-- `toolScopes` are stored on agent definitions now for future rollout, but no tool calling is performed yet.
+- `abilities` are the primary agent capability field.
+- `abilities` is the canonical agent capability field.
 - The gRPC service is intended for internal Solar usage; the primary client API is REST + SSE.
 
 ## Verification

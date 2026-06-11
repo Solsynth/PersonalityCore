@@ -59,3 +59,33 @@ func TestClientRunStream(t *testing.T) {
 		t.Fatalf("run id = %q, want %q", result.Run.ID, "run-1")
 	}
 }
+
+func TestClientListMessagesPreservesQueryString(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/conversations/thread-1/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("take"); got != "200" {
+			t.Fatalf("take = %q", got)
+		}
+		if got := r.URL.Query().Get("offset"); got != "0" {
+			t.Fatalf("offset = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "[]")
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	messages, err := client.ListMessages(context.Background(), "thread-1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("messages len = %d, want 0", len(messages))
+	}
+}

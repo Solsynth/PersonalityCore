@@ -63,6 +63,18 @@ func (e *Executor) Stream(ctx context.Context, req RunRequest) (*schema.StreamRe
 	return model.Stream(ctx, req.Messages)
 }
 
+func (e *Executor) NewToolCallingModel(ctx context.Context, agent Definition, tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	baseModel, err := e.newChatModel(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	toolModel, ok := baseModel.(model.ToolCallingChatModel)
+	if !ok {
+		return nil, fmt.Errorf("provider for model %q does not support tool calling", agent.Model)
+	}
+	return toolModel.WithTools(tools)
+}
+
 func (e *Executor) newChatModel(ctx context.Context, agent Definition) (model.BaseChatModel, error) {
 	if e == nil {
 		return nil, fmt.Errorf("executor config is missing")

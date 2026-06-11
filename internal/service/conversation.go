@@ -17,16 +17,30 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/config"
 	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/personality/internal/humanize"
+	"src.solsynth.dev/sosys/personality/internal/logging"
 )
 
 var ErrNotFound = errors.New("not found")
 var ErrForbidden = errors.New("forbidden")
+
+type assistantMessageMetadata struct {
+	ToolCalls        []schema.ToolCall `json:"tool_calls"`
+	ReasoningContent string            `json:"reasoning_content"`
+}
+
+type toolMessageMetadata struct {
+	ToolCallID string `json:"tool_call_id"`
+	ToolName   string `json:"tool_name"`
+}
 
 type ConversationService struct {
 	db       *database.DB
 	cfg      *config.Config
 	registry *agent.Registry
 	executor *agent.Executor
+	humanize *humanize.Manager
+	solar    SolarChatBridge
 }
 
 type CreateConversationInput struct {
@@ -57,7 +71,13 @@ type RunResult struct {
 }
 
 func NewConversationService(db *database.DB, cfg *config.Config, registry *agent.Registry, executor *agent.Executor) *ConversationService {
-	return &ConversationService{db: db, cfg: cfg, registry: registry, executor: executor}
+	return &ConversationService{
+		db:       db,
+		cfg:      cfg,
+		registry: registry,
+		executor: executor,
+		humanize: humanize.NewManager(db),
+	}
 }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
@@ -204,6 +224,14 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
 		return nil, nil, nil, err
 	}
+	logging.Log.Info().
+		Str("conversation_id", thread.ID).
+		Str("run_id", run.ID).
+		Str("agent_id", thread.AgentID).
+		Str("account_id", accountID).
+		Bool("stream", input.Stream).
+		Int("prompt_chars", len(content)).
+		Msg("run created")
 	return thread, run, requestMessage, nil
 }
 
@@ -216,6 +244,11 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	if !ok {
 		return nil, agent.Definition{}, fmt.Errorf("agent %q is unavailable", thread.AgentID)
 	}
+	logging.Log.Debug().
+		Str("conversation_id", threadID).
+		Str("agent_id", def.ID).
+		Str("model", def.Model).
+		Msg("building model messages")
 
 	limit := s.cfg.Personality.MaxHistoryMessages
 	if limit < 1 {
@@ -235,6 +268,29 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	if strings.TrimSpace(def.SystemPrompt) != "" {
 		messages = append(messages, schema.SystemMessage(def.SystemPrompt))
 	}
+	if agent.HasAbility(def, "chat") {
+		overlay, err := s.buildSolarSystemOverlay(ctx, def.ID, threadID)
+		if err != nil {
+			return nil, agent.Definition{}, err
+		}
+		if strings.TrimSpace(overlay) != "" {
+			messages = append(messages, schema.SystemMessage(overlay))
+		}
+	}
+	if s.humanize != nil {
+		state, err := s.humanize.BuildPromptState(ctx, accountID, threadID, def)
+		if err != nil {
+			return nil, agent.Definition{}, err
+		}
+		if overlay := humanize.RenderSystemOverlay(def, state); strings.TrimSpace(overlay) != "" {
+			logging.Log.Debug().
+				Str("conversation_id", threadID).
+				Str("agent_id", def.ID).
+				Int("overlay_chars", len(overlay)).
+				Msg("attached humanizer overlay")
+			messages = append(messages, schema.SystemMessage(overlay))
+		}
+	}
 
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
@@ -247,7 +303,30 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case "tool":
 			role = schema.Tool
 		}
-		messages = append(messages, &schema.Message{Role: role, Content: record.Content})
+		msg := &schema.Message{Role: role, Content: record.Content}
+		switch role {
+		case schema.Assistant:
+			var meta assistantMessageMetadata
+			if decodeMessageMetadata(record.Metadata, &meta) == nil {
+				msg.ToolCalls = meta.ToolCalls
+				msg.ReasoningContent = meta.ReasoningContent
+			}
+		case schema.Tool:
+			var meta toolMessageMetadata
+			if decodeMessageMetadata(record.Metadata, &meta) == nil {
+				msg.ToolCallID = meta.ToolCallID
+				msg.ToolName = meta.ToolName
+			}
+			if strings.TrimSpace(msg.ToolCallID) == "" {
+				logging.Log.Debug().
+					Str("conversation_id", threadID).
+					Str("message_id", record.ID).
+					Str("tool_name", msg.ToolName).
+					Msg("skipping persisted tool message without tool_call_id")
+				continue
+			}
+		}
+		messages = append(messages, msg)
 	}
 	return messages, def, nil
 }
@@ -267,6 +346,13 @@ func (s *ConversationService) CompleteRun(ctx context.Context, run *database.Con
 	run.Status = "completed"
 	run.ResponseMessageID = &responseMessage.ID
 	run.CompletedAt = &now
+	logging.Log.Info().
+		Str("conversation_id", run.ThreadID).
+		Str("run_id", run.ID).
+		Str("agent_id", run.AgentID).
+		Str("model", run.Model).
+		Int("response_chars", len(strings.TrimSpace(assistantContent))).
+		Msg("run completed")
 	return responseMessage, s.db.WithContext(ctx).Save(run).Error
 }
 
@@ -276,6 +362,13 @@ func (s *ConversationService) FailRun(ctx context.Context, run *database.Convers
 	run.Status = "failed"
 	run.Error = &message
 	run.CompletedAt = &now
+	logging.Log.Error().
+		Err(failure).
+		Str("conversation_id", run.ThreadID).
+		Str("run_id", run.ID).
+		Str("agent_id", run.AgentID).
+		Str("model", run.Model).
+		Msg("run failed")
 	return s.db.WithContext(ctx).Save(run).Error
 }
 
@@ -284,6 +377,11 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	if err != nil {
 		return nil, err
 	}
+	logging.Log.Info().
+		Str("conversation_id", threadID).
+		Str("run_id", run.ID).
+		Str("agent_id", thread.AgentID).
+		Msg("starting non-streaming generation")
 
 	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID)
 	if err != nil {
@@ -292,15 +390,42 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	}
 
 	run.Model = agentDef.Model
-	response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
-	if err != nil {
-		_ = s.FailRun(ctx, run, err)
-		return nil, err
+	logging.Log.Debug().
+		Str("conversation_id", threadID).
+		Str("run_id", run.ID).
+		Str("agent_id", agentDef.ID).
+		Str("model", run.Model).
+		Int("message_count", len(modelMessages)).
+		Msg("invoking model")
+	responseContent := ""
+	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+		logging.Log.Info().
+			Str("conversation_id", threadID).
+			Str("run_id", run.ID).
+			Str("agent_id", agentDef.ID).
+			Msg("routing run through chat tool execution path")
+		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef)
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+	} else {
+		response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+		responseContent = response.Content
 	}
 
-	responseMessage, err := s.CompleteRun(ctx, run, response.Content)
+	responseMessage, err := s.CompleteRun(ctx, run, responseContent)
 	if err != nil {
 		return nil, err
+	}
+	if s.humanize != nil {
+		if err := s.humanize.ObserveInteraction(ctx, accountID, agentDef, requestMessage.Content, responseContent); err != nil {
+			return nil, err
+		}
 	}
 
 	return &RunResult{
@@ -308,7 +433,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Run:             run,
 		RequestMessage:  requestMessage,
 		ResponseMessage: responseMessage,
-		ResponseContent: response.Content,
+		ResponseContent: responseContent,
 	}, nil
 }
 
@@ -321,6 +446,11 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, err
 	}
+	logging.Log.Info().
+		Str("conversation_id", threadID).
+		Str("run_id", run.ID).
+		Str("agent_id", thread.AgentID).
+		Msg("starting streaming generation")
 
 	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID)
 	if err != nil {
@@ -329,31 +459,63 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	}
 
 	run.Model = agentDef.Model
-	stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
-	if err != nil {
-		_ = s.FailRun(ctx, run, err)
-		return nil, err
-	}
-	defer stream.Close()
-
+	logging.Log.Debug().
+		Str("conversation_id", threadID).
+		Str("run_id", run.ID).
+		Str("agent_id", agentDef.ID).
+		Str("model", run.Model).
+		Int("message_count", len(modelMessages)).
+		Msg("opening model stream")
 	var builder strings.Builder
-	for {
-		chunk, recvErr := stream.Recv()
-		if recvErr != nil {
-			if recvErr == io.EOF {
-				break
+	chunkCount := 0
+	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+		logging.Log.Info().
+			Str("conversation_id", threadID).
+			Str("run_id", run.ID).
+			Str("agent_id", agentDef.ID).
+			Msg("routing streaming run through chat tool execution path")
+		content, err := s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef)
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+		builder.WriteString(content)
+		if content != "" {
+			chunkCount = 1
+			if callbacks.OnChunk != nil {
+				if err := callbacks.OnChunk(content); err != nil {
+					_ = s.FailRun(ctx, run, err)
+					return nil, err
+				}
 			}
-			_ = s.FailRun(ctx, run, recvErr)
-			return nil, recvErr
 		}
-		if chunk == nil || chunk.Content == "" {
-			continue
+	} else {
+		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
 		}
-		builder.WriteString(chunk.Content)
-		if callbacks.OnChunk != nil {
-			if err := callbacks.OnChunk(chunk.Content); err != nil {
-				_ = s.FailRun(ctx, run, err)
-				return nil, err
+		defer stream.Close()
+
+		for {
+			chunk, recvErr := stream.Recv()
+			if recvErr != nil {
+				if recvErr == io.EOF {
+					break
+				}
+				_ = s.FailRun(ctx, run, recvErr)
+				return nil, recvErr
+			}
+			if chunk == nil || chunk.Content == "" {
+				continue
+			}
+			chunkCount++
+			builder.WriteString(chunk.Content)
+			if callbacks.OnChunk != nil {
+				if err := callbacks.OnChunk(chunk.Content); err != nil {
+					_ = s.FailRun(ctx, run, err)
+					return nil, err
+				}
 			}
 		}
 	}
@@ -362,6 +524,17 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, err
 	}
+	if s.humanize != nil {
+		if err := s.humanize.ObserveInteraction(ctx, accountID, agentDef, requestMessage.Content, builder.String()); err != nil {
+			return nil, err
+		}
+	}
+	logging.Log.Debug().
+		Str("conversation_id", threadID).
+		Str("run_id", run.ID).
+		Int("chunk_count", chunkCount).
+		Int("response_chars", len(builder.String())).
+		Msg("stream generation finished")
 
 	return &RunResult{
 		Thread:          thread,
@@ -373,9 +546,29 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 }
 
 func (s *ConversationService) createMessage(ctx context.Context, thread *database.ConversationThread, runID *string, role, content string, model *string) (*database.ConversationMessage, error) {
+	return s.createMessageWithMetadata(ctx, thread, runID, role, content, model, nil)
+}
+
+func (s *ConversationService) createMessageWithMetadata(
+	ctx context.Context,
+	thread *database.ConversationThread,
+	runID *string,
+	role, content string,
+	model *string,
+	metadata map[string]any,
+) (*database.ConversationMessage, error) {
 	sequence, err := s.nextSequence(ctx, thread.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	rawMetadata := datatypes.JSON([]byte("{}"))
+	if len(metadata) > 0 {
+		payload, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+		rawMetadata = payload
 	}
 
 	message := &database.ConversationMessage{
@@ -387,7 +580,7 @@ func (s *ConversationService) createMessage(ctx context.Context, thread *databas
 		Content:   content,
 		Sequence:  sequence,
 		Model:     model,
-		Metadata:  datatypes.JSON([]byte("{}")),
+		Metadata:  rawMetadata,
 	}
 	if err := s.db.WithContext(ctx).Create(message).Error; err != nil {
 		return nil, err
@@ -443,4 +636,15 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func decodeMessageMetadata(raw datatypes.JSON, out any) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
 }

@@ -12,16 +12,17 @@ import (
 )
 
 type Config struct {
-	App          AppConfig         `mapstructure:"app"`
-	HTTP         HTTPConfig        `mapstructure:"http"`
-	GRPC         GRPCConfig        `mapstructure:"grpc"`
-	Database     DatabaseConfig    `mapstructure:"database"`
-	Auth         AuthConfig        `mapstructure:"auth"`
-	Personality  PersonalityConfig `mapstructure:"personality"`
-	Sentry       SentryConfig      `mapstructure:"sentry"`
-	Agents       AgentsConfig      `mapstructure:"agents"`
-	ProvidersDir string            `mapstructure:"providersDir"`
-	Providers    []ProviderConfig  `mapstructure:"providers"`
+	App          AppConfig          `mapstructure:"app"`
+	HTTP         HTTPConfig         `mapstructure:"http"`
+	GRPC         GRPCConfig         `mapstructure:"grpc"`
+	Database     DatabaseConfig     `mapstructure:"database"`
+	Auth         AuthConfig         `mapstructure:"auth"`
+	Personality  PersonalityConfig  `mapstructure:"personality"`
+	Sentry       SentryConfig       `mapstructure:"sentry"`
+	SolarNetwork SolarNetworkConfig `mapstructure:"solarNetwork"`
+	Agents       AgentsConfig       `mapstructure:"agents"`
+	ProvidersDir string             `mapstructure:"providersDir"`
+	Providers    []ProviderConfig   `mapstructure:"providers"`
 }
 
 type AppConfig struct {
@@ -64,22 +65,35 @@ type SentryConfig struct {
 	Release          string  `mapstructure:"release"`
 }
 
+type SolarNetworkConfig struct {
+	BaseURL string `mapstructure:"baseUrl"`
+}
+
 type AgentsConfig struct {
 	Dir   string        `mapstructure:"dir"`
 	Items []AgentConfig `mapstructure:"items"`
 }
 
 type AgentConfig struct {
-	ID                  string   `mapstructure:"id"`
-	Name                string   `mapstructure:"name"`
-	Description         string   `mapstructure:"description"`
-	SystemPrompt        string   `mapstructure:"systemPrompt"`
-	Model               string   `mapstructure:"model"`
-	Temperature         *float32 `mapstructure:"temperature"`
-	TopP                *float32 `mapstructure:"topP"`
-	MaxCompletionTokens *int     `mapstructure:"maxCompletionTokens"`
-	ToolScopes          []string `mapstructure:"toolScopes"`
-	Enabled             bool     `mapstructure:"enabled"`
+	ID                      string                       `mapstructure:"id"`
+	Name                    string                       `mapstructure:"name"`
+	Description             string                       `mapstructure:"description"`
+	SystemPrompt            string                       `mapstructure:"systemPrompt"`
+	SystemPromptFile        string                       `mapstructure:"systemPromptFile"`
+	Model                   string                       `mapstructure:"model"`
+	Temperature             *float32                     `mapstructure:"temperature"`
+	TopP                    *float32                     `mapstructure:"topP"`
+	MaxCompletionTokens     *int                         `mapstructure:"maxCompletionTokens"`
+	Abilities               []string                     `mapstructure:"abilities"`
+	ToolScopes              []string                     `mapstructure:"toolScopes"`
+	SolarNetworkIntegration AgentSolarNetworkIntegration `mapstructure:"solar-network-integration"`
+	Enabled                 bool                         `mapstructure:"enabled"`
+	sourceDir               string                       `mapstructure:"-"`
+}
+
+type AgentSolarNetworkIntegration struct {
+	AccountName string `mapstructure:"accountName"`
+	AccessToken string `mapstructure:"accessToken"`
 }
 
 type ProviderConfig struct {
@@ -127,6 +141,12 @@ func Load(configPath string) (*Config, error) {
 	if err := loadProviderFiles(&cfg); err != nil {
 		return nil, err
 	}
+	if err := resolveAgentPromptFiles(&cfg, configPath); err != nil {
+		return nil, err
+	}
+	if err := validateSolarNetworkConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -151,6 +171,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sentry.tracesSampleRate", 0.01)
 	v.SetDefault("sentry.environment", "")
 	v.SetDefault("sentry.release", "")
+	v.SetDefault("solarNetwork.baseUrl", "")
 	v.SetDefault("agents.dir", "")
 	v.SetDefault("agents.items", []AgentConfig{})
 	v.SetDefault("providersDir", "")
@@ -192,10 +213,122 @@ func loadAgentFiles(cfg *Config) error {
 		if err := v.Unmarshal(&extra); err != nil {
 			return fmt.Errorf("unmarshal agent config %s: %w", path, err)
 		}
+		for i := range extra.Agents.Items {
+			extra.Agents.Items[i].sourceDir = filepath.Dir(path)
+		}
 		cfg.Agents.Items = append(cfg.Agents.Items, extra.Agents.Items...)
 	}
 
 	return nil
+}
+
+func resolveAgentPromptFiles(cfg *Config, configPath string) error {
+	baseDir := "."
+	if strings.TrimSpace(configPath) != "" {
+		baseDir = filepath.Dir(configPath)
+	}
+
+	for i := range cfg.Agents.Items {
+		cfg.Agents.Items[i].Abilities = mergeAgentAbilities(cfg.Agents.Items[i].Abilities, cfg.Agents.Items[i].ToolScopes)
+		if strings.TrimSpace(cfg.Agents.Items[i].sourceDir) == "" {
+			cfg.Agents.Items[i].sourceDir = baseDir
+		}
+		promptFile := strings.TrimSpace(cfg.Agents.Items[i].SystemPromptFile)
+		if promptFile == "" {
+			continue
+		}
+
+		resolved, err := resolvePromptPath(baseDir, cfg.Agents.Items[i].sourceDir, promptFile)
+		if err != nil {
+			return fmt.Errorf("resolve system prompt file for agent %q: %w", cfg.Agents.Items[i].ID, err)
+		}
+
+		content, err := os.ReadFile(resolved)
+		if err != nil {
+			return fmt.Errorf("read system prompt file for agent %q: %w", cfg.Agents.Items[i].ID, err)
+		}
+		cfg.Agents.Items[i].SystemPrompt = string(content)
+	}
+
+	return nil
+}
+
+func mergeAgentAbilities(primary, legacy []string) []string {
+	seen := make(map[string]struct{}, len(primary)+len(legacy))
+	result := make([]string, 0, len(primary)+len(legacy))
+
+	appendItems := func(items []string) {
+		for _, item := range items {
+			value := strings.TrimSpace(item)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, value)
+		}
+	}
+
+	appendItems(primary)
+	appendItems(legacy)
+	return result
+}
+
+func validateSolarNetworkConfig(cfg *Config) error {
+	baseURL := strings.TrimSpace(cfg.SolarNetwork.BaseURL)
+	requiresSolarBaseURL := false
+
+	for _, agent := range cfg.Agents.Items {
+		if !agent.Enabled || !hasAbility(agent.Abilities, "chat") {
+			continue
+		}
+
+		requiresSolarBaseURL = true
+		if strings.TrimSpace(agent.SolarNetworkIntegration.AccountName) == "" {
+			return fmt.Errorf("agent %q chat ability requires solar-network-integration.accountName", strings.TrimSpace(agent.ID))
+		}
+		if strings.TrimSpace(agent.SolarNetworkIntegration.AccessToken) == "" {
+			return fmt.Errorf("agent %q chat ability requires solar-network-integration.accessToken", strings.TrimSpace(agent.ID))
+		}
+	}
+
+	if requiresSolarBaseURL && baseURL == "" {
+		return fmt.Errorf("solarNetwork.baseUrl is required when an enabled agent has chat ability")
+	}
+
+	return nil
+}
+
+func hasAbility(abilities []string, want string) bool {
+	normalizedWant := strings.TrimSpace(strings.ToLower(want))
+	for _, ability := range abilities {
+		if strings.TrimSpace(strings.ToLower(ability)) == normalizedWant {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvePromptPath(baseDir, sourceDir, promptFile string) (string, error) {
+	if filepath.IsAbs(promptFile) {
+		return promptFile, nil
+	}
+
+	candidates := []string{
+		filepath.Join(sourceDir, promptFile),
+		filepath.Join(baseDir, promptFile),
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("file %q not found relative to %q or %q", promptFile, sourceDir, baseDir)
 }
 
 func loadProviderFiles(cfg *Config) error {

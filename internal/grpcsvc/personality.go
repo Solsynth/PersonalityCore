@@ -36,7 +36,7 @@ func (s *PersonalityService) ListAgents(context.Context, *gen.DyListPersonalityA
 			Name:        item.Name,
 			Description: item.Description,
 			Model:       item.Model,
-			ToolScopes:  append([]string(nil), item.ToolScopes...),
+			Abilities:   append([]string(nil), item.Abilities...),
 		})
 	}
 	return &gen.DyListPersonalityAgentsResponse{Items: out}, nil
@@ -52,7 +52,7 @@ func (s *PersonalityService) GetAgent(_ context.Context, req *gen.DyGetPersonali
 		Name:        item.Name,
 		Description: item.Description,
 		Model:       item.Model,
-		ToolScopes:  append([]string(nil), item.ToolScopes...),
+		Abilities:   append([]string(nil), item.Abilities...),
 	}, nil
 }
 

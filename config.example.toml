@@ -21,6 +21,9 @@ allowDevIds = true
 offline = false
 offlineAccountId = "local-dev"
 
+[solarNetwork]
+baseUrl = "https://api.dyson.example"
+
 # Solar Network gRPC commonly uses self-signed certs.
 # When connecting to Solar auth over TLS, set:
 # useTLS = true
@@ -49,7 +52,20 @@ dir = "./agents.d"
 id = "support"
 name = "Support"
 description = "General support assistant"
-systemPrompt = "You are the Solar Network support assistant."
+systemPromptFile = "./prompts/support.md"
 model = "openai/gpt-4.1-mini"
-toolScopes = []
+abilities = ["memory", "mood", "relationship"]
 enabled = true
+
+[[agents.items]]
+id = "support-bot"
+name = "Support Bot"
+description = "Bot agent connected to Solar chat"
+systemPrompt = "You are a support bot for Solar Network chat."
+model = "openai/gpt-4.1-mini"
+abilities = ["chat"]
+enabled = true
+
+[agents.items.solar-network-integration]
+accountName = "support-bot"
+accessToken = ""

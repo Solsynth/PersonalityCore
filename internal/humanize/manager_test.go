@@ -100,6 +100,45 @@ func TestBuildPromptStateReusesImpressionAcrossSolarRoomsAndDirectRuns(t *testin
 	}
 }
 
+func TestAgentSelfNotesAreGlobalPerAgentAndRenderedIntoOverlay(t *testing.T) {
+	db := openHumanizeTestDB(t)
+	manager := NewManager(db)
+
+	if _, err := manager.SaveAgentSelfNote(context.Background(), "michan", AgentSelfNoteInput{
+		Key:      "favorite_drink",
+		Category: "preference",
+		Content:  "I like hojicha lattes.",
+	}); err != nil {
+		t.Fatalf("SaveAgentSelfNote() error = %v", err)
+	}
+	if _, err := manager.SaveAgentSelfNote(context.Background(), "michan", AgentSelfNoteInput{
+		Key:      "current_project",
+		Category: "project",
+		Content:  "I'm tinkering with a room mood tracker.",
+	}); err != nil {
+		t.Fatalf("SaveAgentSelfNote() second error = %v", err)
+	}
+
+	notes, err := manager.ListAgentSelfNotes(context.Background(), "michan", "")
+	if err != nil {
+		t.Fatalf("ListAgentSelfNotes() error = %v", err)
+	}
+	if len(notes) != 2 {
+		t.Fatalf("expected 2 self notes, got %d", len(notes))
+	}
+
+	overlay, err := manager.BuildAgentIdentityOverlay(context.Background(), "michan")
+	if err != nil {
+		t.Fatalf("BuildAgentIdentityOverlay() error = %v", err)
+	}
+	if !strings.Contains(overlay, "favorite_drink") {
+		t.Fatalf("expected favorite_drink in overlay, got %q", overlay)
+	}
+	if !strings.Contains(overlay, "room mood tracker") {
+		t.Fatalf("expected project note in overlay, got %q", overlay)
+	}
+}
+
 func openHumanizeTestDB(t *testing.T) *database.DB {
 	t.Helper()
 

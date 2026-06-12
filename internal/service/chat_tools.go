@@ -11,6 +11,7 @@ import (
 
 	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/personality/internal/humanize"
 	"src.solsynth.dev/sosys/personality/internal/logging"
 )
 
@@ -21,6 +22,10 @@ const getUserProfileToolName = "get_user_profile"
 const listUserPostsToolName = "list_user_posts"
 const getPostToolName = "get_post"
 const listPostRepliesToolName = "list_post_replies"
+const listSelfNotesToolName = "list_self_notes"
+const saveSelfNoteToolName = "save_self_note"
+const deleteSelfNoteToolName = "delete_self_note"
+const solarOutboundMessageMinGap = 650 * time.Millisecond
 
 type sendChatToolInput struct {
 	RoomID            string `json:"room_id"`
@@ -55,6 +60,20 @@ type listPostRepliesToolInput struct {
 	Take   int    `json:"take"`
 }
 
+type listSelfNotesToolInput struct {
+	Category string `json:"category"`
+}
+
+type saveSelfNoteToolInput struct {
+	Key      string `json:"key"`
+	Category string `json:"category"`
+	Content  string `json:"content"`
+}
+
+type deleteSelfNoteToolInput struct {
+	Key string `json:"key"`
+}
+
 type executedChatToolResult struct {
 	Content           string
 	RoomID            string
@@ -80,6 +99,9 @@ func (s *ConversationService) runWithChatTools(
 		s.listUserPostsToolInfo(),
 		s.getPostToolInfo(),
 		s.listPostRepliesToolInfo(),
+		s.listSelfNotesToolInfo(),
+		s.saveSelfNoteToolInfo(),
+		s.deleteSelfNoteToolInfo(),
 	})
 	if err != nil {
 		return "", err
@@ -248,6 +270,31 @@ func normalizeSolarChatFinalResponse(content string) (normalized string, shouldF
 	}
 }
 
+func sanitizeSolarOutboundMessage(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	sanitized := make([]string, 0, len(lines))
+	skippedTimestampHeader := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if !skippedTimestampHeader || len(sanitized) == 0 {
+				continue
+			}
+			sanitized = append(sanitized, "")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Sent at: ") {
+			skippedTimestampHeader = true
+			continue
+		}
+		sanitized = append(sanitized, line)
+	}
+	return strings.TrimSpace(strings.Join(sanitized, "\n"))
+}
+
 func (s *ConversationService) deliverFallbackChatResponse(
 	ctx context.Context,
 	thread *database.ConversationThread,
@@ -272,13 +319,20 @@ func (s *ConversationService) deliverFallbackChatResponse(
 	}
 	roomID := binding.RemoteRoomID
 	messageID := ""
+	lastSentAt := time.Time{}
 	for i, message := range messages {
+		if i > 0 {
+			if err := waitForSolarOutboundGap(ctx, lastSentAt); err != nil {
+				return err
+			}
+		}
 		sentRoomID, sentMessageID, err := s.solar.SendBotMessage(ctx, agentID, roomID, "", message)
 		if err != nil {
 			return err
 		}
 		roomID = sentRoomID
 		messageID = sentMessageID
+		lastSentAt = time.Now()
 		logging.Log.Debug().
 			Str("agent_id", agentID).
 			Str("conversation_id", thread.ID).
@@ -308,7 +362,7 @@ func splitSolarOutboundMessages(content string) []string {
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	messages := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
+		if trimmed := strings.TrimSpace(sanitizeSolarOutboundMessage(line)); trimmed != "" {
 			messages = append(messages, trimmed)
 		}
 	}
@@ -323,6 +377,7 @@ type solarOutboundStreamSender struct {
 	runID          string
 	buffer         strings.Builder
 	lastRoomID     string
+	lastSentAt     time.Time
 	sentMessageIDs []string
 }
 
@@ -378,11 +433,19 @@ func (s *solarOutboundStreamSender) Flush(ctx context.Context) error {
 }
 
 func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message string) error {
+	message = sanitizeSolarOutboundMessage(message)
+	if message == "" {
+		return nil
+	}
+	if err := waitForSolarOutboundGap(ctx, s.lastSentAt); err != nil {
+		return err
+	}
 	roomID, messageID, err := s.service.solar.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", message)
 	if err != nil {
 		return err
 	}
 	s.lastRoomID = roomID
+	s.lastSentAt = time.Now()
 	s.sentMessageIDs = append(s.sentMessageIDs, messageID)
 	if err := s.service.ensureSolarRoomBinding(ctx, s.thread, s.agentID, roomID, s.binding.RemoteAccount, time.Now()); err != nil {
 		return err
@@ -528,14 +591,72 @@ func (s *ConversationService) listPostRepliesToolInfo() *schema.ToolInfo {
 	}
 }
 
-func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
-	if s.solar == nil {
-		return nil, fmt.Errorf("solar chat bridge is not configured")
+func (s *ConversationService) listSelfNotesToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: listSelfNotesToolName,
+		Desc: "List your persistent self notes shared across all conversations for this same agent. Use this before answering questions about your own likes, background, ongoing projects, routines, or other stable self-identity details when consistency matters.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"category": {
+				Type: schema.String,
+				Desc: "Optional category filter such as identity, preference, project, lore, or routine.",
+			},
+		}),
 	}
+}
+
+func (s *ConversationService) saveSelfNoteToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: saveSelfNoteToolName,
+		Desc: "Create or update one persistent self note for this agent. Use this when you decide on a stable personal detail about yourself that should stay consistent across future conversations. Prefer concise durable keys like favorite_drink, current_project, speaking_style, or hometown_story.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"key": {
+				Type:     schema.String,
+				Desc:     "Stable identifier for this self note.",
+				Required: true,
+			},
+			"category": {
+				Type: schema.String,
+				Desc: "Optional bucket such as identity, preference, project, lore, or routine.",
+			},
+			"content": {
+				Type:     schema.String,
+				Desc:     "The exact self note content to persist.",
+				Required: true,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) deleteSelfNoteToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: deleteSelfNoteToolName,
+		Desc: "Delete one persistent self note for this agent by key. Use this when a prior self note should no longer be treated as part of your identity or current state.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"key": {
+				Type:     schema.String,
+				Desc:     "Stable identifier for the self note to remove.",
+				Required: true,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	switch call.Function.Name {
-	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName:
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName:
 	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
+	}
+	switch call.Function.Name {
+	case listSelfNotesToolName:
+		return s.executeListSelfNotesToolCall(ctx, agentID, call)
+	case saveSelfNoteToolName:
+		return s.executeSaveSelfNoteToolCall(ctx, agentID, call)
+	case deleteSelfNoteToolName:
+		return s.executeDeleteSelfNoteToolCall(ctx, agentID, call)
+	}
+	if s.solar == nil {
+		return nil, fmt.Errorf("solar chat bridge is not configured")
 	}
 	if call.Function.Name == noReplyToolName {
 		payload, err := json.Marshal(map[string]any{
@@ -575,6 +696,7 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 	input.Message = strings.TrimSpace(input.Message)
 	input.RoomID = strings.TrimSpace(input.RoomID)
 	input.TargetAccountName = strings.TrimSpace(input.TargetAccountName)
+	input.Message = sanitizeSolarOutboundMessage(input.Message)
 
 	if input.Message == "" {
 		return nil, fmt.Errorf("%s requires message", sendChatToolName)
@@ -642,7 +764,7 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 
 	messages := make([]string, 0, len(input.Messages))
 	for _, item := range input.Messages {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
+		if trimmed := strings.TrimSpace(sanitizeSolarOutboundMessage(item)); trimmed != "" {
 			messages = append(messages, trimmed)
 		}
 	}
@@ -664,7 +786,13 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 
 	resolvedRoomID := input.RoomID
 	messageIDs := make([]string, 0, len(messages))
+	lastSentAt := time.Time{}
 	for i, item := range messages {
+		if i > 0 {
+			if err := waitForSolarOutboundGap(ctx, lastSentAt); err != nil {
+				return nil, err
+			}
+		}
 		roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, resolvedRoomID, input.TargetAccountName, item)
 		if err != nil {
 			logging.Log.Error().
@@ -679,6 +807,7 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 		}
 		resolvedRoomID = roomID
 		input.TargetAccountName = ""
+		lastSentAt = time.Now()
 		messageIDs = append(messageIDs, messageID)
 	}
 
@@ -809,4 +938,98 @@ func (s *ConversationService) executeListPostRepliesToolCall(ctx context.Context
 		return nil, err
 	}
 	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeListSelfNotesToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	if s.humanize == nil {
+		return nil, fmt.Errorf("humanize manager is not configured")
+	}
+	var input listSelfNotesToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", listSelfNotesToolName, err)
+	}
+	notes, err := s.humanize.ListAgentSelfNotes(ctx, agentID, strings.TrimSpace(input.Category))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"agent_id": agentID,
+		"category": strings.TrimSpace(input.Category),
+		"items":    notes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeSaveSelfNoteToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	if s.humanize == nil {
+		return nil, fmt.Errorf("humanize manager is not configured")
+	}
+	var input saveSelfNoteToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", saveSelfNoteToolName, err)
+	}
+	note, err := s.humanize.SaveAgentSelfNote(ctx, agentID, humanize.AgentSelfNoteInput{
+		Key:      input.Key,
+		Category: input.Category,
+		Content:  input.Content,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"ok":       true,
+		"status":   "self_note_saved",
+		"agent_id": agentID,
+		"item":     note,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeDeleteSelfNoteToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	if s.humanize == nil {
+		return nil, fmt.Errorf("humanize manager is not configured")
+	}
+	var input deleteSelfNoteToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", deleteSelfNoteToolName, err)
+	}
+	deleted, err := s.humanize.DeleteAgentSelfNote(ctx, agentID, input.Key)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"ok":       true,
+		"status":   "self_note_deleted",
+		"agent_id": agentID,
+		"key":      input.Key,
+		"deleted":  deleted,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func waitForSolarOutboundGap(ctx context.Context, lastSentAt time.Time) error {
+	if solarOutboundMessageMinGap <= 0 || lastSentAt.IsZero() {
+		return nil
+	}
+	wait := time.Until(lastSentAt.Add(solarOutboundMessageMinGap))
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

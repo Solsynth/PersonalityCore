@@ -64,3 +64,26 @@ func TestExecutor_ResolveModelFindsProvider(t *testing.T) {
 		t.Fatalf("expected model name gpt-4.1-mini, got %q", modelName)
 	}
 }
+
+func TestExecutor_SupportsVisionDefaultsConservativelyForCompatibleBackends(t *testing.T) {
+	executor, err := NewExecutor(&config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Type: "openai", APIKey: "test", Timeout: time.Second},
+			{ID: "azure", Type: "openai", APIKey: "test", ByAzure: true, BaseURL: "https://example.openai.azure.com", Timeout: time.Second},
+			{ID: "deepseek", Type: "openai", APIKey: "test", BaseURL: "https://api.deepseek.com", Timeout: time.Second},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+
+	if !executor.SupportsVision(Definition{Model: "openai/gpt-4.1-mini"}) {
+		t.Fatal("expected official openai provider to default to vision-capable")
+	}
+	if !executor.SupportsVision(Definition{Model: "azure/gpt-4.1"}) {
+		t.Fatal("expected azure provider to default to vision-capable")
+	}
+	if executor.SupportsVision(Definition{Model: "deepseek/deepseek-v4-flash"}) {
+		t.Fatal("expected custom openai-compatible backend to default to text-only")
+	}
+}

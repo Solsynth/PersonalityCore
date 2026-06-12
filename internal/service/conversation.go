@@ -283,6 +283,9 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	if limit < 1 {
 		limit = 24
 	}
+	if err := s.ensureThreadContextCompaction(ctx, thread, limit); err != nil {
+		return nil, agent.Definition{}, err
+	}
 
 	var records []database.ConversationMessage
 	if err := s.db.WithContext(ctx).
@@ -294,8 +297,13 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	}
 
 	messages := make([]*schema.Message, 0, len(records)+1)
+	supportsVision := s.supportsVisionForAgent(def)
 	if strings.TrimSpace(def.SystemPrompt) != "" {
 		messages = append(messages, schema.SystemMessage(def.SystemPrompt))
+	}
+	messages = append(messages, schema.SystemMessage(renderCharacterConsistencyOverlay()))
+	if strings.TrimSpace(thread.ContextSummary) != "" {
+		messages = append(messages, schema.SystemMessage("Earlier compacted thread context:\n\n"+strings.TrimSpace(thread.ContextSummary)))
 	}
 	if agent.HasAbility(def, "chat") {
 		overlay, err := s.buildSolarSystemOverlay(ctx, def.ID, threadID, records)
@@ -307,6 +315,18 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 	}
 	if s.humanize != nil {
+		identityOverlay, err := s.humanize.BuildAgentIdentityOverlay(ctx, def.ID)
+		if err != nil {
+			return nil, agent.Definition{}, err
+		}
+		if strings.TrimSpace(identityOverlay) != "" {
+			logging.Log.Debug().
+				Str("conversation_id", threadID).
+				Str("agent_id", def.ID).
+				Int("overlay_chars", len(identityOverlay)).
+				Msg("attached agent identity overlay")
+			messages = append(messages, schema.SystemMessage(identityOverlay))
+		}
 		state, err := s.humanize.BuildPromptState(ctx, s.resolveImpressionAccountID(accountID, records), accountID, threadID, def)
 		if err != nil {
 			return nil, agent.Definition{}, err
@@ -333,12 +353,16 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case "tool":
 			role = schema.Tool
 		}
-		msg := &schema.Message{Role: role, Content: record.Content}
+		msg := &schema.Message{Role: role, Content: renderMessageContextContent(record.Content, record.CreatedAt)}
 		switch role {
 		case schema.User:
 			var meta userMessageMetadata
 			if decodeMessageMetadata(record.Metadata, &meta) == nil && len(meta.InputParts) > 0 {
-				parts, err := buildSchemaMessageInputParts(meta.InputParts, record.Content)
+				if !supportsVision {
+					msg.Content = renderTextOnlyMessageInputParts(meta.InputParts, msg.Content)
+					break
+				}
+				parts, err := buildSchemaMessageInputParts(meta.InputParts, renderMessageContextContent(record.Content, record.CreatedAt))
 				if err != nil {
 					return nil, agent.Definition{}, err
 				}
@@ -391,6 +415,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 		messages = append(messages, msg)
 	}
+	messages = append(messages, schema.SystemMessage(renderCurrentDateTimeContext(time.Now())))
 	return messages, def, nil
 }
 
@@ -882,4 +907,167 @@ func cloneMetadataMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *ConversationService) supportsVisionForAgent(def agent.Definition) bool {
+	if s == nil || s.executor == nil {
+		return true
+	}
+	return s.executor.SupportsVision(def)
+}
+
+func renderMessageContextContent(content string, createdAt time.Time) string {
+	timestamp := "Sent at: " + createdAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return timestamp
+	}
+	return timestamp + "\n\n" + content
+}
+
+func renderCurrentDateTimeContext(now time.Time) string {
+	return "Current date and time: " + now.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+}
+
+func renderCharacterConsistencyOverlay() string {
+	return strings.Join([]string{
+		"Stay in character for the entire conversation.",
+		"Do not describe yourself as an AI, assistant, language model, system prompt, or out-of-character narrator unless the existing role definition explicitly requires that framing.",
+		"Respond in your character's own tone, identity, and perspective.",
+		"Many different people may talk to you. Distinguish them carefully by sender identity, account, room context, and remembered history instead of blending them together.",
+	}, "\n")
+}
+
+func renderTextOnlyMessageInputParts(parts []userMessageInputPart, baseContent string) string {
+	lines := make([]string, 0, len(parts)+1)
+	if trimmed := strings.TrimSpace(baseContent); trimmed != "" {
+		lines = append(lines, trimmed)
+	}
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text":
+			if text := strings.TrimSpace(part.Text); text != "" {
+				lines = append(lines, text)
+			}
+		case "image", "image_url":
+			lines = append(lines, renderTextOnlyImagePart(part))
+		}
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func renderTextOnlyImagePart(part userMessageInputPart) string {
+	if url := strings.TrimSpace(part.ImageURL); url != "" {
+		return "[Image attachment provided but this model only accepts text input. Image URL: " + url + "]"
+	}
+	if mimeType := strings.TrimSpace(part.MIMEType); mimeType != "" {
+		return "[Image attachment provided but this model only accepts text input. MIME type: " + mimeType + "]"
+	}
+	return "[Image attachment provided but this model only accepts text input.]"
+}
+
+func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context, thread *database.ConversationThread, historyLimit int) error {
+	if s == nil || s.db == nil || thread == nil {
+		return nil
+	}
+	if historyLimit < 1 {
+		historyLimit = 24
+	}
+
+	var total int64
+	if err := s.db.WithContext(ctx).
+		Model(&database.ConversationMessage{}).
+		Where("thread_id = ? AND account_id = ?", thread.ID, thread.AccountID).
+		Count(&total).Error; err != nil {
+		return err
+	}
+	if total <= int64(historyLimit) {
+		return nil
+	}
+
+	var latest database.ConversationMessage
+	if err := s.db.WithContext(ctx).
+		Where("thread_id = ? AND account_id = ?", thread.ID, thread.AccountID).
+		Order("sequence DESC").
+		First(&latest).Error; err != nil {
+		return err
+	}
+
+	cutoffSeq := latest.Sequence - int64(historyLimit)
+	if cutoffSeq <= thread.SummarySeq {
+		return nil
+	}
+
+	var records []database.ConversationMessage
+	if err := s.db.WithContext(ctx).
+		Where("thread_id = ? AND account_id = ? AND sequence > ? AND sequence <= ?", thread.ID, thread.AccountID, thread.SummarySeq, cutoffSeq).
+		Order("sequence ASC").
+		Find(&records).Error; err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	snippets := make([]string, 0, len(records))
+	for _, record := range records {
+		if snippet := compactConversationRecord(record); snippet != "" {
+			snippets = append(snippets, snippet)
+		}
+	}
+	if len(snippets) == 0 {
+		thread.SummarySeq = cutoffSeq
+		now := time.Now()
+		thread.SummaryAt = &now
+		return s.db.WithContext(ctx).Save(thread).Error
+	}
+
+	summary := strings.TrimSpace(thread.ContextSummary)
+	if summary != "" {
+		summary += "\n"
+	}
+	summary += strings.Join(snippets, "\n")
+	thread.ContextSummary = trimCompactedSummary(summary, 5000)
+	thread.SummarySeq = cutoffSeq
+	now := time.Now()
+	thread.SummaryAt = &now
+	return s.db.WithContext(ctx).Save(thread).Error
+}
+
+func compactConversationRecord(record database.ConversationMessage) string {
+	role := strings.TrimSpace(strings.ToLower(record.Role))
+	switch role {
+	case "system":
+		return ""
+	case "tool":
+		role = "tool"
+	case "assistant", "user":
+	default:
+		role = "message"
+	}
+	return "- " + role + " at " + record.CreatedAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST") + ": " + compactTextForSummary(record.Content, 160)
+}
+
+func compactTextForSummary(content string, limit int) string {
+	content = strings.TrimSpace(strings.ReplaceAll(content, "\n", " "))
+	if content == "" {
+		return "(empty)"
+	}
+	runes := []rune(content)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "..."
+	}
+	return content
+}
+
+func trimCompactedSummary(summary string, limit int) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	runes := []rune(summary)
+	if len(runes) <= limit {
+		return summary
+	}
+	return "..." + string(runes[len(runes)-limit:])
 }

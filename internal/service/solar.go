@@ -402,34 +402,34 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 		return "", nil
 	}
 	inboundMeta := latestSolarInboundMetadata(records)
-	return fmt.Sprintf(
-		"This conversation is connected to a Solar Network chat room.\n"+
-			"If you decide to reply in assistant text, every non-empty line will be sent as one outbound Solar message in order.\n"+
-			"Use a newline when you intentionally want to send a separate follow-up message.\n"+
-			"If you intentionally stay silent, reply with exactly %q.\n"+
-			"Do not number or bullet multiple lines unless you want those prefixes to appear in chat.\n"+
-			"If you need Solar profile or post data, use the lookup tools before replying.\n"+
-			"%s\n"+
-			"%s\n"+
-			"%s\n"+
-			"%s\n"+
-			"Current remote account: %q (%s).\n"+
-			"Any assistant-text reply will be sent automatically; do not claim it was sent separately.",
-		noChatReplyToken,
+	return strings.Join([]string{
+		solarRoomTypePrompt(binding.RemoteRoomType),
+		fmt.Sprintf("If you decide to reply in assistant text, every non-empty line will be sent as one outbound Solar message in order."),
+		"Use a newline when you intentionally want to send a separate follow-up message.",
+		fmt.Sprintf("If you intentionally stay silent, reply with exactly %q.", noChatReplyToken),
+		"Do not number or bullet multiple lines unless you want those prefixes to appear in chat.",
+		"If you need Solar profile or post data, use the lookup tools before replying.",
 		solarRoomBehaviorPrompt(binding.RemoteRoomType),
 		solarInboundPrompt(inboundMeta),
 		solarRoomEngagementPrompt(binding),
 		solarSenderIdentityPrompt(inboundMeta, binding),
-		binding.RemoteAccount,
-		binding.RemoteAccountID,
-	), nil
+		fmt.Sprintf("Current remote account: %q (%s).", binding.RemoteAccount, binding.RemoteAccountID),
+		"Any assistant-text reply will be sent automatically; do not claim it was sent separately.",
+	}, "\n"), nil
+}
+
+func solarRoomTypePrompt(roomType *int) string {
+	if roomType != nil && *roomType == 1 {
+		return "This conversation is connected to a Solar Network direct message. This is a DM, not a group chat."
+	}
+	return "This conversation is connected to a Solar Network group chat. This is not a DM. Multiple different users may be speaking, so track participants carefully."
 }
 
 func solarRoomBehaviorPrompt(roomType *int) string {
 	if roomType != nil && *roomType == 1 {
-		return "This room is a direct message. You can respond more proactively and warmly."
+		return "Because this is a DM, you can respond more proactively, warmly, and conversationally."
 	}
-	return "This room is a group chat. Be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned or replied to."
+	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned or replied to."
 }
 
 func latestSolarInboundMetadata(records []database.ConversationMessage) *solarInboundRequestMetadata {

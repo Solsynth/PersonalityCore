@@ -15,6 +15,7 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/config"
 	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/personality/internal/humanize"
 	"src.solsynth.dev/sosys/personality/internal/solar"
 )
 
@@ -323,6 +324,269 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 	if userMsg.UserInputMultiContent[1].Image.Detail != schema.ImageURLDetailLow {
 		t.Fatalf("unexpected image detail: %q", userMsg.UserInputMultiContent[1].Image.Detail)
+	}
+}
+
+func TestBuildModelMessagesFallsBackToTextForTextOnlyProviderHistory(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "deepseek-bot",
+		Name:         "DeepSeek Bot",
+		Model:        "deepseek/deepseek-v4-flash",
+		Enabled:      true,
+		SystemPrompt: "You can inspect context carefully.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(&config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:             "deepseek",
+			Type:           "openai-compatible",
+			APIKey:         "test-key",
+			SupportsVision: boolPtr(false),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, executor)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-vision-fallback-1",
+		AccountID: "acct-1",
+		AgentID:   "deepseek-bot",
+		Title:     "Vision fallback chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "What is in this image?", nil, map[string]any{
+		"input_parts": []userMessageInputPart{{
+			Type:     "image_url",
+			ImageURL: "https://example.com/cat.jpg",
+			Detail:   "low",
+		}},
+	}); err != nil {
+		t.Fatalf("create multimodal user message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	var userMsg *schema.Message
+	for _, msg := range messages {
+		if msg.Role == schema.User {
+			userMsg = msg
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("expected user message to be present")
+	}
+	if len(userMsg.UserInputMultiContent) != 0 {
+		t.Fatalf("expected text-only fallback, got multimodal parts %#v", userMsg.UserInputMultiContent)
+	}
+	if !strings.Contains(userMsg.Content, "Image attachment provided but this model only accepts text input") {
+		t.Fatalf("expected text fallback note, got %q", userMsg.Content)
+	}
+	if !strings.Contains(userMsg.Content, "https://example.com/cat.jpg") {
+		t.Fatalf("expected original image url in fallback note, got %q", userMsg.Content)
+	}
+}
+
+func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "michan",
+		Name:         "Michan",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Michan.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 4},
+	}, registry, nil)
+
+	if _, err := svc.humanize.SaveAgentSelfNote(context.Background(), "michan", humanize.AgentSelfNoteInput{
+		Key:      "favorite_drink",
+		Category: "preference",
+		Content:  "I like hojicha lattes.",
+	}); err != nil {
+		t.Fatalf("SaveAgentSelfNote() error = %v", err)
+	}
+
+	thread := &database.ConversationThread{
+		ID:        "thread-self-1",
+		AccountID: "acct-1",
+		AgentID:   "michan",
+		Title:     "Identity chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	createdAt := time.Date(2026, 6, 13, 10, 30, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	if err := db.Create(&database.ConversationMessage{
+		ID:        "msg-1",
+		ThreadID:  thread.ID,
+		AccountID: thread.AccountID,
+		Role:      "user",
+		Content:   "What do you like to drink?",
+		Sequence:  1,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	if len(messages) < 4 {
+		t.Fatalf("expected system, identity, user, and current-time messages, got %d", len(messages))
+	}
+	foundIdentity := false
+	for _, msg := range messages {
+		if msg.Role == schema.System && strings.Contains(msg.Content, "favorite_drink") {
+			foundIdentity = true
+			break
+		}
+	}
+	if !foundIdentity {
+		t.Fatal("expected identity overlay in system messages")
+	}
+	var userMessage *schema.Message
+	for _, msg := range messages {
+		if msg.Role == schema.User {
+			userMessage = msg
+			break
+		}
+	}
+	if userMessage == nil || !strings.Contains(userMessage.Content, "Sent at: 2026-06-13 10:30:00 +08:00") {
+		t.Fatalf("expected timestamped user content, got %#v", userMessage)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != schema.System || !strings.Contains(last.Content, "Current date and time:") {
+		t.Fatalf("expected final current time system message, got %#v", last)
+	}
+}
+
+func TestBuildModelMessagesCompactsOlderThreadContext(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "michan",
+		Name:         "Michan",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Michan.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 3},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-compact-1",
+		AccountID: "acct-1",
+		AgentID:   "michan",
+		Title:     "Long chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	baseTime := time.Date(2026, 6, 13, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	for i := 0; i < 6; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		at := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := db.Create(&database.ConversationMessage{
+			ID:        fmt.Sprintf("msg-%d", i+1),
+			ThreadID:  thread.ID,
+			AccountID: thread.AccountID,
+			Role:      role,
+			Content:   fmt.Sprintf("message %d", i+1),
+			Sequence:  int64(i + 1),
+			CreatedAt: at,
+			UpdatedAt: at,
+		}).Error; err != nil {
+			t.Fatalf("create message %d: %v", i+1, err)
+		}
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	var refreshed database.ConversationThread
+	if err := db.Where("id = ?", thread.ID).First(&refreshed).Error; err != nil {
+		t.Fatalf("reload thread: %v", err)
+	}
+	if refreshed.SummarySeq == 0 || strings.TrimSpace(refreshed.ContextSummary) == "" {
+		t.Fatalf("expected compacted thread summary, got seq=%d summary=%q", refreshed.SummarySeq, refreshed.ContextSummary)
+	}
+	foundSummary := false
+	for _, msg := range messages {
+		if msg.Role == schema.System && strings.Contains(msg.Content, "Earlier compacted thread context:") {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Fatal("expected compacted thread context system message")
+	}
+}
+
+func TestBuildSolarSystemOverlayMakesGroupMultiUserContextExplicit(t *testing.T) {
+	db := openTestDB(t)
+	svc := &ConversationService{db: db}
+	thread := &database.ConversationThread{
+		ID:        "thread-group-1",
+		AccountID: "solar:michan:room-1",
+		AgentID:   "michan",
+		Title:     "Group room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := db.Create(&database.ExternalChatBinding{
+		ID:             "binding-group-1",
+		AgentID:        "michan",
+		RemoteRoomID:   "room-1",
+		RemoteRoomType: roomTypePtr(0),
+		ThreadID:       thread.ID,
+		AccountID:      thread.AccountID,
+		RemoteAccount:  "alice",
+	}).Error; err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+
+	overlay, err := svc.buildSolarSystemOverlay(context.Background(), "michan", thread.ID, nil)
+	if err != nil {
+		t.Fatalf("buildSolarSystemOverlay() error = %v", err)
+	}
+	if !strings.Contains(overlay, "This is not a DM") {
+		t.Fatalf("expected non-DM hint, got %q", overlay)
+	}
+	if !strings.Contains(overlay, "Multiple different users may be speaking") {
+		t.Fatalf("expected explicit multi-user hint, got %q", overlay)
+	}
+	if !strings.Contains(overlay, "pay extra attention to which participant sent each message") {
+		t.Fatalf("expected participant-tracking hint, got %q", overlay)
 	}
 }
 
@@ -760,4 +1024,8 @@ func openTestDB(t *testing.T) *database.DB {
 		t.Fatalf("automigrate: %v", err)
 	}
 	return db
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

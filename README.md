@@ -48,10 +48,12 @@ For humanization, the current server behavior includes:
 - passive fact extraction from user messages
 - cross-conversation recall from other recent threads for the same user account + agent
 - a distinct agent-owned saved-memory bucket for messages like `remember that ...`, `please remember ...`, or `don't forget ...`
+- a separate agent-global self-note bucket keyed only by `agent_id`, shared across every conversation that uses the same agent
 
 For Solar chat, humanizer state is keyed by the inbound sender's `account_id`, not the per-room synthetic conversation account. That lets impressions and memory carry across rooms and the direct run API when the same user account is involved.
 
 The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
+Agent-global self notes are different: they represent the agent's own stable identity, preferences, lore, and ongoing projects. Those notes are injected into the system prompt for every run of that agent.
 
 ## Project Layout
 
@@ -165,9 +167,12 @@ accessToken = "..."
 The integration block is server-only: public HTTP and gRPC agent metadata expose `abilities`, but never return the bot credentials.
 Each enabled integrated agent maintains one websocket connection to `{solarNetwork.baseUrl}/ws`.
 When a chat-linked Solar conversation is active, outbound remote messages should be sent by `send_chat_message` or `send_chat_message_batch`; `NO_REPLY` is the explicit silence token, and plain assistant text is forwarded as a fallback when the model skips tool calling.
+Chat tool-calling also exposes `list_self_notes`, `save_self_note`, and `delete_self_note` so an agent can inspect and update its own persistent identity notes shared across all conversations.
 Inbound Solar chat image attachments are passed to the model as multimodal image inputs using `{solarNetwork.baseUrl}/drive/files/{file_id}`.
 When the agent replies in plain assistant text for a Solar chat conversation, each non-empty newline-delimited line is sent as a separate outbound chat message. In streaming mode, completed lines are sent immediately when the newline arrives.
 For group chats, a direct mention or reply to the bot opens a 5-minute active follow-up window. During that window, the bot may keep participating even without another fresh mention.
+Every run also appends explicit message timestamps in context and a final `Current date and time:` system message so the model can reason about chronology without depending on cache-retained earlier prompt sections.
+When a thread grows beyond the live history window, older messages are automatically compacted into a persisted thread summary that is injected back into future runs as `Earlier compacted thread context:`.
 
 Providers can also be defined in two ways.
 
@@ -525,6 +530,7 @@ curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
 
 `POST /api/conversations/:id/runs` also accepts `input_parts` for multimodal user input.
 Use `message` for the main text prompt, then append image parts by URL or base64.
+Vision replay depends on provider capability. `supportsVision` overrides the default behavior. Without that override, official OpenAI and Azure-style OpenAI providers are treated as vision-capable, while custom OpenAI-compatible backends are treated as text-only by default.
 
 ```bash
 curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
@@ -558,6 +564,18 @@ Base64 uploads are also supported:
   ]
 }
 ```
+
+Example provider override for an OpenAI-compatible backend that supports image inputs:
+
+```toml
+[[providers]]
+id = "some-compatible-provider"
+type = "openai-compatible"
+apiKey = "..."
+supportsVision = true
+```
+
+If a provider is text-only, prior image inputs are replayed back to the model as text placeholders instead of `image_url` parts, so runs do not fail on text-only backends.
 
 ### Streaming run over SSE
 

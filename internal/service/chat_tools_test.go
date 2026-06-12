@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 
 	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/personality/internal/humanize"
 	"src.solsynth.dev/sosys/personality/internal/solar"
 )
 
@@ -188,6 +190,44 @@ func TestExecuteChatToolCallListUserPosts(t *testing.T) {
 	}
 	if result == nil || !strings.Contains(result.Content, `"post-1"`) {
 		t.Fatal("expected posts payload")
+	}
+}
+
+func TestExecuteChatToolCallSaveAndListSelfNotes(t *testing.T) {
+	db := openTestDB(t)
+	svc := &ConversationService{db: db, humanize: humanize.NewManager(db)}
+
+	if _, err := svc.executeChatToolCall(context.Background(), "michan", schema.ToolCall{
+		ID: "call-save",
+		Function: schema.FunctionCall{
+			Name:      saveSelfNoteToolName,
+			Arguments: `{"key":"favorite_drink","category":"preference","content":"I like hojicha lattes."}`,
+		},
+	}); err != nil {
+		t.Fatalf("save self note error = %v", err)
+	}
+
+	result, err := svc.executeChatToolCall(context.Background(), "michan", schema.ToolCall{
+		ID: "call-list",
+		Function: schema.FunctionCall{
+			Name:      listSelfNotesToolName,
+			Arguments: `{}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("list self notes error = %v", err)
+	}
+	var payload struct {
+		Items []database.AgentSelfNote `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decode result payload: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 self note, got %d", len(payload.Items))
+	}
+	if payload.Items[0].Key != "favorite_drink" {
+		t.Fatalf("unexpected self note key: %q", payload.Items[0].Key)
 	}
 }
 

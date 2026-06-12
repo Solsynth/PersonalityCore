@@ -8,14 +8,17 @@ import (
 )
 
 type ConversationThread struct {
-	ID            string         `gorm:"primaryKey;size:26" json:"id"`
-	AccountID     string         `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
-	AgentID       string         `gorm:"size:64;index" json:"agent_id"`
-	Title         string         `gorm:"size:255" json:"title"`
-	LastMessageAt *time.Time     `json:"last_message_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID             string         `gorm:"primaryKey;size:26" json:"id"`
+	AccountID      string         `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
+	AgentID        string         `gorm:"size:64;index" json:"agent_id"`
+	Title          string         `gorm:"size:255" json:"title"`
+	ContextSummary string         `gorm:"type:text" json:"context_summary"`
+	SummarySeq     int64          `json:"summary_seq"`
+	SummaryAt      *time.Time     `json:"summary_at"`
+	LastMessageAt  *time.Time     `json:"last_message_at"`
+	DeletedAt      gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type ConversationMessage struct {
@@ -76,6 +79,17 @@ type AgentManualMemory struct {
 	Category  string         `gorm:"size:64" json:"category"`
 	Content   string         `gorm:"type:text" json:"content"`
 	DeletedAt gorm.DeletedAt `gorm:"index:idx_manual_memories_account_agent_deleted,priority:3" json:"deleted_at"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+type AgentSelfNote struct {
+	ID        string         `gorm:"primaryKey;size:26" json:"id"`
+	AgentID   string         `gorm:"size:64;uniqueIndex:idx_agent_self_notes_agent_key,priority:1;index:idx_agent_self_notes_agent_deleted,priority:1" json:"agent_id"`
+	Key       string         `gorm:"size:128;uniqueIndex:idx_agent_self_notes_agent_key,priority:2" json:"key"`
+	Category  string         `gorm:"size:64;index:idx_agent_self_notes_agent_deleted,priority:2" json:"category"`
+	Content   string         `gorm:"type:text" json:"content"`
+	DeletedAt gorm.DeletedAt `gorm:"index:idx_agent_self_notes_agent_deleted,priority:3" json:"deleted_at"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 }

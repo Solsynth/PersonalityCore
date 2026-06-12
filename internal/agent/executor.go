@@ -143,6 +143,27 @@ func (e *Executor) resolveModel(raw string) (config.ProviderConfig, string, erro
 	return provider, modelName, nil
 }
 
+func (e *Executor) SupportsVision(agent Definition) bool {
+	if e == nil {
+		return true
+	}
+	provider, _, err := e.resolveModel(agent.Model)
+	if err != nil {
+		return false
+	}
+	if provider.SupportsVision != nil {
+		return *provider.SupportsVision
+	}
+	if provider.ByAzure {
+		return true
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(provider.BaseURL))
+	if baseURL == "" {
+		return strings.EqualFold(strings.TrimSpace(provider.ID), "openai")
+	}
+	return strings.Contains(baseURL, "openai.com")
+}
+
 func float32Ptr(v float32) *float32 { return &v }
 
 func intPtr(v int) *int { return &v }

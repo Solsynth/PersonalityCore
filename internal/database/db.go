@@ -36,6 +36,7 @@ func (d *DB) AutoMigrate() error {
 		&ConversationRun{},
 		&AgentHumanState{},
 		&AgentManualMemory{},
+		&AgentSelfNote{},
 		&ExternalChatBinding{},
 	)
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,7 +137,7 @@ func TestBuildModelMessagesSkipsToolMessageWithoutToolCallID(t *testing.T) {
 		t.Fatalf("create user message: %v", err)
 	}
 	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "tool", `{"ok":true}`, nil, map[string]any{
-		"tool_name": "fallback_send_chat_message",
+		"tool_name": sendChatToolName,
 	}); err != nil {
 		t.Fatalf("create fallback tool message: %v", err)
 	}
@@ -148,6 +149,99 @@ func TestBuildModelMessagesSkipsToolMessageWithoutToolCallID(t *testing.T) {
 	for _, msg := range messages {
 		if msg.Role == schema.Tool {
 			t.Fatalf("expected tool message without tool_call_id to be skipped")
+		}
+	}
+}
+
+func TestBuildModelMessagesSkipsOrphanedToolMessageWithUnknownToolCallID(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "support-bot",
+		Name:         "Support Bot",
+		Model:        "openai/test",
+		Abilities:    []string{"chat"},
+		Enabled:      true,
+		SystemPrompt: "You are helpful.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessage(context.Background(), thread, nil, "user", "hello", nil); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "tool", `{"ok":true}`, nil, map[string]any{
+		"tool_call_id": "fallback:run-1",
+		"tool_name":    "fallback_send_chat_message",
+	}); err != nil {
+		t.Fatalf("create orphaned tool message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == schema.Tool {
+			t.Fatalf("expected orphaned tool message to be skipped")
+		}
+	}
+}
+
+func TestBuildModelMessagesSkipsEmptyAssistantMessage(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "support-bot",
+		Name:         "Support Bot",
+		Model:        "openai/test",
+		Abilities:    []string{"chat"},
+		Enabled:      true,
+		SystemPrompt: "You are helpful.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessage(context.Background(), thread, nil, "user", "hello", nil); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+	if _, err := svc.createMessage(context.Background(), thread, nil, "assistant", "", stringPtr("openai/test")); err != nil {
+		t.Fatalf("create empty assistant message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == schema.Assistant && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+			t.Fatal("expected empty assistant message to be skipped")
 		}
 	}
 }
@@ -189,6 +283,116 @@ func TestEnsureSolarRoomBindingUpsertsByRoom(t *testing.T) {
 	}
 	if bindings[0].LastMessageAt == nil || !bindings[0].LastMessageAt.Equal(seenAt.Add(time.Minute)) {
 		t.Fatalf("expected last message timestamp to be updated")
+	}
+}
+
+func TestAllowSolarRoomReplyForGroupRequiresMentionOrReply(t *testing.T) {
+	db := openTestDB(t)
+	svc := &ConversationService{db: db}
+
+	thread := &database.ConversationThread{
+		ID:        "thread-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "hello", nil, map[string]any{
+		"source":        "solar",
+		"room_type":     0,
+		"mentioned_bot": false,
+	}); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+
+	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+		ThreadID:       thread.ID,
+		AccountID:      thread.AccountID,
+		RemoteRoomType: roomTypePtr(0),
+	})
+	if err != nil {
+		t.Fatalf("allowSolarRoomReply() error = %v", err)
+	}
+	if allow {
+		t.Fatal("expected group reply to be suppressed without mention or reply")
+	}
+}
+
+func TestAllowSolarRoomReplyForGroupAllowsMention(t *testing.T) {
+	db := openTestDB(t)
+	svc := &ConversationService{db: db}
+
+	thread := &database.ConversationThread{
+		ID:        "thread-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "hello @michan", nil, map[string]any{
+		"source":        "solar",
+		"room_type":     0,
+		"mentioned_bot": true,
+	}); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+
+	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+		ThreadID:       thread.ID,
+		AccountID:      thread.AccountID,
+		RemoteRoomType: roomTypePtr(0),
+	})
+	if err != nil {
+		t.Fatalf("allowSolarRoomReply() error = %v", err)
+	}
+	if !allow {
+		t.Fatal("expected group reply to be allowed after mention")
+	}
+}
+
+func TestSolarInboundBatcherCoalescesMessages(t *testing.T) {
+	var flushed [][]ExternalInboundMessage
+	batcher := newSolarInboundBatcher(20*time.Millisecond, func(_ context.Context, _ string, items []ExternalInboundMessage) error {
+		flushed = append(flushed, append([]ExternalInboundMessage(nil), items...))
+		return nil
+	})
+
+	now := time.Now().UTC()
+	if err := batcher.Enqueue(context.Background(), "support-bot", ExternalInboundMessage{
+		RoomID:      "room-1",
+		MessageID:   "msg-1",
+		MessageType: "text",
+		Content:     "hello",
+		SenderName:  "alice",
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("enqueue first message: %v", err)
+	}
+	if err := batcher.Enqueue(context.Background(), "support-bot", ExternalInboundMessage{
+		RoomID:      "room-1",
+		MessageID:   "msg-2",
+		MessageType: "text",
+		Content:     "world",
+		SenderName:  "bob",
+		CreatedAt:   now.Add(5 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("enqueue second message: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	if len(flushed) != 1 {
+		t.Fatalf("expected 1 flushed batch, got %d", len(flushed))
+	}
+	if len(flushed[0]) != 2 {
+		t.Fatalf("expected 2 batched messages, got %d", len(flushed[0]))
+	}
+	if flushed[0][0].Content != "hello" || flushed[0][1].Content != "world" {
+		t.Fatalf("expected batched messages to preserve order, got %#v", flushed[0])
 	}
 }
 

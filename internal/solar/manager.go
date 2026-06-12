@@ -113,6 +113,49 @@ func (m *Manager) SendBotMessage(ctx context.Context, agentID, roomID, targetAcc
 	return conn.sendBotMessage(ctx, roomID, targetAccountName, content)
 }
 
+func (m *Manager) GetAccount(ctx context.Context, agentID, accountName, accountID string) (*Account, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	if strings.TrimSpace(accountID) != "" {
+		return conn.client.GetAccountByID(ctx, accountID)
+	}
+	return conn.client.ResolveAccountByName(ctx, accountName)
+}
+
+func (m *Manager) GetAccountProfile(ctx context.Context, agentID, accountName string) (AccountProfile, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.GetAccountProfile(ctx, accountName)
+}
+
+func (m *Manager) GetPost(ctx context.Context, agentID, postID string) (Post, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.GetPost(ctx, postID)
+}
+
+func (m *Manager) ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*PaginatedPosts, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.ListPublisherPosts(ctx, accountName, offset, take)
+}
+
+func (m *Manager) ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*PaginatedPosts, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.ListPostReplies(ctx, postID, offset, take)
+}
+
 func (m *Manager) getAgent(agentID string) *agentConnection {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -474,14 +517,17 @@ func (c *agentConnection) handlePacket(ctx context.Context, pkt Packet) error {
 			return nil
 		}
 		return c.onMessage(ctx, c.def.ID, InboundMessage{
-			RoomID:          msg.ChatRoomID,
-			MessageID:       msg.ID,
-			MessageType:     firstNonEmpty(msg.Type, "text"),
-			Content:         strings.TrimSpace(msg.Content),
-			SenderAccountID: msg.Sender.AccountID,
-			SenderName:      msg.Sender.Account.Name,
-			SenderNick:      firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
-			CreatedAt:       msg.CreatedAt,
+			RoomID:           msg.ChatRoomID,
+			RoomType:         resolveRoomType(msg),
+			MessageID:        msg.ID,
+			MessageType:      firstNonEmpty(msg.Type, "text"),
+			Content:          strings.TrimSpace(msg.Content),
+			SenderAccountID:  msg.Sender.AccountID,
+			SenderName:       msg.Sender.Account.Name,
+			SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
+			MentionedBot:     messageMentionsBot(msg, botAccountID),
+			RepliedMessageID: strings.TrimSpace(msg.RepliedMessageID),
+			CreatedAt:        msg.CreatedAt,
 		})
 	default:
 		logging.Log.Debug().
@@ -587,14 +633,17 @@ func (c *agentConnection) catchUpRoom(ctx context.Context, state TrackedRoomStat
 
 		if c.onMessage != nil {
 			if err := c.onMessage(ctx, c.def.ID, InboundMessage{
-				RoomID:          msg.ChatRoomID,
-				MessageID:       msg.ID,
-				MessageType:     firstNonEmpty(msg.Type, "text"),
-				Content:         strings.TrimSpace(msg.Content),
-				SenderAccountID: msg.Sender.AccountID,
-				SenderName:      msg.Sender.Account.Name,
-				SenderNick:      firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
-				CreatedAt:       msg.CreatedAt,
+				RoomID:           msg.ChatRoomID,
+				RoomType:         resolveRoomType(&msg),
+				MessageID:        msg.ID,
+				MessageType:      firstNonEmpty(msg.Type, "text"),
+				Content:          strings.TrimSpace(msg.Content),
+				SenderAccountID:  msg.Sender.AccountID,
+				SenderName:       msg.Sender.Account.Name,
+				SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
+				MentionedBot:     messageMentionsBot(&msg, botAccountID),
+				RepliedMessageID: strings.TrimSpace(msg.RepliedMessageID),
+				CreatedAt:        msg.CreatedAt,
 			}); err != nil {
 				return err
 			}
@@ -685,6 +734,35 @@ func decodeMessage(data any) (*ChatMessage, error) {
 		return nil, fmt.Errorf("decode solar chat message: %w", err)
 	}
 	return &msg, nil
+}
+
+func resolveRoomType(msg *ChatMessage) int {
+	if msg == nil {
+		return -1
+	}
+	if msg.ChatRoom != nil {
+		return msg.ChatRoom.Type
+	}
+	if msg.Sender.ChatRoom != nil {
+		return msg.Sender.ChatRoom.Type
+	}
+	return -1
+}
+
+func messageMentionsBot(msg *ChatMessage, botAccountID string) bool {
+	if msg == nil {
+		return false
+	}
+	botAccountID = strings.TrimSpace(botAccountID)
+	if botAccountID == "" {
+		return false
+	}
+	for _, mentioned := range msg.MembersMentioned {
+		if strings.TrimSpace(mentioned) == botAccountID {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(values ...string) string {

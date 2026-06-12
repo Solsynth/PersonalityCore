@@ -34,13 +34,21 @@ type toolMessageMetadata struct {
 	ToolName   string `json:"tool_name"`
 }
 
+type solarInboundRequestMetadata struct {
+	Source           string `json:"source"`
+	RoomType         int    `json:"room_type"`
+	MentionedBot     bool   `json:"mentioned_bot"`
+	RepliedMessageID string `json:"replied_message_id"`
+}
+
 type ConversationService struct {
-	db       *database.DB
-	cfg      *config.Config
-	registry *agent.Registry
-	executor *agent.Executor
-	humanize *humanize.Manager
-	solar    SolarChatBridge
+	db           *database.DB
+	cfg          *config.Config
+	registry     *agent.Registry
+	executor     *agent.Executor
+	humanize     *humanize.Manager
+	solar        SolarChatBridge
+	solarInbound *solarInboundBatcher
 }
 
 type CreateConversationInput struct {
@@ -53,8 +61,9 @@ type AddMessageInput struct {
 }
 
 type RunInput struct {
-	Message string `json:"message"`
-	Stream  bool   `json:"stream"`
+	Message         string         `json:"message"`
+	Stream          bool           `json:"stream"`
+	RequestMetadata map[string]any `json:"-"`
 }
 
 type ListInput struct {
@@ -71,13 +80,15 @@ type RunResult struct {
 }
 
 func NewConversationService(db *database.DB, cfg *config.Config, registry *agent.Registry, executor *agent.Executor) *ConversationService {
-	return &ConversationService{
+	svc := &ConversationService{
 		db:       db,
 		cfg:      cfg,
 		registry: registry,
 		executor: executor,
 		humanize: humanize.NewManager(db),
 	}
+	svc.solarInbound = newSolarInboundBatcher(2*time.Second, svc.handleSolarInboundBatch)
+	return svc
 }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
@@ -201,7 +212,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 		return nil, nil, nil, fmt.Errorf("message is required")
 	}
 
-	requestMessage, err := s.createMessage(ctx, thread, nil, "user", content, nil)
+	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, "user", content, nil, input.RequestMetadata)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -269,7 +280,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		messages = append(messages, schema.SystemMessage(def.SystemPrompt))
 	}
 	if agent.HasAbility(def, "chat") {
-		overlay, err := s.buildSolarSystemOverlay(ctx, def.ID, threadID)
+		overlay, err := s.buildSolarSystemOverlay(ctx, def.ID, threadID, records)
 		if err != nil {
 			return nil, agent.Definition{}, err
 		}
@@ -292,6 +303,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 	}
 
+	pendingToolCalls := make(map[string]struct{})
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
 		role := schema.User
@@ -310,6 +322,19 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 			if decodeMessageMetadata(record.Metadata, &meta) == nil {
 				msg.ToolCalls = meta.ToolCalls
 				msg.ReasoningContent = meta.ReasoningContent
+				for _, call := range meta.ToolCalls {
+					if strings.TrimSpace(call.ID) == "" {
+						continue
+					}
+					pendingToolCalls[strings.TrimSpace(call.ID)] = struct{}{}
+				}
+			}
+			if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+				logging.Log.Debug().
+					Str("conversation_id", threadID).
+					Str("message_id", record.ID).
+					Msg("skipping empty persisted assistant message")
+				continue
 			}
 		case schema.Tool:
 			var meta toolMessageMetadata
@@ -325,6 +350,16 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 					Msg("skipping persisted tool message without tool_call_id")
 				continue
 			}
+			if _, ok := pendingToolCalls[strings.TrimSpace(msg.ToolCallID)]; !ok {
+				logging.Log.Debug().
+					Str("conversation_id", threadID).
+					Str("message_id", record.ID).
+					Str("tool_name", msg.ToolName).
+					Str("tool_call_id", msg.ToolCallID).
+					Msg("skipping persisted orphaned tool message without matching assistant tool call")
+				continue
+			}
+			delete(pendingToolCalls, strings.TrimSpace(msg.ToolCallID))
 		}
 		messages = append(messages, msg)
 	}

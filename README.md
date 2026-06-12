@@ -162,6 +162,7 @@ accessToken = "..."
 
 The integration block is server-only: public HTTP and gRPC agent metadata expose `abilities`, but never return the bot credentials.
 Each enabled integrated agent maintains one websocket connection to `{solarNetwork.baseUrl}/ws`.
+When a chat-linked Solar conversation is active, outbound remote messages should be sent by `send_chat_message` or `send_chat_message_batch`; `NO_REPLY` is the explicit silence token, and plain assistant text is forwarded as a fallback when the model skips tool calling.
 
 Providers can also be defined in two ways.
 

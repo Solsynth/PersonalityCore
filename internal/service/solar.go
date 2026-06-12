@@ -11,11 +11,17 @@ import (
 
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/personality/internal/solar"
 )
 
 type SolarChatBridge interface {
 	SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, content string) (resolvedRoomID, messageID string, err error)
 	TrackRoom(agentID, roomID string)
+	GetAccount(ctx context.Context, agentID, accountName, accountID string) (*solar.Account, error)
+	GetAccountProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error)
+	GetPost(ctx context.Context, agentID, postID string) (solar.Post, error)
+	ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*solar.PaginatedPosts, error)
+	ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*solar.PaginatedPosts, error)
 }
 
 type SolarRoomState struct {
@@ -24,14 +30,17 @@ type SolarRoomState struct {
 }
 
 type ExternalInboundMessage struct {
-	RoomID          string
-	MessageID       string
-	MessageType     string
-	Content         string
-	SenderAccountID string
-	SenderName      string
-	SenderNick      string
-	CreatedAt       time.Time
+	RoomID           string
+	RoomType         int
+	MessageID        string
+	MessageType      string
+	Content          string
+	SenderAccountID  string
+	SenderName       string
+	SenderNick       string
+	MentionedBot     bool
+	RepliedMessageID string
+	CreatedAt        time.Time
 }
 
 func (s *ConversationService) SetSolarChatBridge(bridge SolarChatBridge) {
@@ -59,6 +68,47 @@ func (s *ConversationService) ListTrackedSolarRooms(ctx context.Context, agentID
 }
 
 func (s *ConversationService) HandleSolarInboundMessage(ctx context.Context, agentID string, input ExternalInboundMessage) error {
+	if s.solarInbound == nil {
+		return s.handleSolarInboundMessageNow(ctx, agentID, input)
+	}
+	return s.solarInbound.Enqueue(ctx, agentID, input)
+}
+
+func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agentID string, inputs []ExternalInboundMessage) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	merged := inputs[0]
+	if len(inputs) > 1 {
+		var builder strings.Builder
+		var mentions bool
+		roomType := merged.RoomType
+		repliedMessageID := merged.RepliedMessageID
+		for i, item := range inputs {
+			if i > 0 {
+				builder.WriteString("\n\n")
+			}
+			label := firstNonEmpty(item.SenderNick, item.SenderName, item.SenderAccountID, "unknown")
+			builder.WriteString(fmt.Sprintf("%s: %s", label, strings.TrimSpace(item.Content)))
+			mentions = mentions || item.MentionedBot
+			if roomType == 0 && item.RoomType == 1 {
+				roomType = 1
+			}
+			if strings.TrimSpace(repliedMessageID) == "" && strings.TrimSpace(item.RepliedMessageID) != "" {
+				repliedMessageID = strings.TrimSpace(item.RepliedMessageID)
+			}
+		}
+		merged.Content = builder.String()
+		merged.MentionedBot = mentions
+		merged.RoomType = roomType
+		merged.RepliedMessageID = repliedMessageID
+		merged.MessageID = inputs[len(inputs)-1].MessageID
+		merged.CreatedAt = inputs[len(inputs)-1].CreatedAt
+	}
+	return s.handleSolarInboundMessageNow(ctx, agentID, merged)
+}
+
+func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, agentID string, input ExternalInboundMessage) error {
 	if strings.TrimSpace(input.RoomID) == "" || strings.TrimSpace(input.Content) == "" {
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
@@ -81,6 +131,8 @@ func (s *ConversationService) HandleSolarInboundMessage(ctx context.Context, age
 		Str("agent_id", strings.TrimSpace(agentID)).
 		Str("room_id", strings.TrimSpace(input.RoomID)).
 		Str("message_id", strings.TrimSpace(input.MessageID)).
+		Int("room_type", input.RoomType).
+		Bool("mentioned_bot", input.MentionedBot).
 		Str("sender_account_id", strings.TrimSpace(input.SenderAccountID)).
 		Int("content_chars", len(strings.TrimSpace(input.Content))).
 		Msg("handling solar inbound message")
@@ -103,6 +155,12 @@ func (s *ConversationService) HandleSolarInboundMessage(ctx context.Context, age
 	_, err = s.ExecuteRun(ctx, binding.AccountID, binding.ThreadID, RunInput{
 		Message: strings.TrimSpace(input.Content),
 		Stream:  false,
+		RequestMetadata: map[string]any{
+			"source":             "solar",
+			"room_type":          input.RoomType,
+			"mentioned_bot":      input.MentionedBot,
+			"replied_message_id": strings.TrimSpace(input.RepliedMessageID),
+		},
 	})
 	if err != nil {
 		logging.Log.Error().
@@ -119,6 +177,13 @@ func (s *ConversationService) HandleSolarInboundMessage(ctx context.Context, age
 		Str("conversation_id", binding.ThreadID).
 		Msg("solar inbound message run completed")
 	return err
+}
+
+func (s *ConversationService) FlushSolarInboundBatches(ctx context.Context) error {
+	if s.solarInbound == nil {
+		return nil
+	}
+	return s.solarInbound.FlushAll(ctx)
 }
 
 func (s *ConversationService) ensureSolarRoomBinding(
@@ -176,6 +241,9 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 			at = time.Now()
 		}
 		binding.LastMessageAt = &at
+		if roomType := roomTypePtr(input.RoomType); roomType != nil {
+			binding.RemoteRoomType = roomType
+		}
 		if strings.TrimSpace(input.SenderAccountID) != "" {
 			binding.RemoteAccountID = strings.TrimSpace(input.SenderAccountID)
 		}
@@ -211,6 +279,7 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 		ID:              newID(),
 		AgentID:         strings.TrimSpace(agentID),
 		RemoteRoomID:    strings.TrimSpace(input.RoomID),
+		RemoteRoomType:  roomTypePtr(input.RoomType),
 		ThreadID:        thread.ID,
 		AccountID:       accountID,
 		RemoteAccountID: strings.TrimSpace(input.SenderAccountID),
@@ -242,6 +311,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func roomTypePtr(value int) *int {
+	if value != 0 && value != 1 {
+		return nil
+	}
+	v := value
+	return &v
+}
+
 func (s *ConversationService) getSolarRoomBinding(ctx context.Context, agentID, threadID string) (*database.ExternalChatBinding, error) {
 	var binding database.ExternalChatBinding
 	err := s.db.WithContext(ctx).
@@ -256,7 +333,7 @@ func (s *ConversationService) getSolarRoomBinding(ctx context.Context, agentID, 
 	return &binding, nil
 }
 
-func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agentID, threadID string) (string, error) {
+func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agentID, threadID string, records []database.ConversationMessage) (string, error) {
 	binding, err := s.getSolarRoomBinding(ctx, agentID, threadID)
 	if err != nil {
 		return "", err
@@ -264,14 +341,89 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 	if binding == nil {
 		return "", nil
 	}
+	inboundMeta := latestSolarInboundMetadata(records)
 	return fmt.Sprintf(
 		"This conversation is connected to a Solar Network chat room.\n"+
-			"You must deliver every user-facing reply by calling the send_chat_message tool with room_id=%q.\n"+
-			"Do not stop after writing a normal assistant reply in the model output; use the tool so the message is actually sent.\n"+
+			"You must choose exactly one action for the current inbound message.\n"+
+			"If you decide to reply, call the send_chat_message tool with room_id=%q.\n"+
+			"If you need multiple outbound messages, call send_chat_message_batch.\n"+
+			"If you intentionally stay silent, call no_reply.\n"+
+			"Do not place the outbound reply in assistant text.\n"+
+			"%s\n"+
+			"%s\n"+
 			"Current remote account: %q (%s).\n"+
 			"Do not claim a chat message was sent unless the tool succeeds.",
 		binding.RemoteRoomID,
+		solarRoomBehaviorPrompt(binding.RemoteRoomType),
+		solarInboundPrompt(inboundMeta),
 		binding.RemoteAccount,
 		binding.RemoteAccountID,
 	), nil
+}
+
+func solarRoomBehaviorPrompt(roomType *int) string {
+	if roomType != nil && *roomType == 1 {
+		return "This room is a direct message. You can respond more proactively and warmly."
+	}
+	return "This room is a group chat. Be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned or replied to."
+}
+
+func latestSolarInboundMetadata(records []database.ConversationMessage) *solarInboundRequestMetadata {
+	for _, record := range records {
+		if strings.ToLower(record.Role) != "user" {
+			continue
+		}
+		var meta solarInboundRequestMetadata
+		if decodeMessageMetadata(record.Metadata, &meta) != nil {
+			continue
+		}
+		if strings.TrimSpace(meta.Source) != "solar" {
+			continue
+		}
+		return &meta
+	}
+	return nil
+}
+
+func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
+	if meta == nil {
+		return "No special inbound routing hint is available for the latest message."
+	}
+	if meta.RoomType == 1 {
+		return "The latest inbound message is from a DM. It is appropriate to reply proactively."
+	}
+	if meta.MentionedBot {
+		return "The latest inbound group message mentioned or replied to the bot. Decide whether to join the conversation; if you reply, use the send_chat_message tool."
+	}
+	return "The latest inbound group message did not mention or reply to the bot. Decide whether to join the conversation; if you reply, use the send_chat_message tool."
+}
+
+func (s *ConversationService) latestSolarInboundMetadataForThread(ctx context.Context, accountID, threadID string) (*solarInboundRequestMetadata, error) {
+	var records []database.ConversationMessage
+	if err := s.db.WithContext(ctx).
+		Where("thread_id = ? AND account_id = ? AND role = ?", threadID, accountID, "user").
+		Order("sequence DESC").
+		Limit(12).
+		Find(&records).Error; err != nil {
+		return nil, err
+	}
+	return latestSolarInboundMetadata(records), nil
+}
+
+func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *database.ConversationThread, binding *database.ExternalChatBinding) (bool, error) {
+	if thread == nil || binding == nil {
+		return true, nil
+	}
+	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
+		return true, nil
+	}
+
+	meta, err := s.latestSolarInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
+	if err != nil {
+		return false, err
+	}
+	if meta == nil {
+		return false, nil
+	}
+	return meta.MentionedBot || strings.TrimSpace(meta.RepliedMessageID) != "", nil
 }

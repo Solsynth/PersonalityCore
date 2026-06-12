@@ -16,6 +16,11 @@ import (
 
 const sendChatToolName = "send_chat_message"
 const sendChatBatchToolName = "send_chat_message_batch"
+const noReplyToolName = "no_reply"
+const getUserProfileToolName = "get_user_profile"
+const listUserPostsToolName = "list_user_posts"
+const getPostToolName = "get_post"
+const listPostRepliesToolName = "list_post_replies"
 
 type sendChatToolInput struct {
 	RoomID            string `json:"room_id"`
@@ -29,6 +34,27 @@ type sendChatBatchToolInput struct {
 	Messages          []string `json:"messages"`
 }
 
+type getUserProfileToolInput struct {
+	AccountName string `json:"account_name"`
+	AccountID   string `json:"account_id"`
+}
+
+type listUserPostsToolInput struct {
+	AccountName string `json:"account_name"`
+	Offset      int    `json:"offset"`
+	Take        int    `json:"take"`
+}
+
+type getPostToolInput struct {
+	PostID string `json:"post_id"`
+}
+
+type listPostRepliesToolInput struct {
+	PostID string `json:"post_id"`
+	Offset int    `json:"offset"`
+	Take   int    `json:"take"`
+}
+
 type executedChatToolResult struct {
 	Content           string
 	RoomID            string
@@ -36,6 +62,8 @@ type executedChatToolResult struct {
 	ToolName          string
 	ToolCallID        string
 }
+
+const noChatReplyToken = "NO_REPLY"
 
 func (s *ConversationService) runWithChatTools(
 	ctx context.Context,
@@ -47,12 +75,25 @@ func (s *ConversationService) runWithChatTools(
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, []*schema.ToolInfo{
 		s.sendChatToolInfo(),
 		s.sendChatBatchToolInfo(),
+		s.noReplyToolInfo(),
+		s.getUserProfileToolInfo(),
+		s.listUserPostsToolInfo(),
+		s.getPostToolInfo(),
+		s.listPostRepliesToolInfo(),
 	})
 	if err != nil {
 		return "", err
 	}
 
 	thread, err := s.GetConversation(ctx, accountID, threadID)
+	if err != nil {
+		return "", err
+	}
+	binding, err := s.getSolarRoomBinding(ctx, agentDef.ID, threadID)
+	if err != nil {
+		return "", err
+	}
+	allowOutboundReply, err := s.allowSolarRoomReply(ctx, thread, binding)
 	if err != nil {
 		return "", err
 	}
@@ -72,6 +113,23 @@ func (s *ConversationService) runWithChatTools(
 		}
 		if len(response.ToolCalls) == 0 {
 			finalContent := strings.TrimSpace(response.Content)
+			if binding != nil {
+				if !allowOutboundReply {
+					logging.Log.Info().
+						Str("agent_id", agentDef.ID).
+						Str("conversation_id", threadID).
+						Str("run_id", runID).
+						Msg("suppressing plain-text group chat reply because latest inbound message did not mention or reply to the bot")
+					finalContent = ""
+				}
+				normalized, shouldFallbackSend := normalizeSolarChatFinalResponse(finalContent)
+				if shouldFallbackSend {
+					if err := s.deliverFallbackChatResponse(ctx, thread, agentDef.ID, runID, binding, normalized); err != nil {
+						return "", err
+					}
+				}
+				finalContent = normalized
+			}
 			logging.Log.Info().
 				Str("agent_id", agentDef.ID).
 				Str("conversation_id", threadID).
@@ -80,9 +138,6 @@ func (s *ConversationService) runWithChatTools(
 				Int("response_chars", len(finalContent)).
 				Str("response_content", finalContent).
 				Msg("chat model returned final response without tool calls")
-			if err := s.deliverFinalChatResponse(ctx, thread, agentDef.ID, runID, finalContent); err != nil {
-				return "", err
-			}
 			return finalContent, nil
 		}
 
@@ -114,9 +169,21 @@ func (s *ConversationService) runWithChatTools(
 				Str("tool_call_id", call.ID).
 				Str("tool_arguments", call.Function.Arguments).
 				Msg("executing chat tool call")
-			result, err := s.executeChatToolCall(ctx, agentDef.ID, call)
-			if err != nil {
-				return "", err
+			result := &executedChatToolResult{}
+			if binding != nil && !allowOutboundReply && isSolarOutboundChatToolName(call.Function.Name) {
+				logging.Log.Info().
+					Str("agent_id", agentDef.ID).
+					Str("conversation_id", threadID).
+					Str("run_id", runID).
+					Str("tool_name", call.Function.Name).
+					Str("tool_call_id", call.ID).
+					Msg("suppressing outbound group chat tool call because latest inbound message did not mention or reply to the bot")
+				result, err = suppressedChatToolResult(call)
+			} else {
+				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
 			}
 			if err := s.ensureSolarRoomBinding(ctx, thread, agentDef.ID, result.RoomID, result.TargetAccountName, time.Now()); err != nil {
 				return "", err
@@ -137,37 +204,67 @@ func (s *ConversationService) runWithChatTools(
 				Msg("chat tool call completed")
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
 		}
+		if binding != nil {
+			return "", nil
+		}
 	}
 
 	return "", fmt.Errorf("chat tool loop exceeded maximum iterations")
 }
 
-func (s *ConversationService) deliverFinalChatResponse(
+func isSolarOutboundChatToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case sendChatToolName, sendChatBatchToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+func suppressedChatToolResult(call schema.ToolCall) (*executedChatToolResult, error) {
+	payload, err := json.Marshal(map[string]any{
+		"ok":     true,
+		"status": "reply_suppressed",
+		"reason": "group_message_without_mention_or_reply",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{
+		Content:    string(payload),
+		ToolName:   call.Function.Name,
+		ToolCallID: call.ID,
+	}, nil
+}
+
+func normalizeSolarChatFinalResponse(content string) (normalized string, shouldFallbackSend bool) {
+	switch trimmed := strings.TrimSpace(content); {
+	case trimmed == "":
+		return "", false
+	case strings.EqualFold(trimmed, noChatReplyToken):
+		return "", false
+	default:
+		return trimmed, true
+	}
+}
+
+func (s *ConversationService) deliverFallbackChatResponse(
 	ctx context.Context,
 	thread *database.ConversationThread,
-	agentID, runID, content string,
+	agentID, runID string,
+	binding *database.ExternalChatBinding,
+	content string,
 ) error {
-	content = strings.TrimSpace(content)
-	if thread == nil || content == "" || s.solar == nil {
+	if thread == nil || binding == nil || strings.TrimSpace(content) == "" || s.solar == nil {
 		return nil
 	}
-
-	binding, err := s.getSolarRoomBinding(ctx, agentID, thread.ID)
-	if err != nil {
-		return err
-	}
-	if binding == nil || strings.TrimSpace(binding.RemoteRoomID) == "" {
-		return nil
-	}
-
 	logging.Log.Warn().
 		Str("agent_id", agentID).
 		Str("conversation_id", thread.ID).
 		Str("run_id", runID).
 		Str("room_id", binding.RemoteRoomID).
 		Int("response_chars", len(content)).
-		Str("response_content", content).
-		Msg("chat model skipped send_chat_message; forwarding final response to solar room")
+		Msg("chat model skipped tool call; forwarding assistant text via fallback solar send")
 
 	roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, binding.RemoteRoomID, "", content)
 	if err != nil {
@@ -176,25 +273,20 @@ func (s *ConversationService) deliverFinalChatResponse(
 	if err := s.ensureSolarRoomBinding(ctx, thread, agentID, roomID, binding.RemoteAccount, time.Now()); err != nil {
 		return err
 	}
-	toolPayload, err := json.Marshal(map[string]any{
-		"ok":         true,
-		"room_id":    roomID,
-		"message_id": messageID,
-		"status":     "message_sent_via_fallback",
-	})
-	if err != nil {
-		return err
-	}
-	_, err = s.createMessageWithMetadata(ctx, thread, stringPtr(runID), "tool", string(toolPayload), nil, map[string]any{
-		"tool_name": "fallback_send_chat_message",
-	})
-	return err
+	logging.Log.Info().
+		Str("agent_id", agentID).
+		Str("conversation_id", thread.ID).
+		Str("run_id", runID).
+		Str("room_id", roomID).
+		Str("message_id", messageID).
+		Msg("fallback solar send succeeded")
+	return nil
 }
 
 func (s *ConversationService) sendChatToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: sendChatToolName,
-		Desc: "Send one Solar Network chat message through this agent's configured bot identity. Use room_id when replying in an existing room. Use target_account_name when you need to open or reuse a direct message with a named account. Always call this tool instead of pretending a message was sent.",
+		Desc: "Send one Solar Network chat message through this agent's configured bot identity. Use room_id when replying in an existing room. Use target_account_name when you need to open or reuse a direct message with a named account. Always call this tool instead of writing an unsent reply in assistant text.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"room_id": {
 				Type: schema.String,
@@ -216,7 +308,7 @@ func (s *ConversationService) sendChatToolInfo() *schema.ToolInfo {
 func (s *ConversationService) sendChatBatchToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: sendChatBatchToolName,
-		Desc: "Send multiple Solar Network chat messages in order. Use this when you intentionally want to split a reply into multiple separate chat messages.",
+		Desc: "Send multiple Solar Network chat messages in order. Use this when you intentionally want to split a reply into multiple separate chat messages. Always use this tool instead of writing unsent outbound messages in assistant text.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"room_id": {
 				Type: schema.String,
@@ -239,16 +331,127 @@ func (s *ConversationService) sendChatBatchToolInfo() *schema.ToolInfo {
 	}
 }
 
+func (s *ConversationService) noReplyToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name:        noReplyToolName,
+		Desc:        "Choose this when you intentionally decide not to send any Solar chat reply for the current inbound message.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+	}
+}
+
+func (s *ConversationService) getUserProfileToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: getUserProfileToolName,
+		Desc: "Fetch a Solar Network user's public account and profile information by account_name or account_id.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"account_name": {
+				Type: schema.String,
+				Desc: "Solar account name to look up.",
+			},
+			"account_id": {
+				Type: schema.String,
+				Desc: "Solar account ID to look up.",
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) listUserPostsToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: listUserPostsToolName,
+		Desc: "List recent public posts published by a Solar account.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"account_name": {
+				Type:     schema.String,
+				Desc:     "Solar account name whose posts should be listed.",
+				Required: true,
+			},
+			"offset": {
+				Type: schema.Integer,
+				Desc: "Pagination offset. Defaults to 0.",
+			},
+			"take": {
+				Type: schema.Integer,
+				Desc: "Number of posts to fetch. Defaults to 5.",
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) getPostToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: getPostToolName,
+		Desc: "Fetch one Solar Network post by post_id.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"post_id": {
+				Type:     schema.String,
+				Desc:     "Solar post ID to fetch.",
+				Required: true,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) listPostRepliesToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: listPostRepliesToolName,
+		Desc: "List replies for a Solar Network post.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"post_id": {
+				Type:     schema.String,
+				Desc:     "Solar post ID whose replies should be listed.",
+				Required: true,
+			},
+			"offset": {
+				Type: schema.Integer,
+				Desc: "Pagination offset. Defaults to 0.",
+			},
+			"take": {
+				Type: schema.Integer,
+				Desc: "Number of replies to fetch. Defaults to 5.",
+			},
+		}),
+	}
+}
+
 func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	if s.solar == nil {
 		return nil, fmt.Errorf("solar chat bridge is not configured")
 	}
-	if call.Function.Name != sendChatToolName && call.Function.Name != sendChatBatchToolName {
+	switch call.Function.Name {
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName:
+	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
+	}
+	if call.Function.Name == noReplyToolName {
+		payload, err := json.Marshal(map[string]any{
+			"ok":     true,
+			"status": "no_reply",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &executedChatToolResult{
+			Content:    string(payload),
+			ToolName:   call.Function.Name,
+			ToolCallID: call.ID,
+		}, nil
 	}
 
 	if call.Function.Name == sendChatBatchToolName {
 		return s.executeChatBatchToolCall(ctx, agentID, call)
+	}
+	if call.Function.Name == getUserProfileToolName {
+		return s.executeGetUserProfileToolCall(ctx, agentID, call)
+	}
+	if call.Function.Name == listUserPostsToolName {
+		return s.executeListUserPostsToolCall(ctx, agentID, call)
+	}
+	if call.Function.Name == getPostToolName {
+		return s.executeGetPostToolCall(ctx, agentID, call)
+	}
+	if call.Function.Name == listPostRepliesToolName {
+		return s.executeListPostRepliesToolCall(ctx, agentID, call)
 	}
 
 	var input sendChatToolInput
@@ -382,4 +585,114 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 		ToolName:          call.Function.Name,
 		ToolCallID:        call.ID,
 	}, nil
+}
+
+func (s *ConversationService) executeGetUserProfileToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input getUserProfileToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", getUserProfileToolName, err)
+	}
+	input.AccountName = strings.TrimSpace(input.AccountName)
+	input.AccountID = strings.TrimSpace(input.AccountID)
+	if input.AccountName == "" && input.AccountID == "" {
+		return nil, fmt.Errorf("%s requires account_name or account_id", getUserProfileToolName)
+	}
+
+	account, err := s.solar.GetAccount(ctx, agentID, input.AccountName, input.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"account": account,
+	}
+	if account != nil && strings.TrimSpace(account.Name) != "" {
+		profile, err := s.solar.GetAccountProfile(ctx, agentID, account.Name)
+		if err != nil {
+			return nil, err
+		}
+		payload["profile"] = profile
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeListUserPostsToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input listUserPostsToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", listUserPostsToolName, err)
+	}
+	input.AccountName = strings.TrimSpace(input.AccountName)
+	if input.AccountName == "" {
+		return nil, fmt.Errorf("%s requires account_name", listUserPostsToolName)
+	}
+	if input.Take < 1 {
+		input.Take = 5
+	}
+	posts, err := s.solar.ListPublisherPosts(ctx, agentID, input.AccountName, input.Offset, input.Take)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"account_name": input.AccountName,
+		"offset":       input.Offset,
+		"take":         input.Take,
+		"total":        posts.Total,
+		"items":        posts.Items,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeGetPostToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input getPostToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", getPostToolName, err)
+	}
+	input.PostID = strings.TrimSpace(input.PostID)
+	if input.PostID == "" {
+		return nil, fmt.Errorf("%s requires post_id", getPostToolName)
+	}
+	post, err := s.solar.GetPost(ctx, agentID, input.PostID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(post)
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeListPostRepliesToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input listPostRepliesToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", listPostRepliesToolName, err)
+	}
+	input.PostID = strings.TrimSpace(input.PostID)
+	if input.PostID == "" {
+		return nil, fmt.Errorf("%s requires post_id", listPostRepliesToolName)
+	}
+	if input.Take < 1 {
+		input.Take = 5
+	}
+	replies, err := s.solar.ListPostReplies(ctx, agentID, input.PostID, input.Offset, input.Take)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(map[string]any{
+		"post_id": input.PostID,
+		"offset":  input.Offset,
+		"take":    input.Take,
+		"total":   replies.Total,
+		"items":   replies.Items,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
 }

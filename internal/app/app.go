@@ -25,12 +25,13 @@ import (
 )
 
 type App struct {
-	cfg     *config.Config
-	db      *database.DB
-	httpSrv *http.Server
-	grpcSrv *grpc.Server
-	grpcLn  net.Listener
-	solar   *solar.Manager
+	cfg           *config.Config
+	db            *database.DB
+	conversations *service.ConversationService
+	httpSrv       *http.Server
+	grpcSrv       *grpc.Server
+	grpcLn        net.Listener
+	solar         *solar.Manager
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -74,14 +75,17 @@ func New(cfg *config.Config) (*App, error) {
 		},
 		func(ctx context.Context, agentID string, msg solar.InboundMessage) error {
 			return conversations.HandleSolarInboundMessage(ctx, agentID, service.ExternalInboundMessage{
-				RoomID:          msg.RoomID,
-				MessageID:       msg.MessageID,
-				MessageType:     msg.MessageType,
-				Content:         msg.Content,
-				SenderAccountID: msg.SenderAccountID,
-				SenderName:      msg.SenderName,
-				SenderNick:      msg.SenderNick,
-				CreatedAt:       msg.CreatedAt,
+				RoomID:           msg.RoomID,
+				RoomType:         msg.RoomType,
+				MessageID:        msg.MessageID,
+				MessageType:      msg.MessageType,
+				Content:          msg.Content,
+				SenderAccountID:  msg.SenderAccountID,
+				SenderName:       msg.SenderName,
+				SenderNick:       msg.SenderNick,
+				MentionedBot:     msg.MentionedBot,
+				RepliedMessageID: msg.RepliedMessageID,
+				CreatedAt:        msg.CreatedAt,
 			})
 		},
 	)
@@ -110,7 +114,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager}, nil
 }
 
 func (a *App) Start(context.Context) error {
@@ -153,6 +157,9 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if a.grpcLn != nil {
 		_ = a.grpcLn.Close()
+	}
+	if a.conversations != nil {
+		_ = a.conversations.FlushSolarInboundBatches(ctx)
 	}
 	if a.solar != nil {
 		_ = a.solar.Stop(ctx)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,6 +38,25 @@ func (c *Client) ResolveAccountByName(ctx context.Context, accountName string) (
 		return nil, fmt.Errorf("solar account lookup for %q returned empty id", accountName)
 	}
 	return &out, nil
+}
+
+func (c *Client) GetAccountByID(ctx context.Context, accountID string) (*Account, error) {
+	var out Account
+	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/id/"+url.PathEscape(strings.TrimSpace(accountID)), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.ID) == "" {
+		return nil, fmt.Errorf("solar account lookup for id %q returned empty id", accountID)
+	}
+	return &out, nil
+}
+
+func (c *Client) GetAccountProfile(ctx context.Context, accountName string) (AccountProfile, error) {
+	out := AccountProfile{}
+	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountName))+"/profile", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *Client) CreateDirectMessage(ctx context.Context, targetAccountID string) (*ChatRoom, error) {
@@ -88,7 +108,58 @@ func (c *Client) ListMessages(ctx context.Context, roomID string, offset, take i
 	return out, nil
 }
 
+func (c *Client) GetPost(ctx context.Context, postID string) (Post, error) {
+	out := Post{}
+	if err := c.doJSON(ctx, http.MethodGet, "/sphere/posts/"+url.PathEscape(strings.TrimSpace(postID)), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListPublisherPosts(ctx context.Context, accountName string, offset, take int) (*PaginatedPosts, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if take < 1 {
+		take = 20
+	}
+	query := url.Values{}
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("take", fmt.Sprintf("%d", take))
+
+	var out []Post
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/publishers/"+url.PathEscape(strings.TrimSpace(accountName))+"/posts", query, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &PaginatedPosts{Items: out, Total: parseTotalHeader(headers)}, nil
+}
+
+func (c *Client) ListPostReplies(ctx context.Context, postID string, offset, take int) (*PaginatedPosts, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if take < 1 {
+		take = 20
+	}
+	query := url.Values{}
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("take", fmt.Sprintf("%d", take))
+
+	var out []Post
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/posts/"+url.PathEscape(strings.TrimSpace(postID))+"/replies", query, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &PaginatedPosts{Items: out, Total: parseTotalHeader(headers)}, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+	_, err := c.doJSONWithHeaders(ctx, method, path, query, body, out)
+	return err
+}
+
+func (c *Client) doJSONWithHeaders(ctx context.Context, method, path string, query url.Values, body any, out any) (http.Header, error) {
 	requestURL := c.baseURL + path
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
@@ -98,14 +169,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bodyReader = bytes.NewReader(raw)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -117,23 +188,38 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("solar %s %s failed with status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(payload)))
+		return nil, fmt.Errorf("solar %s %s failed with status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 	if out == nil || len(bytes.TrimSpace(payload)) == 0 {
-		return nil
+		return resp.Header, nil
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
-		return fmt.Errorf("decode solar %s %s response: %w", method, path, err)
+		return nil, fmt.Errorf("decode solar %s %s response: %w", method, path, err)
 	}
-	return nil
+	return resp.Header, nil
+}
+
+func parseTotalHeader(headers http.Header) int {
+	if headers == nil {
+		return 0
+	}
+	totalRaw := strings.TrimSpace(headers.Get("X-Total"))
+	if totalRaw == "" {
+		return 0
+	}
+	total, err := strconv.Atoi(totalRaw)
+	if err != nil {
+		return 0
+	}
+	return total
 }

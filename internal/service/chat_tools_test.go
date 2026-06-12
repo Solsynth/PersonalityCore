@@ -2,20 +2,28 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+
+	"src.solsynth.dev/sosys/personality/internal/solar"
 )
 
 type stubSolarBridge struct {
-	roomID     string
-	messageID  string
-	messageIDs []string
-	lastAgent  string
-	lastRoom   string
-	lastTarget string
-	lastBody   string
-	sendCount  int
+	roomID      string
+	messageID   string
+	messageIDs  []string
+	lastAgent   string
+	lastRoom    string
+	lastTarget  string
+	lastBody    string
+	sendCount   int
+	account     *solar.Account
+	profile     solar.AccountProfile
+	post        solar.Post
+	posts       *solar.PaginatedPosts
+	postReplies *solar.PaginatedPosts
 }
 
 func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, targetAccountName, content string) (string, string, error) {
@@ -33,6 +41,26 @@ func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, tar
 func (s *stubSolarBridge) TrackRoom(agentID, roomID string) {
 	s.lastAgent = agentID
 	s.lastRoom = roomID
+}
+
+func (s *stubSolarBridge) GetAccount(_ context.Context, _, _, _ string) (*solar.Account, error) {
+	return s.account, nil
+}
+
+func (s *stubSolarBridge) GetAccountProfile(_ context.Context, _, _ string) (solar.AccountProfile, error) {
+	return s.profile, nil
+}
+
+func (s *stubSolarBridge) GetPost(_ context.Context, _, _ string) (solar.Post, error) {
+	return s.post, nil
+}
+
+func (s *stubSolarBridge) ListPublisherPosts(_ context.Context, _, _ string, _, _ int) (*solar.PaginatedPosts, error) {
+	return s.posts, nil
+}
+
+func (s *stubSolarBridge) ListPostReplies(_ context.Context, _, _ string, _, _ int) (*solar.PaginatedPosts, error) {
+	return s.postReplies, nil
 }
 
 func TestExecuteChatToolCallRequiresDestination(t *testing.T) {
@@ -100,5 +128,87 @@ func TestExecuteChatBatchToolCallSendsMessages(t *testing.T) {
 	}
 	if result == nil || result.ToolName != sendChatBatchToolName {
 		t.Fatal("expected batch tool result payload")
+	}
+}
+
+func TestExecuteChatToolCallNoReply(t *testing.T) {
+	svc := &ConversationService{solar: &stubSolarBridge{}}
+	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
+		ID: "call-1",
+		Function: schema.FunctionCall{
+			Name:      noReplyToolName,
+			Arguments: `{}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeChatToolCall() error = %v", err)
+	}
+	if result == nil || result.ToolName != noReplyToolName {
+		t.Fatal("expected no_reply tool result payload")
+	}
+}
+
+func TestExecuteChatToolCallGetUserProfile(t *testing.T) {
+	svc := &ConversationService{solar: &stubSolarBridge{
+		account: &solar.Account{ID: "user-1", Name: "alice", Nick: "Alice"},
+		profile: solar.AccountProfile{"bio": "hello"},
+	}}
+	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
+		ID: "call-1",
+		Function: schema.FunctionCall{
+			Name:      getUserProfileToolName,
+			Arguments: `{"account_name":"alice"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeChatToolCall() error = %v", err)
+	}
+	if result == nil || !strings.Contains(result.Content, `"bio":"hello"`) {
+		t.Fatal("expected profile payload")
+	}
+}
+
+func TestExecuteChatToolCallListUserPosts(t *testing.T) {
+	svc := &ConversationService{solar: &stubSolarBridge{
+		posts: &solar.PaginatedPosts{
+			Total: 1,
+			Items: []solar.Post{{"id": "post-1", "content": "hello"}},
+		},
+	}}
+	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
+		ID: "call-1",
+		Function: schema.FunctionCall{
+			Name:      listUserPostsToolName,
+			Arguments: `{"account_name":"alice","take":3}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeChatToolCall() error = %v", err)
+	}
+	if result == nil || !strings.Contains(result.Content, `"post-1"`) {
+		t.Fatal("expected posts payload")
+	}
+}
+
+func TestNormalizeSolarChatFinalResponseAllowsSilence(t *testing.T) {
+	tests := []string{"", "   ", noChatReplyToken, strings.ToLower(noChatReplyToken)}
+	for _, input := range tests {
+		got, shouldFallbackSend := normalizeSolarChatFinalResponse(input)
+		if got != "" {
+			t.Fatalf("normalizeSolarChatFinalResponse(%q) = %q, want empty", input, got)
+		}
+		if shouldFallbackSend {
+			t.Fatalf("normalizeSolarChatFinalResponse(%q) unexpectedly requested fallback send", input)
+		}
+	}
+}
+
+func TestNormalizeSolarChatFinalResponseFallsBackForPlainAssistantReply(t *testing.T) {
+	got, shouldFallbackSend := normalizeSolarChatFinalResponse("I sent the message for you.")
+	if got != "I sent the message for you." {
+		t.Fatalf("expected original assistant reply, got %q", got)
+	}
+	if !shouldFallbackSend {
+		t.Fatal("expected plain assistant reply to trigger fallback send")
 	}
 }

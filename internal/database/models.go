@@ -84,6 +84,7 @@ type ExternalChatBinding struct {
 	ID              string         `gorm:"primaryKey;size:26" json:"id"`
 	AgentID         string         `gorm:"size:64;uniqueIndex:idx_external_chat_bindings_agent_room,priority:1" json:"agent_id"`
 	RemoteRoomID    string         `gorm:"size:128;uniqueIndex:idx_external_chat_bindings_agent_room,priority:2" json:"remote_room_id"`
+	RemoteRoomType  *int           `json:"remote_room_type"`
 	ThreadID        string         `gorm:"size:26;index" json:"thread_id"`
 	AccountID       string         `gorm:"size:128;index" json:"account_id"`
 	RemoteAccountID string         `gorm:"size:128" json:"remote_account_id"`

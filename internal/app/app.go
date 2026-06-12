@@ -80,6 +80,7 @@ func New(cfg *config.Config) (*App, error) {
 				MessageID:        msg.MessageID,
 				MessageType:      msg.MessageType,
 				Content:          msg.Content,
+				Attachments:      append([]solar.ChatAttachment(nil), msg.Attachments...),
 				SenderAccountID:  msg.SenderAccountID,
 				SenderName:       msg.SenderName,
 				SenderNick:       msg.SenderNick,

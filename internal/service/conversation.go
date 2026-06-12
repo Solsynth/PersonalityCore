@@ -34,11 +34,18 @@ type toolMessageMetadata struct {
 	ToolName   string `json:"tool_name"`
 }
 
+type userMessageMetadata struct {
+	InputParts []userMessageInputPart `json:"input_parts"`
+}
+
 type solarInboundRequestMetadata struct {
-	Source           string `json:"source"`
-	RoomType         int    `json:"room_type"`
-	MentionedBot     bool   `json:"mentioned_bot"`
-	RepliedMessageID string `json:"replied_message_id"`
+	Source            string `json:"source"`
+	RoomType          int    `json:"room_type"`
+	MentionedBot      bool   `json:"mentioned_bot"`
+	SenderAccountID   string `json:"sender_account_id"`
+	SenderAccountName string `json:"sender_account_name"`
+	SenderNick        string `json:"sender_nick"`
+	RepliedMessageID  string `json:"replied_message_id"`
 }
 
 type ConversationService struct {
@@ -60,10 +67,20 @@ type AddMessageInput struct {
 	Content string `json:"content"`
 }
 
+type userMessageInputPart struct {
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	ImageBase64 string `json:"image_base64,omitempty"`
+	MIMEType    string `json:"mime_type,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+}
+
 type RunInput struct {
-	Message         string         `json:"message"`
-	Stream          bool           `json:"stream"`
-	RequestMetadata map[string]any `json:"-"`
+	Message         string                 `json:"message"`
+	InputParts      []userMessageInputPart `json:"input_parts"`
+	Stream          bool                   `json:"stream"`
+	RequestMetadata map[string]any         `json:"-"`
 }
 
 type ListInput struct {
@@ -207,12 +224,12 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	content := strings.TrimSpace(input.Message)
-	if content == "" {
-		return nil, nil, nil, fmt.Errorf("message is required")
+	content, metadata, err := input.userMessagePayload(input.RequestMetadata)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, "user", content, nil, input.RequestMetadata)
+	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, "user", content, nil, metadata)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -242,6 +259,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 		Str("account_id", accountID).
 		Bool("stream", input.Stream).
 		Int("prompt_chars", len(content)).
+		Int("input_part_count", len(input.InputParts)).
 		Msg("run created")
 	return thread, run, requestMessage, nil
 }
@@ -289,7 +307,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 	}
 	if s.humanize != nil {
-		state, err := s.humanize.BuildPromptState(ctx, accountID, threadID, def)
+		state, err := s.humanize.BuildPromptState(ctx, s.resolveImpressionAccountID(accountID, records), accountID, threadID, def)
 		if err != nil {
 			return nil, agent.Definition{}, err
 		}
@@ -317,6 +335,16 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 		msg := &schema.Message{Role: role, Content: record.Content}
 		switch role {
+		case schema.User:
+			var meta userMessageMetadata
+			if decodeMessageMetadata(record.Metadata, &meta) == nil && len(meta.InputParts) > 0 {
+				parts, err := buildSchemaMessageInputParts(meta.InputParts, record.Content)
+				if err != nil {
+					return nil, agent.Definition{}, err
+				}
+				msg.Content = ""
+				msg.UserInputMultiContent = parts
+			}
 		case schema.Assistant:
 			var meta assistantMessageMetadata
 			if decodeMessageMetadata(record.Metadata, &meta) == nil {
@@ -458,7 +486,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		return nil, err
 	}
 	if s.humanize != nil {
-		if err := s.humanize.ObserveInteraction(ctx, accountID, agentDef, requestMessage.Content, responseContent); err != nil {
+		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, responseContent); err != nil {
 			return nil, err
 		}
 	}
@@ -508,21 +536,64 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			Str("conversation_id", threadID).
 			Str("run_id", run.ID).
 			Str("agent_id", agentDef.ID).
-			Msg("routing streaming run through chat tool execution path")
-		content, err := s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef)
+			Msg("routing streaming run through direct solar chat response path")
+		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
-		builder.WriteString(content)
-		if content != "" {
-			chunkCount = 1
+		defer stream.Close()
+
+		binding, err := s.getSolarRoomBinding(ctx, agentDef.ID, threadID)
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+		allowOutboundReply, err := s.allowSolarRoomReply(ctx, thread, binding)
+		if err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+		var outboundSender *solarOutboundStreamSender
+		if binding != nil && allowOutboundReply {
+			outboundSender = newSolarOutboundStreamSender(s, thread, binding, agentDef.ID, run.ID)
+		}
+
+		for {
+			chunk, recvErr := stream.Recv()
+			if recvErr != nil {
+				if recvErr == io.EOF {
+					break
+				}
+				_ = s.FailRun(ctx, run, recvErr)
+				return nil, recvErr
+			}
+			if chunk == nil || chunk.Content == "" {
+				continue
+			}
+			chunkCount++
+			builder.WriteString(chunk.Content)
 			if callbacks.OnChunk != nil {
-				if err := callbacks.OnChunk(content); err != nil {
+				if err := callbacks.OnChunk(chunk.Content); err != nil {
 					_ = s.FailRun(ctx, run, err)
 					return nil, err
 				}
 			}
+			if outboundSender != nil {
+				if err := outboundSender.Push(ctx, chunk.Content); err != nil {
+					_ = s.FailRun(ctx, run, err)
+					return nil, err
+				}
+			}
+		}
+		if outboundSender != nil {
+			if err := outboundSender.Flush(ctx); err != nil {
+				_ = s.FailRun(ctx, run, err)
+				return nil, err
+			}
+		}
+		if binding != nil && !allowOutboundReply {
+			builder.Reset()
 		}
 	} else {
 		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
@@ -560,7 +631,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		return nil, err
 	}
 	if s.humanize != nil {
-		if err := s.humanize.ObserveInteraction(ctx, accountID, agentDef, requestMessage.Content, builder.String()); err != nil {
+		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, builder.String()); err != nil {
 			return nil, err
 		}
 	}
@@ -682,4 +753,133 @@ func decodeMessageMetadata(raw datatypes.JSON, out any) error {
 		return nil
 	}
 	return json.Unmarshal(raw, out)
+}
+
+func (s *ConversationService) resolveImpressionAccountID(fallbackAccountID string, records []database.ConversationMessage) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		if resolved := resolveImpressionAccountIDFromMetadata(fallbackAccountID, records[i].Metadata); resolved != "" {
+			return resolved
+		}
+	}
+	return strings.TrimSpace(fallbackAccountID)
+}
+
+func (s *ConversationService) resolveImpressionAccountIDFromRecord(fallbackAccountID string, message *database.ConversationMessage) string {
+	if message == nil {
+		return strings.TrimSpace(fallbackAccountID)
+	}
+	return resolveImpressionAccountIDFromMetadata(fallbackAccountID, message.Metadata)
+}
+
+func resolveImpressionAccountIDFromMetadata(fallbackAccountID string, raw datatypes.JSON) string {
+	var meta solarInboundRequestMetadata
+	if decodeMessageMetadata(raw, &meta) == nil {
+		if senderAccountID := strings.TrimSpace(meta.SenderAccountID); senderAccountID != "" {
+			return senderAccountID
+		}
+	}
+	return strings.TrimSpace(fallbackAccountID)
+}
+
+func (input RunInput) userMessagePayload(baseMetadata map[string]any) (string, map[string]any, error) {
+	content := strings.TrimSpace(input.Message)
+	if content == "" && len(input.InputParts) == 0 {
+		return "", nil, fmt.Errorf("message or input_parts is required")
+	}
+
+	parts, err := buildSchemaMessageInputParts(input.InputParts, content)
+	if err != nil {
+		return "", nil, err
+	}
+
+	metadata := cloneMetadataMap(baseMetadata)
+	if len(parts) == 0 {
+		return content, metadata, nil
+	}
+	metadata["input_parts"] = input.InputParts
+	return content, metadata, nil
+}
+
+func buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string) ([]schema.MessageInputPart, error) {
+	parts := make([]schema.MessageInputPart, 0, len(rawParts)+1)
+	if text := strings.TrimSpace(message); text != "" {
+		parts = append(parts, schema.MessageInputPart{
+			Type: schema.ChatMessagePartTypeText,
+			Text: text,
+		})
+	}
+
+	for idx, part := range rawParts {
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text":
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				return nil, fmt.Errorf("input_parts[%d].text is required", idx)
+			}
+			parts = append(parts, schema.MessageInputPart{
+				Type: schema.ChatMessagePartTypeText,
+				Text: text,
+			})
+		case "image", "image_url":
+			image, err := buildSchemaMessageInputImage(part, idx)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, schema.MessageInputPart{
+				Type:  schema.ChatMessagePartTypeImageURL,
+				Image: image,
+			})
+		default:
+			return nil, fmt.Errorf("input_parts[%d].type %q is unsupported", idx, part.Type)
+		}
+	}
+
+	return parts, nil
+}
+
+func buildSchemaMessageInputImage(part userMessageInputPart, idx int) (*schema.MessageInputImage, error) {
+	image := &schema.MessageInputImage{
+		Detail: schema.ImageURLDetailAuto,
+	}
+	url := strings.TrimSpace(part.ImageURL)
+	base64Data := strings.TrimSpace(part.ImageBase64)
+	switch {
+	case url != "" && base64Data != "":
+		return nil, fmt.Errorf("input_parts[%d] cannot set both image_url and image_base64", idx)
+	case url != "":
+		image.URL = &url
+	case base64Data != "":
+		image.Base64Data = &base64Data
+		image.MIMEType = strings.TrimSpace(part.MIMEType)
+		if image.MIMEType == "" {
+			return nil, fmt.Errorf("input_parts[%d].mime_type is required when image_base64 is set", idx)
+		}
+	default:
+		return nil, fmt.Errorf("input_parts[%d] requires image_url or image_base64", idx)
+	}
+
+	if detail := strings.ToLower(strings.TrimSpace(part.Detail)); detail != "" {
+		switch detail {
+		case string(schema.ImageURLDetailAuto):
+			image.Detail = schema.ImageURLDetailAuto
+		case string(schema.ImageURLDetailLow):
+			image.Detail = schema.ImageURLDetailLow
+		case string(schema.ImageURLDetailHigh):
+			image.Detail = schema.ImageURLDetailHigh
+		default:
+			return nil, fmt.Errorf("input_parts[%d].detail %q is unsupported", idx, part.Detail)
+		}
+	}
+	return image, nil
+}
+
+func cloneMetadataMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

@@ -30,12 +30,19 @@ type ChatMember struct {
 	ChatRoom  *ChatRoom `json:"chat_room,omitempty"`
 }
 
+type ChatAttachment struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	MIMEType string `json:"mime_type"`
+}
+
 type ChatMessage struct {
 	ID               string                 `json:"id"`
 	Type             string                 `json:"type"`
 	Content          string                 `json:"content"`
 	Meta             map[string]any         `json:"meta"`
 	MembersMentioned []string               `json:"members_mentioned"`
+	Attachments      []ChatAttachment       `json:"attachments"`
 	RepliedMessageID string                 `json:"replied_message_id"`
 	SenderID         string                 `json:"sender_id"`
 	Sender           ChatMember             `json:"sender"`
@@ -60,6 +67,7 @@ type InboundMessage struct {
 	MessageID        string
 	MessageType      string
 	Content          string
+	Attachments      []ChatAttachment
 	SenderAccountID  string
 	SenderName       string
 	SenderNick       string

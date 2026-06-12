@@ -36,7 +36,7 @@ Current humanization-related abilities:
 - `humanizer`: composite ability that enables all humanization features below
 - `memory`: passive fact extraction and long-term remembered facts
 - `saved_memory`: agent-owned deliberately saved memories
-- `cross_conversation_memory`: recall from other recent conversations for the same account + agent
+- `cross_conversation_memory`: recall from other recent conversations for the same user account + agent
 - `mood`: rolling emotional tone
 - `relationship`: familiarity and relationship posture
 
@@ -46,8 +46,10 @@ Chat integration ability:
 These are server-side systems. They do not require client-side function-calling support.
 For humanization, the current server behavior includes:
 - passive fact extraction from user messages
-- cross-conversation recall from other recent threads owned by the same account + agent
+- cross-conversation recall from other recent threads for the same user account + agent
 - a distinct agent-owned saved-memory bucket for messages like `remember that ...`, `please remember ...`, or `don't forget ...`
+
+For Solar chat, humanizer state is keyed by the inbound sender's `account_id`, not the per-room synthetic conversation account. That lets impressions and memory carry across rooms and the direct run API when the same user account is involved.
 
 The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
 
@@ -163,6 +165,9 @@ accessToken = "..."
 The integration block is server-only: public HTTP and gRPC agent metadata expose `abilities`, but never return the bot credentials.
 Each enabled integrated agent maintains one websocket connection to `{solarNetwork.baseUrl}/ws`.
 When a chat-linked Solar conversation is active, outbound remote messages should be sent by `send_chat_message` or `send_chat_message_batch`; `NO_REPLY` is the explicit silence token, and plain assistant text is forwarded as a fallback when the model skips tool calling.
+Inbound Solar chat image attachments are passed to the model as multimodal image inputs using `{solarNetwork.baseUrl}/drive/files/{file_id}`.
+When the agent replies in plain assistant text for a Solar chat conversation, each non-empty newline-delimited line is sent as a separate outbound chat message. In streaming mode, completed lines are sent immediately when the newline arrives.
+For group chats, a direct mention or reply to the bot opens a 5-minute active follow-up window. During that window, the bot may keep participating even without another fresh mention.
 
 Providers can also be defined in two ways.
 
@@ -514,6 +519,44 @@ curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
     "message": "Summarize the issue and suggest next steps",
     "stream": false
   }'
+```
+
+### Vision / multimodal run
+
+`POST /api/conversations/:id/runs` also accepts `input_parts` for multimodal user input.
+Use `message` for the main text prompt, then append image parts by URL or base64.
+
+```bash
+curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
+  -H 'Content-Type: application/json' \
+  -H 'X-Account-Id: user-123' \
+  -d '{
+    "message": "What is happening in this image?",
+    "input_parts": [
+      {
+        "type": "image_url",
+        "image_url": "https://example.com/photo.jpg",
+        "detail": "high"
+      }
+    ],
+    "stream": false
+  }'
+```
+
+Base64 uploads are also supported:
+
+```json
+{
+  "message": "Read the chart in this screenshot",
+  "input_parts": [
+    {
+      "type": "image_url",
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "mime_type": "image/png",
+      "detail": "low"
+    }
+  ]
+}
 ```
 
 ### Streaming run over SSE

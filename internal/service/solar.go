@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ type ExternalInboundMessage struct {
 	MessageID        string
 	MessageType      string
 	Content          string
+	Attachments      []solar.ChatAttachment
 	SenderAccountID  string
 	SenderName       string
 	SenderNick       string
@@ -42,6 +44,13 @@ type ExternalInboundMessage struct {
 	RepliedMessageID string
 	CreatedAt        time.Time
 }
+
+const (
+	solarRoomEngagementStatePassive = "passive"
+	solarRoomEngagementStateActive  = "active"
+)
+
+const solarRoomActiveWindow = 5 * time.Minute
 
 func (s *ConversationService) SetSolarChatBridge(bridge SolarChatBridge) {
 	s.solar = bridge
@@ -82,6 +91,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 	if len(inputs) > 1 {
 		var builder strings.Builder
 		var mentions bool
+		attachments := append([]solar.ChatAttachment(nil), merged.Attachments...)
 		roomType := merged.RoomType
 		repliedMessageID := merged.RepliedMessageID
 		for i, item := range inputs {
@@ -89,8 +99,13 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 				builder.WriteString("\n\n")
 			}
 			label := firstNonEmpty(item.SenderNick, item.SenderName, item.SenderAccountID, "unknown")
-			builder.WriteString(fmt.Sprintf("%s: %s", label, strings.TrimSpace(item.Content)))
+			content := strings.TrimSpace(item.Content)
+			if content == "" && len(item.Attachments) > 0 {
+				content = fmt.Sprintf("[attached %d file(s)]", len(item.Attachments))
+			}
+			builder.WriteString(fmt.Sprintf("%s: %s", label, content))
 			mentions = mentions || item.MentionedBot
+			attachments = append(attachments, item.Attachments...)
 			if roomType == 0 && item.RoomType == 1 {
 				roomType = 1
 			}
@@ -100,6 +115,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 		}
 		merged.Content = builder.String()
 		merged.MentionedBot = mentions
+		merged.Attachments = attachments
 		merged.RoomType = roomType
 		merged.RepliedMessageID = repliedMessageID
 		merged.MessageID = inputs[len(inputs)-1].MessageID
@@ -109,15 +125,16 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 }
 
 func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, agentID string, input ExternalInboundMessage) error {
-	if strings.TrimSpace(input.RoomID) == "" || strings.TrimSpace(input.Content) == "" {
+	inputParts := s.buildSolarInboundInputParts(input.Attachments)
+	if strings.TrimSpace(input.RoomID) == "" || (strings.TrimSpace(input.Content) == "" && len(inputParts) == 0) {
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
 			Str("room_id", strings.TrimSpace(input.RoomID)).
 			Str("message_id", strings.TrimSpace(input.MessageID)).
-			Msg("ignoring solar inbound message without room or content")
+			Msg("ignoring solar inbound message without room, content, or supported attachments")
 		return nil
 	}
-	if messageType := strings.TrimSpace(input.MessageType); messageType != "" && messageType != "text" {
+	if messageType := strings.TrimSpace(input.MessageType); messageType != "" && messageType != "text" && len(inputParts) == 0 {
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
 			Str("room_id", strings.TrimSpace(input.RoomID)).
@@ -135,6 +152,8 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 		Bool("mentioned_bot", input.MentionedBot).
 		Str("sender_account_id", strings.TrimSpace(input.SenderAccountID)).
 		Int("content_chars", len(strings.TrimSpace(input.Content))).
+		Int("attachment_count", len(input.Attachments)).
+		Int("vision_input_part_count", len(inputParts)).
 		Msg("handling solar inbound message")
 
 	binding, err := s.getOrCreateExternalBinding(ctx, agentID, input)
@@ -153,13 +172,17 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 		Msg("triggering agent run for solar inbound message")
 
 	_, err = s.ExecuteRun(ctx, binding.AccountID, binding.ThreadID, RunInput{
-		Message: strings.TrimSpace(input.Content),
-		Stream:  false,
+		Message:    strings.TrimSpace(input.Content),
+		InputParts: inputParts,
+		Stream:     false,
 		RequestMetadata: map[string]any{
-			"source":             "solar",
-			"room_type":          input.RoomType,
-			"mentioned_bot":      input.MentionedBot,
-			"replied_message_id": strings.TrimSpace(input.RepliedMessageID),
+			"source":              "solar",
+			"room_type":           input.RoomType,
+			"mentioned_bot":       input.MentionedBot,
+			"sender_account_id":   strings.TrimSpace(input.SenderAccountID),
+			"sender_account_name": strings.TrimSpace(input.SenderName),
+			"sender_nick":         strings.TrimSpace(input.SenderNick),
+			"replied_message_id":  strings.TrimSpace(input.RepliedMessageID),
 		},
 	})
 	if err != nil {
@@ -177,6 +200,34 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 		Str("conversation_id", binding.ThreadID).
 		Msg("solar inbound message run completed")
 	return err
+}
+
+func (s *ConversationService) buildSolarInboundInputParts(attachments []solar.ChatAttachment) []userMessageInputPart {
+	if len(attachments) == 0 {
+		return nil
+	}
+	baseURL := ""
+	if s.cfg != nil {
+		baseURL = strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+	}
+	if baseURL == "" {
+		return nil
+	}
+
+	parts := make([]userMessageInputPart, 0, len(attachments))
+	for _, attachment := range attachments {
+		mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+		fileID := strings.TrimSpace(attachment.ID)
+		if fileID == "" || !strings.HasPrefix(mimeType, "image/") {
+			continue
+		}
+		parts = append(parts, userMessageInputPart{
+			Type:     "image_url",
+			ImageURL: strings.TrimRight(baseURL, "/") + "/drive/files/" + url.PathEscape(fileID),
+			MIMEType: mimeType,
+		})
+	}
+	return parts
 }
 
 func (s *ConversationService) FlushSolarInboundBatches(ctx context.Context) error {
@@ -212,6 +263,10 @@ func (s *ConversationService) ensureSolarRoomBinding(
 		if strings.TrimSpace(binding.RemoteAccount) == "" && strings.TrimSpace(remoteAccount) != "" {
 			binding.RemoteAccount = strings.TrimSpace(remoteAccount)
 		}
+		if strings.TrimSpace(binding.EngagementState) == "" {
+			binding.EngagementState = solarRoomEngagementStatePassive
+		}
+		s.applySolarOutboundEngagementState(&binding, at)
 		return s.db.WithContext(ctx).Save(&binding).Error
 	}
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -219,14 +274,16 @@ func (s *ConversationService) ensureSolarRoomBinding(
 	}
 
 	binding = database.ExternalChatBinding{
-		ID:            newID(),
-		AgentID:       agentID,
-		RemoteRoomID:  roomID,
-		ThreadID:      thread.ID,
-		AccountID:     thread.AccountID,
-		RemoteAccount: strings.TrimSpace(remoteAccount),
-		LastMessageAt: &at,
+		ID:              newID(),
+		AgentID:         agentID,
+		RemoteRoomID:    roomID,
+		EngagementState: solarRoomEngagementStatePassive,
+		ThreadID:        thread.ID,
+		AccountID:       thread.AccountID,
+		RemoteAccount:   strings.TrimSpace(remoteAccount),
+		LastMessageAt:   &at,
 	}
+	s.applySolarOutboundEngagementState(&binding, at)
 	return s.db.WithContext(ctx).Create(&binding).Error
 }
 
@@ -250,6 +307,7 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 		if remoteAccount := firstNonEmpty(input.SenderName, input.SenderNick); remoteAccount != "" {
 			binding.RemoteAccount = remoteAccount
 		}
+		s.applySolarRoomEngagementState(&binding, input, at)
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
 			Str("room_id", strings.TrimSpace(input.RoomID)).
@@ -280,12 +338,14 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 		AgentID:         strings.TrimSpace(agentID),
 		RemoteRoomID:    strings.TrimSpace(input.RoomID),
 		RemoteRoomType:  roomTypePtr(input.RoomType),
+		EngagementState: solarRoomEngagementStatePassive,
 		ThreadID:        thread.ID,
 		AccountID:       accountID,
 		RemoteAccountID: strings.TrimSpace(input.SenderAccountID),
 		RemoteAccount:   firstNonEmpty(input.SenderName, input.SenderNick),
 		LastMessageAt:   &now,
 	}
+	s.applySolarRoomEngagementState(&binding, input, now)
 	if err := s.db.WithContext(ctx).Create(&binding).Error; err != nil {
 		return nil, err
 	}
@@ -344,18 +404,22 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 	inboundMeta := latestSolarInboundMetadata(records)
 	return fmt.Sprintf(
 		"This conversation is connected to a Solar Network chat room.\n"+
-			"You must choose exactly one action for the current inbound message.\n"+
-			"If you decide to reply, call the send_chat_message tool with room_id=%q.\n"+
-			"If you need multiple outbound messages, call send_chat_message_batch.\n"+
-			"If you intentionally stay silent, call no_reply.\n"+
-			"Do not place the outbound reply in assistant text.\n"+
+			"If you decide to reply in assistant text, every non-empty line will be sent as one outbound Solar message in order.\n"+
+			"Use a newline when you intentionally want to send a separate follow-up message.\n"+
+			"If you intentionally stay silent, reply with exactly %q.\n"+
+			"Do not number or bullet multiple lines unless you want those prefixes to appear in chat.\n"+
+			"If you need Solar profile or post data, use the lookup tools before replying.\n"+
+			"%s\n"+
+			"%s\n"+
 			"%s\n"+
 			"%s\n"+
 			"Current remote account: %q (%s).\n"+
-			"Do not claim a chat message was sent unless the tool succeeds.",
-		binding.RemoteRoomID,
+			"Any assistant-text reply will be sent automatically; do not claim it was sent separately.",
+		noChatReplyToken,
 		solarRoomBehaviorPrompt(binding.RemoteRoomType),
 		solarInboundPrompt(inboundMeta),
+		solarRoomEngagementPrompt(binding),
+		solarSenderIdentityPrompt(inboundMeta, binding),
 		binding.RemoteAccount,
 		binding.RemoteAccountID,
 	), nil
@@ -393,9 +457,43 @@ func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
 		return "The latest inbound message is from a DM. It is appropriate to reply proactively."
 	}
 	if meta.MentionedBot {
-		return "The latest inbound group message mentioned or replied to the bot. Decide whether to join the conversation; if you reply, use the send_chat_message tool."
+		return "The latest inbound group message mentioned or replied to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
 	}
-	return "The latest inbound group message did not mention or reply to the bot. Decide whether to join the conversation; if you reply, use the send_chat_message tool."
+	return "The latest inbound group message did not mention or reply to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
+}
+
+func solarSenderIdentityPrompt(meta *solarInboundRequestMetadata, binding *database.ExternalChatBinding) string {
+	username := ""
+	accountID := ""
+	displayName := ""
+	if meta != nil {
+		username = strings.TrimSpace(meta.SenderAccountName)
+		accountID = strings.TrimSpace(meta.SenderAccountID)
+		displayName = strings.TrimSpace(meta.SenderNick)
+	}
+	if binding != nil {
+		if username == "" {
+			username = strings.TrimSpace(binding.RemoteAccount)
+		}
+		if accountID == "" {
+			accountID = strings.TrimSpace(binding.RemoteAccountID)
+		}
+	}
+
+	switch {
+	case username != "" && displayName != "" && accountID != "":
+		return fmt.Sprintf("Latest sender identity: username=%q, display_name=%q, account_id=%q. Treat the username as the canonical identity.", username, displayName, accountID)
+	case username != "" && displayName != "":
+		return fmt.Sprintf("Latest sender identity: username=%q, display_name=%q. Treat the username as the canonical identity.", username, displayName)
+	case username != "" && accountID != "":
+		return fmt.Sprintf("Latest sender identity: username=%q, account_id=%q. Treat the username as the canonical identity.", username, accountID)
+	case username != "":
+		return fmt.Sprintf("Latest sender identity: username=%q. Treat the username as the canonical identity.", username)
+	case accountID != "":
+		return fmt.Sprintf("Latest sender identity: account_id=%q. Use this to avoid confusing participants.", accountID)
+	default:
+		return "Latest sender identity is unavailable."
+	}
 }
 
 func (s *ConversationService) latestSolarInboundMetadataForThread(ctx context.Context, accountID, threadID string) (*solarInboundRequestMetadata, error) {
@@ -417,6 +515,9 @@ func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *d
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
 		return true, nil
 	}
+	if solarRoomBindingIsActive(binding, time.Now()) {
+		return true, nil
+	}
 
 	meta, err := s.latestSolarInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
 	if err != nil {
@@ -426,4 +527,75 @@ func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *d
 		return false, nil
 	}
 	return meta.MentionedBot || strings.TrimSpace(meta.RepliedMessageID) != "", nil
+}
+
+func (s *ConversationService) applySolarRoomEngagementState(binding *database.ExternalChatBinding, input ExternalInboundMessage, now time.Time) {
+	if binding == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
+		binding.EngagementState = solarRoomEngagementStateActive
+		binding.EngagedUntil = nil
+		return
+	}
+
+	involved := input.MentionedBot || strings.TrimSpace(input.RepliedMessageID) != ""
+	if involved {
+		binding.EngagementState = solarRoomEngagementStateActive
+		until := now.Add(solarRoomActiveWindow)
+		binding.EngagedUntil = &until
+		return
+	}
+	if solarRoomBindingIsActive(binding, now) {
+		binding.EngagementState = solarRoomEngagementStateActive
+		return
+	}
+	binding.EngagementState = solarRoomEngagementStatePassive
+	binding.EngagedUntil = nil
+}
+
+func (s *ConversationService) applySolarOutboundEngagementState(binding *database.ExternalChatBinding, now time.Time) {
+	if binding == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
+		binding.EngagementState = solarRoomEngagementStateActive
+		binding.EngagedUntil = nil
+		return
+	}
+	binding.EngagementState = solarRoomEngagementStateActive
+	until := now.Add(solarRoomActiveWindow)
+	binding.EngagedUntil = &until
+}
+
+func solarRoomBindingIsActive(binding *database.ExternalChatBinding, now time.Time) bool {
+	if binding == nil {
+		return false
+	}
+	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
+		return true
+	}
+	if strings.TrimSpace(binding.EngagementState) != solarRoomEngagementStateActive {
+		return false
+	}
+	if binding.EngagedUntil == nil {
+		return false
+	}
+	return binding.EngagedUntil.After(now)
+}
+
+func solarRoomEngagementPrompt(binding *database.ExternalChatBinding) string {
+	if binding == nil || binding.RemoteRoomType == nil || *binding.RemoteRoomType == 1 {
+		return "No special follow-up engagement window is needed for this room."
+	}
+	if solarRoomBindingIsActive(binding, time.Now()) {
+		return "The bot is currently in an active follow-up window for this group chat because it was recently mentioned or replied to. Continue the conversation proactively even without a fresh mention."
+	}
+	return "The bot is not currently in an active follow-up window for this group chat. Be selective unless the latest message directly involved the bot."
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/solar"
 )
 
@@ -210,5 +211,50 @@ func TestNormalizeSolarChatFinalResponseFallsBackForPlainAssistantReply(t *testi
 	}
 	if !shouldFallbackSend {
 		t.Fatal("expected plain assistant reply to trigger fallback send")
+	}
+}
+
+func TestNormalizeSolarChatFinalResponseSplitsAndTrimsLines(t *testing.T) {
+	got, shouldFallbackSend := normalizeSolarChatFinalResponse(" first line \n\n second line \n")
+	if got != "first line\nsecond line" {
+		t.Fatalf("unexpected normalized output: %q", got)
+	}
+	if !shouldFallbackSend {
+		t.Fatal("expected fallback send")
+	}
+}
+
+func TestSolarOutboundStreamSenderSendsCompletedLines(t *testing.T) {
+	db := openTestDB(t)
+	bridge := &stubSolarBridge{
+		roomID:     "room-1",
+		messageIDs: []string{"msg-1", "msg-2"},
+	}
+	svc := &ConversationService{db: db, solar: bridge}
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "solar:support:room-1", AgentID: "support-bot", Title: "Room one"}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	binding := &database.ExternalChatBinding{RemoteRoomID: "room-1", RemoteAccount: "alice"}
+	sender := newSolarOutboundStreamSender(svc, thread, binding, "support-bot", "run-1")
+
+	if err := sender.Push(context.Background(), "hello\nhow"); err != nil {
+		t.Fatalf("Push() error = %v", err)
+	}
+	if bridge.sendCount != 1 {
+		t.Fatalf("expected 1 send after first newline, got %d", bridge.sendCount)
+	}
+	if bridge.lastBody != "hello" {
+		t.Fatalf("expected first line to send, got %q", bridge.lastBody)
+	}
+
+	if err := sender.Push(context.Background(), " are you?\n"); err != nil {
+		t.Fatalf("Push() second error = %v", err)
+	}
+	if bridge.sendCount != 2 {
+		t.Fatalf("expected 2 sends after second newline, got %d", bridge.sendCount)
+	}
+	if bridge.lastBody != "how are you?" {
+		t.Fatalf("expected buffered second line to send, got %q", bridge.lastBody)
 	}
 }

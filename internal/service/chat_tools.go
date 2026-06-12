@@ -244,7 +244,7 @@ func normalizeSolarChatFinalResponse(content string) (normalized string, shouldF
 	case strings.EqualFold(trimmed, noChatReplyToken):
 		return "", false
 	default:
-		return trimmed, true
+		return strings.Join(splitSolarOutboundMessages(trimmed), "\n"), true
 	}
 }
 
@@ -266,9 +266,27 @@ func (s *ConversationService) deliverFallbackChatResponse(
 		Int("response_chars", len(content)).
 		Msg("chat model skipped tool call; forwarding assistant text via fallback solar send")
 
-	roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, binding.RemoteRoomID, "", content)
-	if err != nil {
-		return err
+	messages := splitSolarOutboundMessages(content)
+	if len(messages) == 0 {
+		return nil
+	}
+	roomID := binding.RemoteRoomID
+	messageID := ""
+	for i, message := range messages {
+		sentRoomID, sentMessageID, err := s.solar.SendBotMessage(ctx, agentID, roomID, "", message)
+		if err != nil {
+			return err
+		}
+		roomID = sentRoomID
+		messageID = sentMessageID
+		logging.Log.Debug().
+			Str("agent_id", agentID).
+			Str("conversation_id", thread.ID).
+			Str("run_id", runID).
+			Str("room_id", roomID).
+			Str("message_id", messageID).
+			Int("batch_index", i).
+			Msg("sent fallback solar message chunk")
 	}
 	if err := s.ensureSolarRoomBinding(ctx, thread, agentID, roomID, binding.RemoteAccount, time.Now()); err != nil {
 		return err
@@ -280,6 +298,102 @@ func (s *ConversationService) deliverFallbackChatResponse(
 		Str("room_id", roomID).
 		Str("message_id", messageID).
 		Msg("fallback solar send succeeded")
+	return nil
+}
+
+func splitSolarOutboundMessages(content string) []string {
+	if strings.EqualFold(strings.TrimSpace(content), noChatReplyToken) {
+		return nil
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	messages := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			messages = append(messages, trimmed)
+		}
+	}
+	return messages
+}
+
+type solarOutboundStreamSender struct {
+	service        *ConversationService
+	thread         *database.ConversationThread
+	binding        *database.ExternalChatBinding
+	agentID        string
+	runID          string
+	buffer         strings.Builder
+	lastRoomID     string
+	sentMessageIDs []string
+}
+
+func newSolarOutboundStreamSender(service *ConversationService, thread *database.ConversationThread, binding *database.ExternalChatBinding, agentID, runID string) *solarOutboundStreamSender {
+	lastRoomID := ""
+	if binding != nil {
+		lastRoomID = binding.RemoteRoomID
+	}
+	return &solarOutboundStreamSender{
+		service:    service,
+		thread:     thread,
+		binding:    binding,
+		agentID:    agentID,
+		runID:      runID,
+		lastRoomID: lastRoomID,
+	}
+}
+
+func (s *solarOutboundStreamSender) Push(ctx context.Context, chunk string) error {
+	if s == nil || s.service == nil || s.binding == nil || s.service.solar == nil || chunk == "" {
+		return nil
+	}
+	s.buffer.WriteString(strings.ReplaceAll(chunk, "\r\n", "\n"))
+	for {
+		current := s.buffer.String()
+		idx := strings.IndexByte(current, '\n')
+		if idx < 0 {
+			return nil
+		}
+		line := strings.TrimSpace(current[:idx])
+		rest := current[idx+1:]
+		s.buffer.Reset()
+		s.buffer.WriteString(rest)
+		if line == "" || strings.EqualFold(line, noChatReplyToken) {
+			continue
+		}
+		if err := s.sendMessage(ctx, line); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *solarOutboundStreamSender) Flush(ctx context.Context) error {
+	if s == nil || s.binding == nil || s.service == nil || s.service.solar == nil {
+		return nil
+	}
+	line := strings.TrimSpace(s.buffer.String())
+	s.buffer.Reset()
+	if line == "" || strings.EqualFold(line, noChatReplyToken) {
+		return nil
+	}
+	return s.sendMessage(ctx, line)
+}
+
+func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message string) error {
+	roomID, messageID, err := s.service.solar.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", message)
+	if err != nil {
+		return err
+	}
+	s.lastRoomID = roomID
+	s.sentMessageIDs = append(s.sentMessageIDs, messageID)
+	if err := s.service.ensureSolarRoomBinding(ctx, s.thread, s.agentID, roomID, s.binding.RemoteAccount, time.Now()); err != nil {
+		return err
+	}
+	logging.Log.Info().
+		Str("agent_id", s.agentID).
+		Str("conversation_id", s.thread.ID).
+		Str("run_id", s.runID).
+		Str("room_id", roomID).
+		Str("message_id", messageID).
+		Msg("sent streamed solar chat line")
 	return nil
 }
 

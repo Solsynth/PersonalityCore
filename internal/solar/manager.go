@@ -522,6 +522,7 @@ func (c *agentConnection) handlePacket(ctx context.Context, pkt Packet) error {
 			MessageID:        msg.ID,
 			MessageType:      firstNonEmpty(msg.Type, "text"),
 			Content:          strings.TrimSpace(msg.Content),
+			Attachments:      append([]ChatAttachment(nil), msg.Attachments...),
 			SenderAccountID:  msg.Sender.AccountID,
 			SenderName:       msg.Sender.Account.Name,
 			SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
@@ -619,7 +620,7 @@ func (c *agentConnection) catchUpRoom(ctx context.Context, state TrackedRoomStat
 			c.markRoomSeen(roomID, msg.CreatedAt)
 			continue
 		}
-		if strings.TrimSpace(msg.Content) == "" {
+		if strings.TrimSpace(msg.Content) == "" && len(msg.Attachments) == 0 {
 			c.markRoomSeen(roomID, msg.CreatedAt)
 			continue
 		}
@@ -638,6 +639,7 @@ func (c *agentConnection) catchUpRoom(ctx context.Context, state TrackedRoomStat
 				MessageID:        msg.ID,
 				MessageType:      firstNonEmpty(msg.Type, "text"),
 				Content:          strings.TrimSpace(msg.Content),
+				Attachments:      append([]ChatAttachment(nil), msg.Attachments...),
 				SenderAccountID:  msg.Sender.AccountID,
 				SenderName:       msg.Sender.Account.Name,
 				SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,25 +33,25 @@ func NewManager(db *database.DB) *Manager {
 	return &Manager{db: db}
 }
 
-func (m *Manager) BuildPromptState(ctx context.Context, accountID, threadID string, def agent.Definition) (*PromptState, error) {
+func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, threadAccountID, threadID string, def agent.Definition) (*PromptState, error) {
 	if m == nil || m.db == nil || !usesHumanState(def) {
 		return nil, nil
 	}
 
-	state, err := m.getOrCreateState(ctx, accountID, def.ID)
+	state, err := m.getOrCreateState(ctx, impressionAccountID, def.ID)
 	if err != nil {
 		return nil, err
 	}
 	var savedMemories []database.AgentManualMemory
 	if hasAbility(def, abilitySavedMemory) {
-		savedMemories, err = m.listManualMemories(ctx, accountID, def.ID)
+		savedMemories, err = m.listManualMemories(ctx, impressionAccountID, def.ID)
 		if err != nil {
 			return nil, err
 		}
 	}
 	crossConversation := ""
 	if hasAbility(def, abilityCrossConversationMemory) {
-		crossConversation, err = m.buildCrossConversationSummary(ctx, accountID, def.ID, threadID)
+		crossConversation, err = m.buildCrossConversationSummary(ctx, impressionAccountID, threadAccountID, def.ID, threadID)
 		if err != nil {
 			return nil, err
 		}
@@ -205,21 +206,80 @@ func (m *Manager) saveManualMemories(ctx context.Context, accountID, agentID str
 	return nil
 }
 
-func (m *Manager) buildCrossConversationSummary(ctx context.Context, accountID, agentID, threadID string) (string, error) {
-	var threads []database.ConversationThread
-	if err := m.db.WithContext(ctx).
-		Where("account_id = ? AND agent_id = ? AND id <> ?", accountID, agentID, threadID).
-		Order("updated_at DESC").
-		Limit(3).
-		Find(&threads).Error; err != nil {
-		return "", err
+func (m *Manager) buildCrossConversationSummary(ctx context.Context, impressionAccountID, threadAccountID, agentID, threadID string) (string, error) {
+	impressionAccountID = strings.TrimSpace(impressionAccountID)
+	threadAccountID = strings.TrimSpace(threadAccountID)
+	agentID = strings.TrimSpace(agentID)
+	threadID = strings.TrimSpace(threadID)
+
+	threadMap := make(map[string]database.ConversationThread)
+
+	if impressionAccountID != "" {
+		var directThreads []database.ConversationThread
+		if err := m.db.WithContext(ctx).
+			Where("account_id = ? AND agent_id = ? AND id <> ?", impressionAccountID, agentID, threadID).
+			Order("updated_at DESC").
+			Limit(6).
+			Find(&directThreads).Error; err != nil {
+			return "", err
+		}
+		for _, thread := range directThreads {
+			threadMap[thread.ID] = thread
+		}
+
+		var bindings []database.ExternalChatBinding
+		if err := m.db.WithContext(ctx).
+			Where("remote_account_id = ? AND agent_id = ? AND thread_id <> ?", impressionAccountID, agentID, threadID).
+			Order("updated_at DESC").
+			Limit(6).
+			Find(&bindings).Error; err != nil {
+			return "", err
+		}
+		for _, binding := range bindings {
+			if strings.TrimSpace(binding.ThreadID) == "" {
+				continue
+			}
+			var thread database.ConversationThread
+			if err := m.db.WithContext(ctx).Where("id = ?", binding.ThreadID).First(&thread).Error; err != nil {
+				if errorsIsRecordNotFound(err) {
+					continue
+				}
+				return "", err
+			}
+			threadMap[thread.ID] = thread
+		}
+	}
+
+	if threadAccountID != "" && threadAccountID != impressionAccountID {
+		var scopedThreads []database.ConversationThread
+		if err := m.db.WithContext(ctx).
+			Where("account_id = ? AND agent_id = ? AND id <> ?", threadAccountID, agentID, threadID).
+			Order("updated_at DESC").
+			Limit(3).
+			Find(&scopedThreads).Error; err != nil {
+			return "", err
+		}
+		for _, thread := range scopedThreads {
+			threadMap[thread.ID] = thread
+		}
+	}
+
+	threads := make([]database.ConversationThread, 0, len(threadMap))
+	for _, thread := range threadMap {
+		threads = append(threads, thread)
+	}
+	sort.Slice(threads, func(i, j int) bool {
+		return threads[i].UpdatedAt.After(threads[j].UpdatedAt)
+	})
+	if len(threads) > 3 {
+		threads = threads[:3]
 	}
 
 	lines := make([]string, 0, len(threads))
 	for _, thread := range threads {
 		var messages []database.ConversationMessage
 		if err := m.db.WithContext(ctx).
-			Where("thread_id = ? AND account_id = ?", thread.ID, accountID).
+			Where("thread_id = ? AND account_id = ?", thread.ID, thread.AccountID).
 			Order("sequence DESC").
 			Limit(4).
 			Find(&messages).Error; err != nil {

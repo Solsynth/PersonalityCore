@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -32,6 +33,10 @@ type App struct {
 	grpcSrv       *grpc.Server
 	grpcLn        net.Listener
 	solar         *solar.Manager
+	autonomous    *service.AutonomousWakeScheduler
+	backgroundCtx context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -91,6 +96,7 @@ func New(cfg *config.Config) (*App, error) {
 		},
 	)
 	conversations.SetSolarChatBridge(solarManager)
+	autonomous := service.NewAutonomousWakeScheduler(conversations, registry)
 	router := server.NewRouter(cfg, conversations)
 	httpSrv := &http.Server{
 		Addr:    ":" + cfg.HTTP.Port,
@@ -115,10 +121,11 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager, autonomous: autonomous}, nil
 }
 
-func (a *App) Start(context.Context) error {
+func (a *App) Start(ctx context.Context) error {
+	a.backgroundCtx, a.cancel = context.WithCancel(ctx)
 	ln, err := net.Listen("tcp", ":"+a.cfg.GRPC.Port)
 	if err != nil {
 		return err
@@ -141,6 +148,13 @@ func (a *App) Start(context.Context) error {
 			logging.Log.Error().Err(err).Msg("http server stopped")
 		}
 	}()
+	if a.autonomous != nil {
+		a.wg.Add(1)
+		go func() {
+			defer a.wg.Done()
+			a.autonomous.Run(a.backgroundCtx)
+		}()
+	}
 
 	logging.Log.Info().
 		Str("http", a.cfg.HTTP.Port).
@@ -150,6 +164,9 @@ func (a *App) Start(context.Context) error {
 }
 
 func (a *App) Stop(ctx context.Context) error {
+	if a.cancel != nil {
+		a.cancel()
+	}
 	if a.httpSrv != nil {
 		_ = a.httpSrv.Shutdown(ctx)
 	}
@@ -165,5 +182,6 @@ func (a *App) Stop(ctx context.Context) error {
 	if a.solar != nil {
 		_ = a.solar.Stop(ctx)
 	}
+	a.wg.Wait()
 	return nil
 }

@@ -21,6 +21,7 @@ Each agent can define:
 - `systemPromptFile`
 - `model`
 - model defaults such as `temperature`, `topP`, and `maxCompletionTokens`
+- optional chat-specific output cap via `chatMaxCompletionTokens`
 - `abilities`
 - `enabled`
 
@@ -170,9 +171,68 @@ When a chat-linked Solar conversation is active, outbound remote messages should
 Chat tool-calling also exposes `list_self_notes`, `save_self_note`, and `delete_self_note` so an agent can inspect and update its own persistent identity notes shared across all conversations.
 Inbound Solar chat image attachments are passed to the model as multimodal image inputs using `{solarNetwork.baseUrl}/drive/files/{file_id}`.
 When the agent replies in plain assistant text for a Solar chat conversation, each non-empty newline-delimited line is sent as a separate outbound chat message. In streaming mode, completed lines are sent immediately when the newline arrives.
-For group chats, a direct mention or reply to the bot opens a 5-minute active follow-up window. During that window, the bot may keep participating even without another fresh mention.
+For live inbound handling, a direct mention or reply to the bot opens a 5-minute active follow-up window so the bot can continue the current group-chat exchange.
 Every run also appends explicit message timestamps in context and a final `Current date and time:` system message so the model can reason about chronology without depending on cache-retained earlier prompt sections.
 When a thread grows beyond the live history window, older messages are automatically compacted into a persisted thread summary that is injected back into future runs as `Earlier compacted thread context:`.
+
+Agents can also opt into `autonomous`:
+
+```toml
+[[agents.items]]
+id = "support-bot"
+name = "Support Bot"
+description = "Replies in Solar chat and can proactively follow up"
+systemPrompt = "You are the Solar support bot."
+model = "openai/gpt-4.1-mini"
+chatMaxCompletionTokens = 160
+abilities = ["chat", "autonomous"]
+enabled = true
+
+[agents.items.solar-network-integration]
+accountName = "support-bot"
+accessToken = "..."
+
+[agents.items.autonomous]
+wakeInterval = "10m"
+wakePrompt = "Check active rooms and DMs for proactive follow-up opportunities."
+```
+
+`autonomous` enables server-side agent-initiated runs. The current implementation supports:
+- manual wake triggers through `POST /api/agents/:id/autonomous-runs`
+- periodic wake-ups for agents with `autonomous.wakeInterval` set
+- synthetic autonomous wake request messages persisted with `role = "system"` and metadata `source = "autonomous"`
+- trusted outbound conversation starts through `POST /api/internal/agents/:id/start-conversation` with header `X-Autonomous-Secret`
+
+If chat replies are too verbose, set a lower `chatMaxCompletionTokens` on that agent. This overrides `maxCompletionTokens` only for Solar/chat-style execution paths and leaves ordinary non-chat runs unchanged.
+
+Current boundaries:
+- periodic wakes currently target existing Solar-bound conversations only
+- DM bindings are always eligible for periodic wakes
+- periodic pickup of old group-chat messages is suppressed unless the latest inbound group message directly mentioned or replied to the bot
+- if you want proactive Solar outreach, combine `autonomous` with `chat`
+- lookup-only tool calls no longer terminate the Solar tool loop early; the model can inspect posts or profiles first, then decide whether to send a message
+
+Example trusted start request:
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/internal/agents/support-bot/start-conversation \
+  -H 'Content-Type: application/json' \
+  -H 'X-Autonomous-Secret: YOUR_SECRET' \
+  -d '{"target_account_name":"alice","prompt":"Say hi and ask how her project is going."}'
+```
+
+If you already know the Solar account ID, you can also send `target_account_id` directly.
+
+The TUI binary can call the same endpoint in one-shot mode:
+
+```bash
+go run ./cmd/tui \
+  -base-url http://127.0.0.1:8090 \
+  -agent-id support-bot \
+  -autonomous-secret YOUR_SECRET \
+  -start-user alice \
+  -start-prompt "Say hi and ask how her project is going."
+```
 
 Providers can also be defined in two ways.
 
@@ -238,6 +298,7 @@ dir = "./agents.d"
 [auth]
 offline = true
 offlineAccountId = "local-dev"
+autonomousSecret = ""
 ```
 
 Example `agents.d/support.toml`:
@@ -638,6 +699,7 @@ Current behavior:
 - Provider type support is currently implemented for OpenAI-compatible backends via `type = "openai"` or `type = "openai-compatible"`.
 - `abilities` are the primary agent capability field.
 - `abilities` is the canonical agent capability field.
+- `autonomous` is an initiation ability: it lets the server wake an agent without a fresh user message.
 - The gRPC service is intended for internal Solar usage; the primary client API is REST + SSE.
 
 ## Verification

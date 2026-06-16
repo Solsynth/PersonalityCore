@@ -25,6 +25,9 @@ func NewRouter(cfg *config.Config, conversations *service.ConversationService) *
 
 	api := r.Group("/api")
 	handler.RegisterRoutes(api, conversations)
+	internal := api.Group("/internal")
+	internal.Use(autonomousSecretMiddleware(cfg))
+	handler.RegisterInternalRoutes(internal, conversations)
 	return r
 }
 
@@ -76,6 +79,24 @@ func authMiddleware(cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
+		c.Next()
+	}
+}
+
+func autonomousSecretMiddleware(cfg *config.Config) gin.HandlerFunc {
+	expected := strings.TrimSpace(cfg.Auth.AutonomousSecret)
+	return func(c *gin.Context) {
+		if expected == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "endpoint not configured"})
+			c.Abort()
+			return
+		}
+		provided := strings.TrimSpace(c.GetHeader("X-Autonomous-Secret"))
+		if provided == "" || provided != expected {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid autonomous secret"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

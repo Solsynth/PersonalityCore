@@ -63,12 +63,19 @@ type SSEEvent struct {
 }
 
 type Client struct {
-	baseURL   *url.URL
-	http      *http.Client
-	accountID string
+	baseURL          *url.URL
+	http             *http.Client
+	accountID        string
+	autonomousSecret string
 }
 
-func NewClient(rawBaseURL, accountID string) (*Client, error) {
+type StartConversationInput struct {
+	TargetAccountID   string `json:"target_account_id"`
+	TargetAccountName string `json:"target_account_name,omitempty"`
+	Prompt            string `json:"prompt,omitempty"`
+}
+
+func NewClient(rawBaseURL, accountID, autonomousSecret string) (*Client, error) {
 	if strings.TrimSpace(rawBaseURL) == "" {
 		rawBaseURL = "http://127.0.0.1:8090"
 	}
@@ -78,9 +85,10 @@ func NewClient(rawBaseURL, accountID string) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:   baseURL,
-		accountID: strings.TrimSpace(accountID),
-		http:      &http.Client{Timeout: 120 * time.Second},
+		baseURL:          baseURL,
+		accountID:        strings.TrimSpace(accountID),
+		autonomousSecret: strings.TrimSpace(autonomousSecret),
+		http:             &http.Client{Timeout: 120 * time.Second},
 	}, nil
 }
 
@@ -144,6 +152,31 @@ func (c *Client) Run(ctx context.Context, conversationID, message string, stream
 	req, err := c.newJSONRequest(ctx, http.MethodPost, fmt.Sprintf("/api/conversations/%s/runs", conversationID), payload)
 	if err != nil {
 		return nil, err
+	}
+
+	var result RunResult
+	if err := c.doJSON(req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) StartConversationWithUser(ctx context.Context, agentID string, input StartConversationInput) (*RunResult, error) {
+	payload := map[string]any{
+		"target_account_id": strings.TrimSpace(input.TargetAccountID),
+	}
+	if targetAccountName := strings.TrimSpace(input.TargetAccountName); targetAccountName != "" {
+		payload["target_account_name"] = targetAccountName
+	}
+	if prompt := strings.TrimSpace(input.Prompt); prompt != "" {
+		payload["prompt"] = prompt
+	}
+	req, err := c.newJSONRequest(ctx, http.MethodPost, fmt.Sprintf("/api/internal/agents/%s/start-conversation", agentID), payload)
+	if err != nil {
+		return nil, err
+	}
+	if c.autonomousSecret != "" {
+		req.Header.Set("X-Autonomous-Secret", c.autonomousSecret)
 	}
 
 	var result RunResult

@@ -20,6 +20,7 @@ tlsSkipVerify = false
 allowDevIds = true
 offline = false
 offlineAccountId = "local-dev"
+autonomousSecret = ""
 
 [solarNetwork]
 baseUrl = "https://api.dyson.example"
@@ -44,6 +45,7 @@ topP = 1.0
 [personality]
 maxHistoryMessages = 24
 sseHeartbeat = "15s"
+solarInboundDebounce = "5s"
 
 [agents]
 dir = "./agents.d"
@@ -63,9 +65,14 @@ name = "Support Bot"
 description = "Bot agent connected to Solar chat"
 systemPrompt = "You are a support bot for Solar Network chat."
 model = "openai/gpt-4.1-mini"
-abilities = ["chat"]
+chatMaxCompletionTokens = 160
+abilities = ["chat", "autonomous"]
 enabled = true
 
 [agents.items.solar-network-integration]
 accountName = "support-bot"
 accessToken = ""
+
+[agents.items.autonomous]
+wakeInterval = "10m"
+wakePrompt = "Check whether any active or DM conversations need a proactive follow-up."

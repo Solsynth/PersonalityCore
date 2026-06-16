@@ -16,7 +16,7 @@ import (
 )
 
 type SolarChatBridge interface {
-	SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, content string) (resolvedRoomID, messageID string, err error)
+	SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (resolvedRoomID, messageID string, err error)
 	TrackRoom(agentID, roomID string)
 	GetAccount(ctx context.Context, agentID, accountName, accountID string) (*solar.Account, error)
 	GetAccountProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error)

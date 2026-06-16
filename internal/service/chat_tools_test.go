@@ -20,6 +20,7 @@ type stubSolarBridge struct {
 	lastAgent   string
 	lastRoom    string
 	lastTarget  string
+	lastTargetID string
 	lastBody    string
 	sendCount   int
 	account     *solar.Account
@@ -29,10 +30,11 @@ type stubSolarBridge struct {
 	postReplies *solar.PaginatedPosts
 }
 
-func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, targetAccountName, content string) (string, string, error) {
+func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {
 	s.lastAgent = agentID
 	s.lastRoom = roomID
 	s.lastTarget = targetAccountName
+	s.lastTargetID = targetAccountID
 	s.lastBody = content
 	s.sendCount++
 	if len(s.messageIDs) >= s.sendCount {
@@ -228,6 +230,45 @@ func TestExecuteChatToolCallSaveAndListSelfNotes(t *testing.T) {
 	}
 	if payload.Items[0].Key != "favorite_drink" {
 		t.Fatalf("unexpected self note key: %q", payload.Items[0].Key)
+	}
+}
+
+func TestDeliverFallbackChatResponseUsesAutonomousTargetWhenBindingMissing(t *testing.T) {
+	db := openTestDB(t)
+	bridge := &stubSolarBridge{roomID: "room-dm-1", messageID: "msg-1"}
+	svc := &ConversationService{db: db, solar: bridge}
+
+	thread := &database.ConversationThread{
+		ID:        "thread-auto-dm-1",
+		AccountID: "solar:michan:dm:alice",
+		AgentID:   "michan",
+		Title:     "alice",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "system", "Autonomous wake-up triggered.", nil, map[string]any{
+		"source":              "autonomous",
+		"target_account_id":   "acct-alice-1",
+		"target_account_name": "alice",
+	}); err != nil {
+		t.Fatalf("create autonomous system message: %v", err)
+	}
+
+	if err := svc.deliverFallbackChatResponse(context.Background(), thread, "michan", "run-1", nil, "hello there"); err != nil {
+		t.Fatalf("deliverFallbackChatResponse() error = %v", err)
+	}
+	if bridge.sendCount != 1 {
+		t.Fatalf("expected one fallback send, got %d", bridge.sendCount)
+	}
+	if bridge.lastTarget != "alice" {
+		t.Fatalf("expected fallback target alice, got %q", bridge.lastTarget)
+	}
+	if bridge.lastTargetID != "acct-alice-1" {
+		t.Fatalf("expected fallback target id acct-alice-1, got %q", bridge.lastTargetID)
+	}
+	if bridge.lastBody != "hello there" {
+		t.Fatalf("expected fallback body hello there, got %q", bridge.lastBody)
 	}
 }
 

@@ -17,8 +17,10 @@ type Definition struct {
 	Temperature         *float32                            `json:"temperature,omitempty"`
 	TopP                *float32                            `json:"top_p,omitempty"`
 	MaxCompletionTokens *int                                `json:"max_completion_tokens,omitempty"`
+	ChatMaxCompletionTokens *int                            `json:"-"`
 	Abilities           []string                            `json:"abilities"`
 	Enabled             bool                                `json:"enabled"`
+	Autonomous          config.AgentAutonomousConfig        `json:"-"`
 	SolarIntegration    config.AgentSolarNetworkIntegration `json:"-"`
 }
 
@@ -52,8 +54,10 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 			Temperature:         cfg.Temperature,
 			TopP:                cfg.TopP,
 			MaxCompletionTokens: cfg.MaxCompletionTokens,
+			ChatMaxCompletionTokens: cfg.ChatMaxCompletionTokens,
 			Abilities:           append([]string(nil), cfg.Abilities...),
 			Enabled:             cfg.Enabled,
+			Autonomous:          cfg.Autonomous,
 			SolarIntegration:    cfg.SolarNetworkIntegration,
 		}
 		order = append(order, id)

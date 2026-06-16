@@ -27,7 +27,7 @@ func TestClientRunStream(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, "")
+	client, err := NewClient(server.URL, "", "")
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestClientListMessagesPreservesQueryString(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, "")
+	client, err := NewClient(server.URL, "", "")
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

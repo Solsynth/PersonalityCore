@@ -135,23 +135,21 @@ func (s *ConversationService) runWithChatTools(
 		}
 		if len(response.ToolCalls) == 0 {
 			finalContent := strings.TrimSpace(response.Content)
-			if binding != nil {
-				if !allowOutboundReply {
-					logging.Log.Info().
-						Str("agent_id", agentDef.ID).
-						Str("conversation_id", threadID).
-						Str("run_id", runID).
-						Msg("suppressing plain-text group chat reply because latest inbound message did not mention or reply to the bot")
-					finalContent = ""
-				}
-				normalized, shouldFallbackSend := normalizeSolarChatFinalResponse(finalContent)
-				if shouldFallbackSend {
-					if err := s.deliverFallbackChatResponse(ctx, thread, agentDef.ID, runID, binding, normalized); err != nil {
-						return "", err
-					}
-				}
-				finalContent = normalized
+			if binding != nil && !allowOutboundReply {
+				logging.Log.Info().
+					Str("agent_id", agentDef.ID).
+					Str("conversation_id", threadID).
+					Str("run_id", runID).
+					Msg("suppressing plain-text group chat reply because latest inbound message did not mention or reply to the bot")
+				finalContent = ""
 			}
+			normalized, shouldFallbackSend := normalizeSolarChatFinalResponse(finalContent)
+			if shouldFallbackSend {
+				if err := s.deliverFallbackChatResponse(ctx, thread, agentDef.ID, runID, binding, normalized); err != nil {
+					return "", err
+				}
+			}
+			finalContent = normalized
 			logging.Log.Info().
 				Str("agent_id", agentDef.ID).
 				Str("conversation_id", threadID).
@@ -182,6 +180,7 @@ func (s *ConversationService) runWithChatTools(
 		}
 
 		messages = append(messages, response)
+		shouldStopAfterTools := false
 		for _, call := range response.ToolCalls {
 			logging.Log.Debug().
 				Str("agent_id", agentDef.ID).
@@ -225,8 +224,11 @@ func (s *ConversationService) runWithChatTools(
 				Str("tool_result", result.Content).
 				Msg("chat tool call completed")
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
+			if isSolarOutboundChatToolName(call.Function.Name) {
+				shouldStopAfterTools = true
+			}
 		}
-		if binding != nil {
+		if binding != nil && shouldStopAfterTools {
 			return "", nil
 		}
 	}
@@ -302,14 +304,29 @@ func (s *ConversationService) deliverFallbackChatResponse(
 	binding *database.ExternalChatBinding,
 	content string,
 ) error {
-	if thread == nil || binding == nil || strings.TrimSpace(content) == "" || s.solar == nil {
+	if thread == nil || strings.TrimSpace(content) == "" || s.solar == nil {
 		return nil
 	}
+
+	roomID := ""
+	targetAccountName := ""
+	if binding != nil {
+		roomID = binding.RemoteRoomID
+		targetAccountName = binding.RemoteAccount
+	}
+	if roomID == "" && targetAccountName == "" {
+		targetAccountName = s.resolveAutonomousTargetAccountName(ctx, thread)
+	}
+	if roomID == "" && targetAccountName == "" {
+		return nil
+	}
+
 	logging.Log.Warn().
 		Str("agent_id", agentID).
 		Str("conversation_id", thread.ID).
 		Str("run_id", runID).
-		Str("room_id", binding.RemoteRoomID).
+		Str("room_id", roomID).
+		Str("target_account_name", targetAccountName).
 		Int("response_chars", len(content)).
 		Msg("chat model skipped tool call; forwarding assistant text via fallback solar send")
 
@@ -317,7 +334,6 @@ func (s *ConversationService) deliverFallbackChatResponse(
 	if len(messages) == 0 {
 		return nil
 	}
-	roomID := binding.RemoteRoomID
 	messageID := ""
 	lastSentAt := time.Time{}
 	for i, message := range messages {
@@ -326,11 +342,12 @@ func (s *ConversationService) deliverFallbackChatResponse(
 				return err
 			}
 		}
-		sentRoomID, sentMessageID, err := s.solar.SendBotMessage(ctx, agentID, roomID, "", message)
+		sentRoomID, sentMessageID, err := s.solar.SendBotMessage(ctx, agentID, roomID, targetAccountName, s.resolveAutonomousTargetAccountID(ctx, thread), message)
 		if err != nil {
 			return err
 		}
 		roomID = sentRoomID
+		targetAccountName = ""
 		messageID = sentMessageID
 		lastSentAt = time.Now()
 		logging.Log.Debug().
@@ -342,7 +359,7 @@ func (s *ConversationService) deliverFallbackChatResponse(
 			Int("batch_index", i).
 			Msg("sent fallback solar message chunk")
 	}
-	if err := s.ensureSolarRoomBinding(ctx, thread, agentID, roomID, binding.RemoteAccount, time.Now()); err != nil {
+	if err := s.ensureSolarRoomBinding(ctx, thread, agentID, roomID, firstNonEmpty(targetAccountName, bindingRemoteAccount(binding)), time.Now()); err != nil {
 		return err
 	}
 	logging.Log.Info().
@@ -353,6 +370,56 @@ func (s *ConversationService) deliverFallbackChatResponse(
 		Str("message_id", messageID).
 		Msg("fallback solar send succeeded")
 	return nil
+}
+
+func bindingRemoteAccount(binding *database.ExternalChatBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return strings.TrimSpace(binding.RemoteAccount)
+}
+
+func (s *ConversationService) resolveAutonomousTargetAccountName(ctx context.Context, thread *database.ConversationThread) string {
+	meta := s.resolveAutonomousTargetMetadata(ctx, thread)
+	if meta == nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.TargetAccountName)
+}
+
+func (s *ConversationService) resolveAutonomousTargetAccountID(ctx context.Context, thread *database.ConversationThread) string {
+	meta := s.resolveAutonomousTargetMetadata(ctx, thread)
+	if meta == nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.TargetAccountID)
+}
+
+func (s *ConversationService) resolveAutonomousTargetMetadata(ctx context.Context, thread *database.ConversationThread) *autonomousTargetMetadata {
+	if s == nil || s.db == nil || thread == nil {
+		return nil
+	}
+	var record database.ConversationMessage
+	if err := s.db.WithContext(ctx).
+		Where("thread_id = ? AND role = ?", thread.ID, "system").
+		Order("sequence DESC").
+		First(&record).Error; err != nil {
+		return nil
+	}
+	var meta autonomousTargetMetadata
+	if decodeMessageMetadata(record.Metadata, &meta) != nil {
+		return nil
+	}
+	if strings.TrimSpace(meta.Source) != "autonomous" {
+		return nil
+	}
+	return &meta
+}
+
+type autonomousTargetMetadata struct {
+	Source            string `json:"source"`
+	TargetAccountName string `json:"target_account_name"`
+	TargetAccountID   string `json:"target_account_id"`
 }
 
 func splitSolarOutboundMessages(content string) []string {
@@ -440,7 +507,7 @@ func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message str
 	if err := waitForSolarOutboundGap(ctx, s.lastSentAt); err != nil {
 		return err
 	}
-	roomID, messageID, err := s.service.solar.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", message)
+	roomID, messageID, err := s.service.solar.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", "", message)
 	if err != nil {
 		return err
 	}
@@ -714,7 +781,7 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 		Int("message_chars", len(input.Message)).
 		Msg("sending solar chat message via tool")
 
-	roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, input.RoomID, input.TargetAccountName, input.Message)
+	roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, input.RoomID, input.TargetAccountName, "", input.Message)
 	if err != nil {
 		logging.Log.Error().
 			Err(err).
@@ -793,7 +860,7 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 				return nil, err
 			}
 		}
-		roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, resolvedRoomID, input.TargetAccountName, item)
+		roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, resolvedRoomID, input.TargetAccountName, "", item)
 		if err != nil {
 			logging.Log.Error().
 				Err(err).

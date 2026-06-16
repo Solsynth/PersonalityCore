@@ -68,3 +68,52 @@ func TestAuthMiddleware_OfflineIgnoresHeaderOverride(t *testing.T) {
 		t.Fatalf("expected local-dev, got %q", resp.Body.String())
 	}
 }
+
+func TestAutonomousSecretMiddlewareRejectsMissingSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			AutonomousSecret: "secret-123",
+		},
+	}
+
+	r := gin.New()
+	r.Use(autonomousSecretMiddleware(cfg))
+	r.POST("/internal/check", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/check", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.Code)
+	}
+}
+
+func TestAutonomousSecretMiddlewareAcceptsValidSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			AutonomousSecret: "secret-123",
+		},
+	}
+
+	r := gin.New()
+	r.Use(autonomousSecretMiddleware(cfg))
+	r.POST("/internal/check", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/check", nil)
+	req.Header.Set("X-Autonomous-Secret", "secret-123")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+}

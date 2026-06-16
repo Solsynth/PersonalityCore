@@ -83,6 +83,16 @@ type RunInput struct {
 	RequestMetadata map[string]any         `json:"-"`
 }
 
+type AutonomousRunInput struct {
+	ThreadID           string         `json:"thread_id"`
+	RoomID             string         `json:"room_id"`
+	TargetAccountName  string         `json:"target_account_name"`
+	TargetAccountID    string         `json:"target_account_id"`
+	Prompt             string         `json:"prompt"`
+	Trigger            string         `json:"trigger"`
+	RequestMetadata    map[string]any `json:"-"`
+}
+
 type ListInput struct {
 	Take   int
 	Offset int
@@ -104,7 +114,11 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 		executor: executor,
 		humanize: humanize.NewManager(db),
 	}
-	svc.solarInbound = newSolarInboundBatcher(2*time.Second, svc.handleSolarInboundBatch)
+	debounceDelay := 2 * time.Second
+	if cfg != nil && cfg.Personality.SolarInboundDebounce > 0 {
+		debounceDelay = cfg.Personality.SolarInboundDebounce
+	}
+	svc.solarInbound = newSolarInboundBatcher(debounceDelay, svc.handleSolarInboundBatch)
 	return svc
 }
 
@@ -229,13 +243,27 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 		return nil, nil, nil, err
 	}
 
-	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, "user", content, nil, metadata)
+	return s.createRunWithRequest(ctx, thread, accountID, "user", content, input.Stream, metadata)
+}
+
+func (s *ConversationService) createRunWithRequest(
+	ctx context.Context,
+	thread *database.ConversationThread,
+	accountID, requestRole, requestContent string,
+	stream bool,
+	requestMetadata map[string]any,
+) (*database.ConversationThread, *database.ConversationRun, *database.ConversationMessage, error) {
+	if thread == nil {
+		return nil, nil, nil, fmt.Errorf("conversation thread is required")
+	}
+
+	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, requestRole, requestContent, nil, requestMetadata)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	now := time.Now()
-	settings, _ := json.Marshal(map[string]any{"stream": input.Stream})
+	settings, _ := json.Marshal(map[string]any{"stream": stream})
 	run := &database.ConversationRun{
 		ID:               newID(),
 		ThreadID:         thread.ID,
@@ -244,7 +272,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 		Status:           "running",
 		Model:            "",
 		RequestMessageID: requestMessage.ID,
-		Stream:           input.Stream,
+		Stream:           stream,
 		Settings:         settings,
 		Usage:            datatypes.JSON([]byte("{}")),
 		StartedAt:        now,
@@ -257,9 +285,9 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 		Str("run_id", run.ID).
 		Str("agent_id", thread.AgentID).
 		Str("account_id", accountID).
-		Bool("stream", input.Stream).
-		Int("prompt_chars", len(content)).
-		Int("input_part_count", len(input.InputParts)).
+		Bool("stream", stream).
+		Str("request_role", requestRole).
+		Int("prompt_chars", len(requestContent)).
 		Msg("run created")
 	return thread, run, requestMessage, nil
 }
@@ -341,6 +369,20 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 	}
 
+	toolResponseIDs := make(map[string]struct{})
+	for _, record := range records {
+		if strings.ToLower(record.Role) != "tool" {
+			continue
+		}
+		var meta toolMessageMetadata
+		if decodeMessageMetadata(record.Metadata, &meta) != nil {
+			continue
+		}
+		if toolCallID := strings.TrimSpace(meta.ToolCallID); toolCallID != "" {
+			toolResponseIDs[toolCallID] = struct{}{}
+		}
+	}
+
 	pendingToolCalls := make(map[string]struct{})
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
@@ -353,7 +395,8 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case "tool":
 			role = schema.Tool
 		}
-		msg := &schema.Message{Role: role, Content: renderMessageContextContent(record.Content, record.CreatedAt)}
+		renderedContent := renderConversationRecordContent(record)
+		msg := &schema.Message{Role: role, Content: renderedContent}
 		switch role {
 		case schema.User:
 			var meta userMessageMetadata
@@ -362,7 +405,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 					msg.Content = renderTextOnlyMessageInputParts(meta.InputParts, msg.Content)
 					break
 				}
-				parts, err := buildSchemaMessageInputParts(meta.InputParts, renderMessageContextContent(record.Content, record.CreatedAt))
+				parts, err := buildSchemaMessageInputParts(meta.InputParts, renderedContent)
 				if err != nil {
 					return nil, agent.Definition{}, err
 				}
@@ -372,9 +415,25 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case schema.Assistant:
 			var meta assistantMessageMetadata
 			if decodeMessageMetadata(record.Metadata, &meta) == nil {
-				msg.ToolCalls = meta.ToolCalls
-				msg.ReasoningContent = meta.ReasoningContent
+				filteredCalls := make([]schema.ToolCall, 0, len(meta.ToolCalls))
 				for _, call := range meta.ToolCalls {
+					if strings.TrimSpace(call.ID) == "" {
+						continue
+					}
+					if _, ok := toolResponseIDs[strings.TrimSpace(call.ID)]; !ok {
+						logging.Log.Debug().
+							Str("conversation_id", threadID).
+							Str("message_id", record.ID).
+							Str("tool_name", call.Function.Name).
+							Str("tool_call_id", call.ID).
+							Msg("dropping persisted assistant tool call without matching tool response")
+						continue
+					}
+					filteredCalls = append(filteredCalls, call)
+				}
+				msg.ToolCalls = filteredCalls
+				msg.ReasoningContent = meta.ReasoningContent
+				for _, call := range msg.ToolCalls {
 					if strings.TrimSpace(call.ID) == "" {
 						continue
 					}
@@ -487,6 +546,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Msg("invoking model")
 	responseContent := ""
 	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
 			Str("conversation_id", threadID).
 			Str("run_id", run.ID).
@@ -526,7 +586,9 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 }
 
 type StreamCallbacks struct {
-	OnChunk func(string) error
+	OnChunk    func(string) error
+	OnToolCall func(schema.ToolCall) error
+	OnReasoning func(string) error
 }
 
 func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID string, input RunInput, callbacks StreamCallbacks) (*RunResult, error) {
@@ -557,6 +619,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	var builder strings.Builder
 	chunkCount := 0
 	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
 			Str("conversation_id", threadID).
 			Str("run_id", run.ID).
@@ -593,21 +656,37 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 				_ = s.FailRun(ctx, run, recvErr)
 				return nil, recvErr
 			}
-			if chunk == nil || chunk.Content == "" {
+			if chunk == nil {
 				continue
 			}
-			chunkCount++
-			builder.WriteString(chunk.Content)
-			if callbacks.OnChunk != nil {
-				if err := callbacks.OnChunk(chunk.Content); err != nil {
+			if chunk.Content != "" {
+				chunkCount++
+				builder.WriteString(chunk.Content)
+				if callbacks.OnChunk != nil {
+					if err := callbacks.OnChunk(chunk.Content); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
+				}
+				if outboundSender != nil {
+					if err := outboundSender.Push(ctx, chunk.Content); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
+				}
+			}
+			if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
+				if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
 					_ = s.FailRun(ctx, run, err)
 					return nil, err
 				}
 			}
-			if outboundSender != nil {
-				if err := outboundSender.Push(ctx, chunk.Content); err != nil {
-					_ = s.FailRun(ctx, run, err)
-					return nil, err
+			if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
+				for _, call := range chunk.ToolCalls {
+					if err := callbacks.OnToolCall(call); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
 				}
 			}
 		}
@@ -637,16 +716,45 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 				_ = s.FailRun(ctx, run, recvErr)
 				return nil, recvErr
 			}
-			if chunk == nil || chunk.Content == "" {
+			if chunk == nil {
 				continue
 			}
-			chunkCount++
-			builder.WriteString(chunk.Content)
-			if callbacks.OnChunk != nil {
-				if err := callbacks.OnChunk(chunk.Content); err != nil {
+			emitted := false
+			if chunk.Content != "" {
+				chunkCount++
+				builder.WriteString(chunk.Content)
+				if callbacks.OnChunk != nil {
+					if err := callbacks.OnChunk(chunk.Content); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
+				}
+				emitted = true
+			}
+			if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
+				if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
 					_ = s.FailRun(ctx, run, err)
 					return nil, err
 				}
+				emitted = true
+			}
+			if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
+				for _, call := range chunk.ToolCalls {
+					if err := callbacks.OnToolCall(call); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
+				}
+				emitted = true
+			}
+			if emitted {
+				logging.Log.Debug().
+					Str("conversation_id", threadID).
+					Str("run_id", run.ID).
+					Int("content_len", len(chunk.Content)).
+					Int("reasoning_len", len(chunk.ReasoningContent)).
+					Int("tool_calls", len(chunk.ToolCalls)).
+					Msg("stream chunk emitted")
 			}
 		}
 	}
@@ -767,6 +875,15 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func effectiveChatAgentDefinition(def agent.Definition) agent.Definition {
+	if def.ChatMaxCompletionTokens == nil {
+		return def
+	}
+	clone := def
+	clone.MaxCompletionTokens = def.ChatMaxCompletionTokens
+	return clone
 }
 
 func decodeMessageMetadata(raw datatypes.JSON, out any) error {
@@ -909,6 +1026,16 @@ func cloneMetadataMap(in map[string]any) map[string]any {
 	return out
 }
 
+func ensureMetadataMap(in map[string]any, capacity int) map[string]any {
+	if in != nil {
+		return in
+	}
+	if capacity < 0 {
+		capacity = 0
+	}
+	return make(map[string]any, capacity)
+}
+
 func (s *ConversationService) supportsVisionForAgent(def agent.Definition) bool {
 	if s == nil || s.executor == nil {
 		return true
@@ -923,6 +1050,50 @@ func renderMessageContextContent(content string, createdAt time.Time) string {
 		return timestamp
 	}
 	return timestamp + "\n\n" + content
+}
+
+func renderConversationRecordContent(record database.ConversationMessage) string {
+	content := strings.TrimSpace(record.Content)
+	if strings.ToLower(strings.TrimSpace(record.Role)) != "user" {
+		return renderMessageContextContent(content, record.CreatedAt)
+	}
+
+	if line, ok := renderSolarUserHistoryLine(record.Metadata, record.CreatedAt, content); ok {
+		return line
+	}
+
+	return renderMessageContextContent(content, record.CreatedAt)
+}
+
+func renderSolarUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string) (string, bool) {
+	var meta solarInboundRequestMetadata
+	if decodeMessageMetadata(raw, &meta) != nil {
+		return "", false
+	}
+	if strings.TrimSpace(meta.Source) != "solar" {
+		return "", false
+	}
+	username := strings.TrimSpace(meta.SenderAccountName)
+	if username == "" {
+		username = strings.TrimSpace(meta.SenderNick)
+	}
+	if username == "" {
+		username = strings.TrimSpace(meta.SenderAccountID)
+	}
+	if username == "" {
+		return "", false
+	}
+	if strings.HasPrefix(username, "@") {
+		username = strings.TrimPrefix(username, "@")
+	}
+	timestamp := createdAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+	content = strings.TrimSpace(content)
+	switch {
+	case content == "":
+		return fmt.Sprintf("[@%s] [%s]", username, timestamp), true
+	default:
+		return fmt.Sprintf("[@%s] [%s] %s", username, timestamp, content), true
+	}
 }
 
 func renderCurrentDateTimeContext(now time.Time) string {

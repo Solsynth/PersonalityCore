@@ -42,7 +42,7 @@ func (c *Client) ResolveAccountByName(ctx context.Context, accountName string) (
 
 func (c *Client) GetAccountByID(ctx context.Context, accountID string) (*Account, error) {
 	var out Account
-	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/id/"+url.PathEscape(strings.TrimSpace(accountID)), nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountID)), nil, nil, &out); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(out.ID) == "" {
@@ -53,16 +53,19 @@ func (c *Client) GetAccountByID(ctx context.Context, accountID string) (*Account
 
 func (c *Client) GetAccountProfile(ctx context.Context, accountName string) (AccountProfile, error) {
 	out := AccountProfile{}
-	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountName))+"/profile", nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountName)), nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
 func (c *Client) CreateDirectMessage(ctx context.Context, targetAccountID string) (*ChatRoom, error) {
-	body := map[string]any{
+	request := map[string]any{
 		"related_user_id": strings.TrimSpace(targetAccountID),
-		"encryption_mode": "None",
+		"encryption_mode": 0,
+	}
+	body := map[string]any{
+		"request": request,
 	}
 	var out ChatRoom
 	if err := c.doJSON(ctx, http.MethodPost, "/messager/chat/direct", nil, body, &out); err != nil {
@@ -72,6 +75,49 @@ func (c *Client) CreateDirectMessage(ctx context.Context, targetAccountID string
 		return nil, fmt.Errorf("solar direct message creation returned empty room id")
 	}
 	return &out, nil
+}
+
+func (c *Client) ListJoinedRooms(ctx context.Context) ([]ChatRoom, error) {
+	body := map[string]any{
+		"last_sync_timestamp": 0,
+	}
+	var out struct {
+		Changes []struct {
+			Type string    `json:"type"`
+			Room *ChatRoom `json:"room"`
+		} `json:"changes"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/messager/chat/rooms/sync", nil, body, &out); err != nil {
+		return nil, err
+	}
+	rooms := make([]ChatRoom, 0, len(out.Changes))
+	for _, change := range out.Changes {
+		if change.Room == nil || strings.TrimSpace(change.Type) == "removed" {
+			continue
+		}
+		rooms = append(rooms, *change.Room)
+	}
+	return rooms, nil
+}
+
+func (c *Client) FindExistingDirectMessage(ctx context.Context, targetAccountID string) (*ChatRoom, error) {
+	rooms, err := c.ListJoinedRooms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	targetAccountID = strings.TrimSpace(targetAccountID)
+	for _, room := range rooms {
+		if room.Type != 1 {
+			continue
+		}
+		for _, member := range room.DirectMembers {
+			if strings.TrimSpace(member.AccountID) == targetAccountID {
+				roomCopy := room
+				return &roomCopy, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 func (c *Client) SendMessage(ctx context.Context, roomID, content string) (*ChatMessage, error) {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoad_MergesAgentDirectory(t *testing.T) {
@@ -212,5 +213,116 @@ accessToken = "secret-token"
 
 	if got := cfg.Agents.Items[0].SolarNetworkIntegration.AccountName; got != "bot-account" {
 		t.Fatalf("expected accountName to load, got %q", got)
+	}
+}
+
+func TestLoad_AutonomousConfigLoadsWakeSettings(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "test-key"
+timeout = "30s"
+
+[[agents.items]]
+id = "autonomous-bot"
+name = "Autonomous Bot"
+model = "openai/gpt-4.1-mini"
+abilities = ["autonomous"]
+enabled = true
+
+[agents.items.autonomous]
+wakeInterval = "10m"
+wakePrompt = "Check for anything worth proactively following up on."
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Agents.Items[0].Autonomous.WakeInterval; got != 10*time.Minute {
+		t.Fatalf("expected wake interval 10m, got %v", got)
+	}
+	if got := cfg.Agents.Items[0].Autonomous.WakePrompt; got != "Check for anything worth proactively following up on." {
+		t.Fatalf("unexpected wake prompt %q", got)
+	}
+}
+
+func TestLoad_ChatMaxCompletionTokensLoads(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[solarNetwork]
+baseUrl = "https://solar.example"
+
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "test-key"
+timeout = "30s"
+
+[[agents.items]]
+id = "chatty"
+name = "Chatty"
+model = "openai/gpt-4.1-mini"
+maxCompletionTokens = 1024
+chatMaxCompletionTokens = 160
+abilities = ["chat"]
+enabled = true
+
+[agents.items.solar-network-integration]
+accountName = "bot-account"
+accessToken = "secret-token"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Agents.Items[0].ChatMaxCompletionTokens == nil || *cfg.Agents.Items[0].ChatMaxCompletionTokens != 160 {
+		t.Fatalf("expected chat max completion tokens 160, got %#v", cfg.Agents.Items[0].ChatMaxCompletionTokens)
+	}
+	if cfg.Agents.Items[0].MaxCompletionTokens == nil || *cfg.Agents.Items[0].MaxCompletionTokens != 1024 {
+		t.Fatalf("expected normal max completion tokens 1024, got %#v", cfg.Agents.Items[0].MaxCompletionTokens)
+	}
+}
+
+func TestLoad_PersonalitySolarInboundDebounceLoads(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[personality]
+solarInboundDebounce = "5s"
+
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "test-key"
+timeout = "30s"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Personality.SolarInboundDebounce; got != 5*time.Second {
+		t.Fatalf("expected solar inbound debounce 5s, got %v", got)
 	}
 }

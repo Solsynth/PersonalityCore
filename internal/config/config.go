@@ -51,11 +51,13 @@ type AuthConfig struct {
 	AllowDevIDs      bool   `mapstructure:"allowDevIds"`
 	Offline          bool   `mapstructure:"offline"`
 	OfflineAccountID string `mapstructure:"offlineAccountId"`
+	AutonomousSecret string `mapstructure:"autonomousSecret"`
 }
 
 type PersonalityConfig struct {
 	MaxHistoryMessages int           `mapstructure:"maxHistoryMessages"`
 	SSEHeartbeat       time.Duration `mapstructure:"sseHeartbeat"`
+	SolarInboundDebounce time.Duration `mapstructure:"solarInboundDebounce"`
 }
 
 type SentryConfig struct {
@@ -84,11 +86,18 @@ type AgentConfig struct {
 	Temperature             *float32                     `mapstructure:"temperature"`
 	TopP                    *float32                     `mapstructure:"topP"`
 	MaxCompletionTokens     *int                         `mapstructure:"maxCompletionTokens"`
+	ChatMaxCompletionTokens *int                         `mapstructure:"chatMaxCompletionTokens"`
 	Abilities               []string                     `mapstructure:"abilities"`
 	ToolScopes              []string                     `mapstructure:"toolScopes"`
+	Autonomous              AgentAutonomousConfig        `mapstructure:"autonomous"`
 	SolarNetworkIntegration AgentSolarNetworkIntegration `mapstructure:"solar-network-integration"`
 	Enabled                 bool                         `mapstructure:"enabled"`
 	sourceDir               string                       `mapstructure:"-"`
+}
+
+type AgentAutonomousConfig struct {
+	WakeInterval time.Duration `mapstructure:"wakeInterval"`
+	WakePrompt   string        `mapstructure:"wakePrompt"`
 }
 
 type AgentSolarNetworkIntegration struct {
@@ -166,8 +175,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.allowDevIds", true)
 	v.SetDefault("auth.offline", false)
 	v.SetDefault("auth.offlineAccountId", "local-dev")
+	v.SetDefault("auth.autonomousSecret", "")
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
+	v.SetDefault("personality.solarInboundDebounce", 2*time.Second)
 	v.SetDefault("sentry.dsn", "")
 	v.SetDefault("sentry.tracesSampleRate", 0.01)
 	v.SetDefault("sentry.environment", "")
@@ -182,6 +193,7 @@ func setDefaults(v *viper.Viper) {
 func applyEnvOverrides(v *viper.Viper) {
 	setEnvIfPresent(v, "database.dsn", "DATABASE_DSN")
 	setEnvIfPresent(v, "auth.target", "AUTH_TARGET")
+	setEnvIfPresent(v, "auth.autonomousSecret", "AUTONOMOUS_SECRET")
 }
 
 func setEnvIfPresent(v *viper.Viper, key, env string) {

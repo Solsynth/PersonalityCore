@@ -37,9 +37,11 @@ type Model struct {
 	status           string
 	err              string
 	streaming        bool
-	pendingAssistant string
-	pendingUserInput string
-	streamEvents     chan tea.Msg
+	pendingAssistant  string
+	pendingReasoning  string
+	pendingToolCalls  []string
+	pendingUserInput  string
+	streamEvents      chan tea.Msg
 }
 
 type loadedMsg struct {
@@ -59,6 +61,12 @@ type streamEventMsg struct {
 	event SSEEvent
 	err   error
 	done  bool
+}
+
+type toolCallDelta struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type runResultMsg struct {
@@ -227,12 +235,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingAssistant += payload.Delta
 					m.refreshTranscript()
 				}
+			case "reasoning.delta":
+				var payload struct {
+					Delta string `json:"delta"`
+				}
+				if err := jsonUnmarshal(msg.event.Data, &payload); err == nil {
+					m.pendingReasoning += payload.Delta
+					m.refreshTranscript()
+				}
+			case "tool_call.delta":
+				var call toolCallDelta
+				if err := jsonUnmarshal(msg.event.Data, &call); err == nil {
+					label := call.Name
+					if label == "" {
+						label = "tool_call"
+					}
+					m.pendingToolCalls = append(m.pendingToolCalls, label)
+					m.refreshTranscript()
+				}
 			case "message.completed":
 				var payload struct {
 					Content string `json:"content"`
 				}
 				if err := jsonUnmarshal(msg.event.Data, &payload); err == nil {
 					m.pendingAssistant = ""
+					m.pendingReasoning = ""
+					m.pendingToolCalls = nil
 					m.messages = append(m.messages, Message{Role: "assistant", Content: payload.Content})
 					m.refreshTranscript()
 				}
@@ -416,9 +444,17 @@ func (m *Model) refreshTranscript() {
 		lines = append(lines, message.Content)
 		lines = append(lines, "")
 	}
-	if m.pendingAssistant != "" {
+	if m.pendingReasoning != "" || len(m.pendingToolCalls) > 0 || m.pendingAssistant != "" {
 		lines = append(lines, agentStyle.Render("assistant"))
-		lines = append(lines, m.pendingAssistant)
+		if m.pendingReasoning != "" {
+			lines = append(lines, statusStyle.Render("[thinking] "+m.pendingReasoning))
+		}
+		for _, tc := range m.pendingToolCalls {
+			lines = append(lines, statusStyle.Render("[tool: "+tc+"]"))
+		}
+		if m.pendingAssistant != "" {
+			lines = append(lines, m.pendingAssistant)
+		}
 		lines = append(lines, "")
 	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))

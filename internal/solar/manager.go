@@ -105,12 +105,12 @@ func (m *Manager) TrackRoom(agentID, roomID string) {
 	conn.trackRoom(roomID)
 }
 
-func (m *Manager) SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, content string) (string, string, error) {
+func (m *Manager) SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {
 	conn := m.getAgent(agentID)
 	if conn == nil {
 		return "", "", fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
 	}
-	return conn.sendBotMessage(ctx, roomID, targetAccountName, content)
+	return conn.sendBotMessage(ctx, roomID, targetAccountName, targetAccountID, content)
 }
 
 func (m *Manager) GetAccount(ctx context.Context, agentID, accountName, accountID string) (*Account, error) {
@@ -237,28 +237,44 @@ func (c *agentConnection) run(ctx context.Context) {
 	}
 }
 
-func (c *agentConnection) sendBotMessage(ctx context.Context, roomID, targetAccountName, content string) (string, string, error) {
+func (c *agentConnection) sendBotMessage(ctx context.Context, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {
 	logging.Log.Info().
 		Str("agent_id", c.def.ID).
 		Str("room_id", strings.TrimSpace(roomID)).
 		Str("target_account_name", strings.TrimSpace(targetAccountName)).
+		Str("target_account_id", strings.TrimSpace(targetAccountID)).
 		Int("message_chars", len(strings.TrimSpace(content))).
 		Msg("preparing solar bot message send")
 
 	resolvedRoomID := strings.TrimSpace(roomID)
 	if resolvedRoomID == "" {
-		target, err := c.client.ResolveAccountByName(ctx, targetAccountName)
-		if err != nil {
-			return "", "", err
+		targetID := strings.TrimSpace(targetAccountID)
+		if targetID == "" {
+			target, err := c.client.ResolveAccountByName(ctx, targetAccountName)
+			if err != nil {
+				return "", "", err
+			}
+			targetID = target.ID
 		}
-		room, err := c.client.CreateDirectMessage(ctx, target.ID)
+		room, err := c.client.CreateDirectMessage(ctx, targetID)
 		if err != nil {
-			return "", "", err
+			if strings.Contains(err.Error(), "You already have a DM with this user.") {
+				room, err = c.client.FindExistingDirectMessage(ctx, targetID)
+				if err != nil {
+					return "", "", err
+				}
+				if room == nil {
+					return "", "", fmt.Errorf("existing DM reported for %q but no room could be resolved", targetAccountName)
+				}
+			} else {
+				return "", "", err
+			}
 		}
 		resolvedRoomID = room.ID
 		logging.Log.Info().
 			Str("agent_id", c.def.ID).
 			Str("target_account_name", targetAccountName).
+			Str("target_account_id", targetID).
 			Str("room_id", resolvedRoomID).
 			Msg("resolved solar direct message room")
 	}

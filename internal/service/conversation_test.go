@@ -145,6 +145,99 @@ func TestResolveImpressionAccountIDFromSolarMetadataUsesSenderAccountID(t *testi
 	}
 }
 
+func TestBuildModelMessagesPrefixesSolarUserHistoryWithUsername(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "support-bot",
+		Name:         "Support Bot",
+		Model:        "openai/test",
+		Abilities:    []string{"chat"},
+		Enabled:      true,
+		SystemPrompt: "You are helpful.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-solar-prefix-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "hello there", nil, map[string]any{
+		"source":              "solar",
+		"sender_account_id":   "acct-user-1",
+		"sender_account_name": "alice",
+		"sender_nick":         "Alice",
+	}); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	var userMsg *schema.Message
+	for _, msg := range messages {
+		if msg.Role == schema.User {
+			userMsg = msg
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("expected user message to be present")
+	}
+	if !strings.Contains(userMsg.Content, "[@alice] [") {
+		t.Fatalf("expected solar history to include [@alice] [date] prefix, got %q", userMsg.Content)
+	}
+	if !strings.Contains(userMsg.Content, "] hello there") {
+		t.Fatalf("expected solar history content, got %q", userMsg.Content)
+	}
+}
+
+func TestEffectiveChatAgentDefinitionOverridesMaxCompletionTokens(t *testing.T) {
+	baseMax := 1024
+	chatMax := 160
+	def := agent.Definition{
+		ID:                      "chatty",
+		MaxCompletionTokens:     &baseMax,
+		ChatMaxCompletionTokens: &chatMax,
+	}
+
+	got := effectiveChatAgentDefinition(def)
+	if got.MaxCompletionTokens == nil || *got.MaxCompletionTokens != 160 {
+		t.Fatalf("expected chat max completion tokens 160, got %#v", got.MaxCompletionTokens)
+	}
+	if def.MaxCompletionTokens == nil || *def.MaxCompletionTokens != 1024 {
+		t.Fatalf("expected original definition to remain 1024, got %#v", def.MaxCompletionTokens)
+	}
+}
+
+func TestNewConversationServiceUsesConfiguredSolarInboundDebounce(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{
+			SolarInboundDebounce: 5 * time.Second,
+		},
+	}, nil, nil)
+
+	if svc.solarInbound == nil {
+		t.Fatal("expected solar inbound batcher")
+	}
+	if svc.solarInbound.delay != 5*time.Second {
+		t.Fatalf("expected debounce delay 5s, got %v", svc.solarInbound.delay)
+	}
+}
+
 func TestSolarSenderIdentityPromptPrefersUsername(t *testing.T) {
 	got := solarSenderIdentityPrompt(&solarInboundRequestMetadata{
 		SenderAccountID:   "acct-user-1",
@@ -681,6 +774,60 @@ func TestBuildModelMessagesSkipsOrphanedToolMessageWithUnknownToolCallID(t *test
 	for _, msg := range messages {
 		if msg.Role == schema.Tool {
 			t.Fatalf("expected orphaned tool message to be skipped")
+		}
+	}
+}
+
+func TestBuildModelMessagesDropsAssistantToolCallsWithoutToolResponses(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "support-bot",
+		Name:         "Support Bot",
+		Model:        "openai/test",
+		Abilities:    []string{"chat"},
+		Enabled:      true,
+		SystemPrompt: "You are helpful.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-orphan-assistant-call-1",
+		AccountID: "solar:support-bot:room-1",
+		AgentID:   "support-bot",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessage(context.Background(), thread, nil, "user", "hello", nil); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "assistant", "", stringPtr("openai/test"), map[string]any{
+		"tool_calls": []schema.ToolCall{{
+			ID:   "call-missing",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      sendChatToolName,
+				Arguments: `{"room_id":"room-1","message":"hi"}`,
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("create assistant tool message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+			t.Fatalf("expected orphaned assistant tool calls to be dropped, got %#v", msg.ToolCalls)
 		}
 	}
 }

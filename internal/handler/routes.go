@@ -3,8 +3,10 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 
 	"src.solsynth.dev/sosys/personality/internal/identity"
@@ -14,6 +16,7 @@ import (
 func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
 	r.GET("/agents", func(c *gin.Context) { listAgents(c, conversations) })
 	r.GET("/agents/:id", func(c *gin.Context) { getAgent(c, conversations) })
+	r.POST("/agents/:id/autonomous-runs", func(c *gin.Context) { createAutonomousRun(c, conversations) })
 
 	conv := r.Group("/conversations")
 	{
@@ -26,6 +29,10 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.GET("/:id/runs", func(c *gin.Context) { listRuns(c, conversations) })
 		conv.GET("/:id/runs/:runId", func(c *gin.Context) { getRun(c, conversations) })
 	}
+}
+
+func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
+	r.POST("/agents/:id/start-conversation", func(c *gin.Context) { startAutonomousConversation(c, conversations) })
 }
 
 func listAgents(c *gin.Context, conversations *service.ConversationService) {
@@ -152,6 +159,46 @@ func createRun(c *gin.Context, conversations *service.ConversationService) {
 	c.JSON(http.StatusOK, result)
 }
 
+func createAutonomousRun(c *gin.Context, conversations *service.ConversationService) {
+	var input service.AutonomousRunInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := conversations.TriggerAutonomousRun(c.Request.Context(), c.Param("id"), input)
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func startAutonomousConversation(c *gin.Context, conversations *service.ConversationService) {
+	var input service.AutonomousRunInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	input.TargetAccountName = strings.TrimSpace(input.TargetAccountName)
+	input.TargetAccountID = strings.TrimSpace(input.TargetAccountID)
+	input.Prompt = strings.TrimSpace(input.Prompt)
+	if input.TargetAccountID == "" && input.TargetAccountName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_account_id or target_account_name is required"})
+		return
+	}
+	if input.Trigger == "" {
+		input.Trigger = "trusted_api"
+	}
+
+	result, err := conversations.TriggerAutonomousRun(c.Request.Context(), c.Param("id"), input)
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func streamRun(c *gin.Context, conversations *service.ConversationService, accountID string, input service.RunInput) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -167,6 +214,18 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 	result, err := conversations.StreamRun(c.Request.Context(), accountID, c.Param("id"), input, service.StreamCallbacks{
 		OnChunk: func(chunk string) error {
 			writeSSE(c, "message.delta", gin.H{"delta": chunk})
+			return nil
+		},
+		OnToolCall: func(call schema.ToolCall) error {
+			writeSSE(c, "tool_call.delta", gin.H{
+				"id":        call.ID,
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			})
+			return nil
+		},
+		OnReasoning: func(reasoning string) error {
+			writeSSE(c, "reasoning.delta", gin.H{"delta": reasoning})
 			return nil
 		},
 	})

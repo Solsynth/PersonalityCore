@@ -18,8 +18,9 @@ type PaginatedPosts struct {
 }
 
 type ChatRoom struct {
-	ID   string `json:"id"`
-	Type int    `json:"type"`
+	ID            string       `json:"id"`
+	Type          int          `json:"type"`
+	DirectMembers []ChatMember `json:"members"`
 }
 
 type ChatMember struct {

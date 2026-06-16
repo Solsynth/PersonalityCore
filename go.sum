@@ -350,3 +350,5 @@ gorm.io/gorm v1.24.0/go.mod h1:DVrVomtaYTbqs7gB/x2uVvqnXzv0nqjB396B8cG4dBA=
 gorm.io/gorm v1.25.7/go.mod h1:hbnx/Oo0ChWMn1BIhpy1oYozzpM15i4YPuHDmfYtwg8=
 gorm.io/gorm v1.30.5 h1:dvEfYwxL+i+xgCNSGGBT1lDjCzfELK8fHZxL3Ee9X0s=
 gorm.io/gorm v1.30.5/go.mod h1:8Z33v652h4//uMA76KjeDH8mJXPm1QNCYrMeatR0DOE=
+src.solsynth.dev/sosys/go v0.2.1-0.20260616170920-c55844b38343 h1:cuvj6zTGtflQ/xXQS05+CXN2bFG436IRGjuejnnWps8=
+src.solsynth.dev/sosys/go v0.2.1-0.20260616170920-c55844b38343/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=

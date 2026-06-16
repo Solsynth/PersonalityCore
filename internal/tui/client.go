@@ -192,8 +192,14 @@ func (c *Client) newRequest(ctx context.Context, method, route string, body io.R
 		return nil, fmt.Errorf("parse route: %w", err)
 	}
 
+	// If base URL already has a path, strip /api prefix from route to avoid doubling up
+	routePath := parsedRoute.Path
+	if c.baseURL.Path != "" && c.baseURL.Path != "/" {
+		routePath = strings.TrimPrefix(routePath, "/api")
+	}
+
 	endpoint := *c.baseURL
-	endpoint.Path = path.Join(strings.TrimSuffix(c.baseURL.Path, "/"), parsedRoute.Path)
+	endpoint.Path = path.Join(strings.TrimSuffix(c.baseURL.Path, "/"), routePath)
 	endpoint.RawPath = endpoint.Path
 	endpoint.RawQuery = parsedRoute.RawQuery
 

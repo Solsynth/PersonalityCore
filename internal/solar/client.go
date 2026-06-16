@@ -60,12 +60,9 @@ func (c *Client) GetAccountProfile(ctx context.Context, accountName string) (Acc
 }
 
 func (c *Client) CreateDirectMessage(ctx context.Context, targetAccountID string) (*ChatRoom, error) {
-	request := map[string]any{
+	body := map[string]any{
 		"related_user_id": strings.TrimSpace(targetAccountID),
 		"encryption_mode": 0,
-	}
-	body := map[string]any{
-		"request": request,
 	}
 	var out ChatRoom
 	if err := c.doJSON(ctx, http.MethodPost, "/messager/chat/direct", nil, body, &out); err != nil {

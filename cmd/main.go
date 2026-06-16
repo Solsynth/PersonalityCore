@@ -15,7 +15,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("CONFIG_PATH"), "path to the main TOML config file")
-	pretty := flag.Bool("pretty", os.Getenv("ZEROLOG_PRETTY") == "true", "enable pretty logging")
+	pretty := flag.Bool("pretty", os.Getenv("ZEROLOG_PRETTY") == "true" || os.Getenv("ZEROLOG_PRETTY") == "1", "enable pretty logging")
 	flag.Parse()
 
 	logging.Init(*pretty)

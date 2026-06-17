@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/cloudwego/eino v0.9.5
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
+	github.com/cloudwego/eino-ext/components/tool/sequentialthinking v0.0.0-20260616080858-ab17b7308bf8
 	github.com/gin-gonic/gin v1.10.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/rs/zerolog v1.33.0

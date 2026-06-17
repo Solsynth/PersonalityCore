@@ -9,19 +9,20 @@ import (
 )
 
 type Definition struct {
-	ID                  string                              `json:"id"`
-	Name                string                              `json:"name"`
-	Description         string                              `json:"description"`
-	SystemPrompt        string                              `json:"system_prompt"`
-	Model               string                              `json:"model"`
-	Temperature         *float32                            `json:"temperature,omitempty"`
-	TopP                *float32                            `json:"top_p,omitempty"`
-	MaxCompletionTokens *int                                `json:"max_completion_tokens,omitempty"`
-	ChatMaxCompletionTokens *int                            `json:"-"`
-	Abilities           []string                            `json:"abilities"`
-	Enabled             bool                                `json:"enabled"`
-	Autonomous          config.AgentAutonomousConfig        `json:"-"`
-	SolarIntegration    config.AgentSolarNetworkIntegration `json:"-"`
+	ID                      string                              `json:"id"`
+	Name                    string                              `json:"name"`
+	Description             string                              `json:"description"`
+	SystemPrompt            string                              `json:"system_prompt"`
+	Model                   string                              `json:"model"`
+	Temperature             *float32                            `json:"temperature,omitempty"`
+	TopP                    *float32                            `json:"top_p,omitempty"`
+	MaxCompletionTokens     *int                                `json:"max_completion_tokens,omitempty"`
+	ChatMaxCompletionTokens *int                                `json:"-"`
+	DisableThinking         *bool                               `json:"disable_thinking,omitempty"`
+	Abilities               []string                            `json:"abilities"`
+	Enabled                 bool                                `json:"enabled"`
+	Autonomous              config.AgentAutonomousConfig        `json:"-"`
+	SolarIntegration        config.AgentSolarNetworkIntegration `json:"-"`
 }
 
 type Registry struct {
@@ -46,19 +47,20 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 		}
 
 		agents[id] = Definition{
-			ID:                  id,
-			Name:                strings.TrimSpace(cfg.Name),
-			Description:         strings.TrimSpace(cfg.Description),
-			SystemPrompt:        cfg.SystemPrompt,
-			Model:               strings.TrimSpace(cfg.Model),
-			Temperature:         cfg.Temperature,
-			TopP:                cfg.TopP,
-			MaxCompletionTokens: cfg.MaxCompletionTokens,
+			ID:                      id,
+			Name:                    strings.TrimSpace(cfg.Name),
+			Description:             strings.TrimSpace(cfg.Description),
+			SystemPrompt:            cfg.SystemPrompt,
+			Model:                   strings.TrimSpace(cfg.Model),
+			Temperature:             cfg.Temperature,
+			TopP:                    cfg.TopP,
+			MaxCompletionTokens:     cfg.MaxCompletionTokens,
 			ChatMaxCompletionTokens: cfg.ChatMaxCompletionTokens,
-			Abilities:           append([]string(nil), cfg.Abilities...),
-			Enabled:             cfg.Enabled,
-			Autonomous:          cfg.Autonomous,
-			SolarIntegration:    cfg.SolarNetworkIntegration,
+			DisableThinking:         cfg.DisableThinking,
+			Abilities:               append([]string(nil), cfg.Abilities...),
+			Enabled:                 cfg.Enabled,
+			Autonomous:              cfg.Autonomous,
+			SolarIntegration:        cfg.SolarNetworkIntegration,
 		}
 		order = append(order, id)
 	}

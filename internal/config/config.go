@@ -87,6 +87,7 @@ type AgentConfig struct {
 	TopP                    *float32                     `mapstructure:"topP"`
 	MaxCompletionTokens     *int                         `mapstructure:"maxCompletionTokens"`
 	ChatMaxCompletionTokens *int                         `mapstructure:"chatMaxCompletionTokens"`
+	DisableThinking         *bool                        `mapstructure:"disableThinking"`
 	Abilities               []string                     `mapstructure:"abilities"`
 	ToolScopes              []string                     `mapstructure:"toolScopes"`
 	Autonomous              AgentAutonomousConfig        `mapstructure:"autonomous"`

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino-ext/components/tool/sequentialthinking"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
@@ -27,6 +29,7 @@ const listPostRepliesToolName = "list_post_replies"
 const listSelfNotesToolName = "list_self_notes"
 const saveSelfNoteToolName = "save_self_note"
 const deleteSelfNoteToolName = "delete_self_note"
+const sequentialThinkingToolName = "sequentialthinking"
 const solarOutboundMessageMinGap = 650 * time.Millisecond
 
 type sendChatToolInput struct {
@@ -110,6 +113,7 @@ func (s *ConversationService) runWithChatTools(
 		s.listSelfNotesToolInfo(),
 		s.saveSelfNoteToolInfo(),
 		s.deleteSelfNoteToolInfo(),
+		s.sequentialThinkingToolInfo(),
 	})
 	if err != nil {
 		return "", err
@@ -137,9 +141,28 @@ func (s *ConversationService) runWithChatTools(
 			Int("tool_loop_step", step+1).
 			Int("message_count", len(messages)).
 			Msg("invoking chat tool-capable model")
-		response, err := toolModel.Generate(ctx, messages, model.WithToolChoice(schema.ToolChoiceForced))
+		// Build generate options with tool_choice forced
+		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
+		if agentDef.DisableThinking != nil && *agentDef.DisableThinking {
+			genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
+		}
+		response, err := toolModel.Generate(ctx, messages, genOpts...)
 		if err != nil {
-			return "", err
+			// ponytail: DeepSeek thinking mode doesn't support tool_choice, disable thinking and retry
+			if strings.Contains(err.Error(), "thinking mode") || strings.Contains(err.Error(), "tool_choice") {
+				logging.Log.Debug().
+					Str("agent_id", agentDef.ID).
+					Str("conversation_id", threadID).
+					Str("run_id", runID).
+					Msg("retrying with thinking disabled due to tool_choice limitation")
+				response, err = toolModel.Generate(ctx, messages,
+					model.WithToolChoice(schema.ToolChoiceForced),
+					einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}),
+				)
+			}
+			if err != nil {
+				return "", err
+			}
 		}
 		if len(response.ToolCalls) == 0 {
 			finalContent := strings.TrimSpace(response.Content)
@@ -722,9 +745,23 @@ func (s *ConversationService) deleteSelfNoteToolInfo() *schema.ToolInfo {
 	}
 }
 
+func (s *ConversationService) sequentialThinkingToolInfo() *schema.ToolInfo {
+	st, err := sequentialthinking.NewTool()
+	if err != nil {
+		logging.Log.Error().Err(err).Msg("failed to create sequential thinking tool info")
+		return nil
+	}
+	info, err := st.Info(context.Background())
+	if err != nil {
+		logging.Log.Error().Err(err).Msg("failed to get sequential thinking tool info")
+		return nil
+	}
+	return info
+}
+
 func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	switch call.Function.Name {
-	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName:
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName, sequentialThinkingToolName:
 	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
 	}
@@ -735,6 +772,8 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 		return s.executeSaveSelfNoteToolCall(ctx, agentID, call)
 	case deleteSelfNoteToolName:
 		return s.executeDeleteSelfNoteToolCall(ctx, agentID, call)
+	case sequentialThinkingToolName:
+		return s.executeSequentialThinkingToolCall(ctx, agentID, call)
 	}
 	if s.solar == nil {
 		return nil, fmt.Errorf("solar chat bridge is not configured")
@@ -1120,6 +1159,18 @@ func (s *ConversationService) executeDeleteSelfNoteToolCall(ctx context.Context,
 		return nil, err
 	}
 	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeSequentialThinkingToolCall(ctx context.Context, _ string, call schema.ToolCall) (*executedChatToolResult, error) {
+	st, err := sequentialthinking.NewTool()
+	if err != nil {
+		return nil, fmt.Errorf("create sequential thinking tool: %w", err)
+	}
+	result, err := st.InvokableRun(ctx, call.Function.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: result, ToolName: call.Function.Name, ToolCallID: call.ID}, nil
 }
 
 func waitForSolarOutboundGap(ctx context.Context, lastSentAt time.Time) error {

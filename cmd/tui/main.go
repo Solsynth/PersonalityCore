@@ -14,6 +14,7 @@ import (
 func main() {
 	baseURL := flag.String("base-url", "http://127.0.0.1:8090", "PersonalityCore HTTP base URL")
 	accountID := flag.String("account-id", "", "optional X-Account-Id header for dev mode")
+	token := flag.String("token", "", "JWT Bearer token for auth")
 	agentID := flag.String("agent-id", "", "preferred agent ID")
 	stream := flag.Bool("stream", true, "use SSE streaming runs")
 	autonomousSecret := flag.String("autonomous-secret", "", "secret for internal autonomous conversation endpoint")
@@ -22,7 +23,7 @@ func main() {
 	startPrompt := flag.String("start-prompt", "", "prompt for the autonomous conversation start request")
 	flag.Parse()
 
-	client, err := tui.NewClient(*baseURL, *accountID, *autonomousSecret)
+	client, err := tui.NewClient(*baseURL, *accountID, *token, *autonomousSecret)
 	if err != nil {
 		log.Fatalf("create client: %v", err)
 	}

@@ -66,6 +66,7 @@ type Client struct {
 	baseURL          *url.URL
 	http             *http.Client
 	accountID        string
+	token            string
 	autonomousSecret string
 }
 
@@ -75,7 +76,7 @@ type StartConversationInput struct {
 	Prompt            string `json:"prompt,omitempty"`
 }
 
-func NewClient(rawBaseURL, accountID, autonomousSecret string) (*Client, error) {
+func NewClient(rawBaseURL, accountID, token, autonomousSecret string) (*Client, error) {
 	if strings.TrimSpace(rawBaseURL) == "" {
 		rawBaseURL = "http://127.0.0.1:8090"
 	}
@@ -87,6 +88,7 @@ func NewClient(rawBaseURL, accountID, autonomousSecret string) (*Client, error) 
 	return &Client{
 		baseURL:          baseURL,
 		accountID:        strings.TrimSpace(accountID),
+		token:            strings.TrimSpace(token),
 		autonomousSecret: strings.TrimSpace(autonomousSecret),
 		http:             &http.Client{Timeout: 120 * time.Second},
 	}, nil
@@ -207,7 +209,9 @@ func (c *Client) newRequest(ctx context.Context, method, route string, body io.R
 	if err != nil {
 		return nil, err
 	}
-	if c.accountID != "" {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	} else if c.accountID != "" {
 		req.Header.Set("X-Account-Id", c.accountID)
 	}
 	return req, nil

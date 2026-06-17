@@ -132,6 +132,14 @@ func (m *Manager) GetAccountProfile(ctx context.Context, agentID, accountName st
 	return conn.client.GetAccountProfile(ctx, accountName)
 }
 
+func (m *Manager) GetMessage(ctx context.Context, agentID, roomID, messageID string) (*ChatMessage, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.GetMessage(ctx, roomID, messageID)
+}
+
 func (m *Manager) GetPost(ctx context.Context, agentID, postID string) (Post, error) {
 	conn := m.getAgent(agentID)
 	if conn == nil {
@@ -532,19 +540,38 @@ func (c *agentConnection) handlePacket(ctx context.Context, pkt Packet) error {
 				Msg("solar message received but no inbound handler is registered")
 			return nil
 		}
+		mentionedBot := messageMentionsBot(msg, botAccountID)
+		repliedMessageContent := ""
+		// ponytail: check if replied message is from bot and get content in one call
+		if strings.TrimSpace(msg.RepliedMessageID) != "" {
+			if repliedMsg, err := c.client.GetMessage(ctx, msg.ChatRoomID, msg.RepliedMessageID); err == nil {
+				repliedMessageContent = strings.TrimSpace(repliedMsg.Content)
+				if !mentionedBot && strings.TrimSpace(repliedMsg.Sender.AccountID) == strings.TrimSpace(botAccountID) {
+					mentionedBot = true
+				}
+			} else {
+				logging.Log.Debug().
+					Err(err).
+					Str("agent_id", c.def.ID).
+					Str("room_id", msg.ChatRoomID).
+					Str("replied_message_id", msg.RepliedMessageID).
+					Msg("could not fetch replied message")
+			}
+		}
 		return c.onMessage(ctx, c.def.ID, InboundMessage{
-			RoomID:           msg.ChatRoomID,
-			RoomType:         resolveRoomType(msg),
-			MessageID:        msg.ID,
-			MessageType:      firstNonEmpty(msg.Type, "text"),
-			Content:          strings.TrimSpace(msg.Content),
-			Attachments:      append([]ChatAttachment(nil), msg.Attachments...),
-			SenderAccountID:  msg.Sender.AccountID,
-			SenderName:       msg.Sender.Account.Name,
-			SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
-			MentionedBot:     messageMentionsBot(msg, botAccountID),
-			RepliedMessageID: strings.TrimSpace(msg.RepliedMessageID),
-			CreatedAt:        msg.CreatedAt,
+			RoomID:              msg.ChatRoomID,
+			RoomType:            resolveRoomType(msg),
+			MessageID:           msg.ID,
+			MessageType:         firstNonEmpty(msg.Type, "text"),
+			Content:             strings.TrimSpace(msg.Content),
+			Attachments:         append([]ChatAttachment(nil), msg.Attachments...),
+			SenderAccountID:     msg.Sender.AccountID,
+			SenderName:          msg.Sender.Account.Name,
+			SenderNick:          firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
+			MentionedBot:        mentionedBot,
+			RepliedMessageID:    strings.TrimSpace(msg.RepliedMessageID),
+			RepliedMessageContent: repliedMessageContent,
+			CreatedAt:           msg.CreatedAt,
 		})
 	default:
 		logging.Log.Debug().
@@ -649,19 +676,30 @@ func (c *agentConnection) catchUpRoom(ctx context.Context, state TrackedRoomStat
 			Msg("replaying historical solar message")
 
 		if c.onMessage != nil {
+			mentionedBot := messageMentionsBot(&msg, botAccountID)
+			repliedMessageContent := ""
+			if strings.TrimSpace(msg.RepliedMessageID) != "" {
+				if repliedMsg, err := c.client.GetMessage(ctx, msg.ChatRoomID, msg.RepliedMessageID); err == nil {
+					repliedMessageContent = strings.TrimSpace(repliedMsg.Content)
+					if !mentionedBot && strings.TrimSpace(repliedMsg.Sender.AccountID) == strings.TrimSpace(botAccountID) {
+						mentionedBot = true
+					}
+				}
+			}
 			if err := c.onMessage(ctx, c.def.ID, InboundMessage{
-				RoomID:           msg.ChatRoomID,
-				RoomType:         resolveRoomType(&msg),
-				MessageID:        msg.ID,
-				MessageType:      firstNonEmpty(msg.Type, "text"),
-				Content:          strings.TrimSpace(msg.Content),
-				Attachments:      append([]ChatAttachment(nil), msg.Attachments...),
-				SenderAccountID:  msg.Sender.AccountID,
-				SenderName:       msg.Sender.Account.Name,
-				SenderNick:       firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
-				MentionedBot:     messageMentionsBot(&msg, botAccountID),
-				RepliedMessageID: strings.TrimSpace(msg.RepliedMessageID),
-				CreatedAt:        msg.CreatedAt,
+				RoomID:              msg.ChatRoomID,
+				RoomType:            resolveRoomType(&msg),
+				MessageID:           msg.ID,
+				MessageType:         firstNonEmpty(msg.Type, "text"),
+				Content:             strings.TrimSpace(msg.Content),
+				Attachments:         append([]ChatAttachment(nil), msg.Attachments...),
+				SenderAccountID:     msg.Sender.AccountID,
+				SenderName:          msg.Sender.Account.Name,
+				SenderNick:          firstNonEmpty(msg.Sender.Nick, msg.Sender.Account.Nick),
+				MentionedBot:        mentionedBot,
+				RepliedMessageID:    strings.TrimSpace(msg.RepliedMessageID),
+				RepliedMessageContent: repliedMessageContent,
+				CreatedAt:           msg.CreatedAt,
 			}); err != nil {
 				return err
 			}

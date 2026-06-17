@@ -63,16 +63,17 @@ type Packet struct {
 }
 
 type InboundMessage struct {
-	RoomID           string
-	RoomType         int
-	MessageID        string
-	MessageType      string
-	Content          string
-	Attachments      []ChatAttachment
-	SenderAccountID  string
-	SenderName       string
-	SenderNick       string
-	MentionedBot     bool
-	RepliedMessageID string
-	CreatedAt        time.Time
+	RoomID              string
+	RoomType            int
+	MessageID           string
+	MessageType         string
+	Content             string
+	Attachments         []ChatAttachment
+	SenderAccountID     string
+	SenderName          string
+	SenderNick          string
+	MentionedBot        bool
+	RepliedMessageID    string
+	RepliedMessageContent string
+	CreatedAt           time.Time
 }

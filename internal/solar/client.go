@@ -151,6 +151,15 @@ func (c *Client) ListMessages(ctx context.Context, roomID string, offset, take i
 	return out, nil
 }
 
+func (c *Client) GetMessage(ctx context.Context, roomID, messageID string) (*ChatMessage, error) {
+	var out ChatMessage
+	path := fmt.Sprintf("/messager/chat/%s/messages/%s", url.PathEscape(strings.TrimSpace(roomID)), url.PathEscape(strings.TrimSpace(messageID)))
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) GetPost(ctx context.Context, postID string) (Post, error) {
 	out := Post{}
 	if err := c.doJSON(ctx, http.MethodGet, "/sphere/posts/"+url.PathEscape(strings.TrimSpace(postID)), nil, nil, &out); err != nil {

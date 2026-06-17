@@ -18,6 +18,7 @@ import (
 const sendChatToolName = "send_chat_message"
 const sendChatBatchToolName = "send_chat_message_batch"
 const noReplyToolName = "no_reply"
+const getChatMessageToolName = "get_chat_message"
 const getUserProfileToolName = "get_user_profile"
 const listUserPostsToolName = "list_user_posts"
 const getPostToolName = "get_post"
@@ -37,6 +38,11 @@ type sendChatBatchToolInput struct {
 	RoomID            string   `json:"room_id"`
 	TargetAccountName string   `json:"target_account_name"`
 	Messages          []string `json:"messages"`
+}
+
+type getChatMessageToolInput struct {
+	RoomID    string `json:"room_id"`
+	MessageID string `json:"message_id"`
 }
 
 type getUserProfileToolInput struct {
@@ -95,6 +101,7 @@ func (s *ConversationService) runWithChatTools(
 		s.sendChatToolInfo(),
 		s.sendChatBatchToolInfo(),
 		s.noReplyToolInfo(),
+		s.getChatMessageToolInfo(),
 		s.getUserProfileToolInfo(),
 		s.listUserPostsToolInfo(),
 		s.getPostToolInfo(),
@@ -583,6 +590,25 @@ func (s *ConversationService) noReplyToolInfo() *schema.ToolInfo {
 	}
 }
 
+func (s *ConversationService) getChatMessageToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: getChatMessageToolName,
+		Desc: "Fetch a single Solar Network chat message by room_id and message_id. Use this to see the content of a message that was replied to or forwarded.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"room_id": {
+				Type:     schema.String,
+				Desc:     "Solar chat room ID where the message exists.",
+				Required: true,
+			},
+			"message_id": {
+				Type:     schema.String,
+				Desc:     "Solar message ID to fetch.",
+				Required: true,
+			},
+		}),
+	}
+}
+
 func (s *ConversationService) getUserProfileToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getUserProfileToolName,
@@ -710,7 +736,7 @@ func (s *ConversationService) deleteSelfNoteToolInfo() *schema.ToolInfo {
 
 func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	switch call.Function.Name {
-	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName:
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName:
 	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
 	}
@@ -742,6 +768,9 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 
 	if call.Function.Name == sendChatBatchToolName {
 		return s.executeChatBatchToolCall(ctx, agentID, call)
+	}
+	if call.Function.Name == getChatMessageToolName {
+		return s.executeGetChatMessageToolCall(ctx, agentID, call)
 	}
 	if call.Function.Name == getUserProfileToolName {
 		return s.executeGetUserProfileToolCall(ctx, agentID, call)
@@ -895,6 +924,28 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 		ToolName:          call.Function.Name,
 		ToolCallID:        call.ID,
 	}, nil
+}
+
+func (s *ConversationService) executeGetChatMessageToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input getChatMessageToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", getChatMessageToolName, err)
+	}
+	input.RoomID = strings.TrimSpace(input.RoomID)
+	input.MessageID = strings.TrimSpace(input.MessageID)
+	if input.RoomID == "" || input.MessageID == "" {
+		return nil, fmt.Errorf("%s requires room_id and message_id", getChatMessageToolName)
+	}
+
+	msg, err := s.solar.GetMessage(ctx, agentID, input.RoomID, input.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
 }
 
 func (s *ConversationService) executeGetUserProfileToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {

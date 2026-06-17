@@ -56,6 +56,10 @@ func (s *stubSolarBridge) GetAccountProfile(_ context.Context, _, _ string) (sol
 	return s.profile, nil
 }
 
+func (s *stubSolarBridge) GetMessage(_ context.Context, _, _, _ string) (*solar.ChatMessage, error) {
+	return &solar.ChatMessage{ID: "stub-msg", Content: "stub content"}, nil
+}
+
 func (s *stubSolarBridge) GetPost(_ context.Context, _, _ string) (solar.Post, error) {
 	return s.post, nil
 }

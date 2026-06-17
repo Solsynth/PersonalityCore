@@ -39,13 +39,14 @@ type userMessageMetadata struct {
 }
 
 type solarInboundRequestMetadata struct {
-	Source            string `json:"source"`
-	RoomType          int    `json:"room_type"`
-	MentionedBot      bool   `json:"mentioned_bot"`
-	SenderAccountID   string `json:"sender_account_id"`
-	SenderAccountName string `json:"sender_account_name"`
-	SenderNick        string `json:"sender_nick"`
-	RepliedMessageID  string `json:"replied_message_id"`
+	Source              string `json:"source"`
+	RoomType            int    `json:"room_type"`
+	MentionedBot        bool   `json:"mentioned_bot"`
+	SenderAccountID     string `json:"sender_account_id"`
+	SenderAccountName   string `json:"sender_account_name"`
+	SenderNick          string `json:"sender_nick"`
+	RepliedMessageID    string `json:"replied_message_id"`
+	RepliedMessageContent string `json:"replied_message_content,omitempty"`
 }
 
 type ConversationService struct {

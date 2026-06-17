@@ -20,6 +20,7 @@ type SolarChatBridge interface {
 	TrackRoom(agentID, roomID string)
 	GetAccount(ctx context.Context, agentID, accountName, accountID string) (*solar.Account, error)
 	GetAccountProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error)
+	GetMessage(ctx context.Context, agentID, roomID, messageID string) (*solar.ChatMessage, error)
 	GetPost(ctx context.Context, agentID, postID string) (solar.Post, error)
 	ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*solar.PaginatedPosts, error)
 	ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*solar.PaginatedPosts, error)
@@ -31,18 +32,19 @@ type SolarRoomState struct {
 }
 
 type ExternalInboundMessage struct {
-	RoomID           string
-	RoomType         int
-	MessageID        string
-	MessageType      string
-	Content          string
-	Attachments      []solar.ChatAttachment
-	SenderAccountID  string
-	SenderName       string
-	SenderNick       string
-	MentionedBot     bool
-	RepliedMessageID string
-	CreatedAt        time.Time
+	RoomID              string
+	RoomType            int
+	MessageID           string
+	MessageType         string
+	Content             string
+	Attachments         []solar.ChatAttachment
+	SenderAccountID     string
+	SenderName          string
+	SenderNick          string
+	MentionedBot        bool
+	RepliedMessageID    string
+	RepliedMessageContent string
+	CreatedAt           time.Time
 }
 
 const (
@@ -94,6 +96,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 		attachments := append([]solar.ChatAttachment(nil), merged.Attachments...)
 		roomType := merged.RoomType
 		repliedMessageID := merged.RepliedMessageID
+		repliedMessageContent := merged.RepliedMessageContent
 		for i, item := range inputs {
 			if i > 0 {
 				builder.WriteString("\n\n")
@@ -111,6 +114,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 			}
 			if strings.TrimSpace(repliedMessageID) == "" && strings.TrimSpace(item.RepliedMessageID) != "" {
 				repliedMessageID = strings.TrimSpace(item.RepliedMessageID)
+				repliedMessageContent = item.RepliedMessageContent
 			}
 		}
 		merged.Content = builder.String()
@@ -118,6 +122,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 		merged.Attachments = attachments
 		merged.RoomType = roomType
 		merged.RepliedMessageID = repliedMessageID
+		merged.RepliedMessageContent = repliedMessageContent
 		merged.MessageID = inputs[len(inputs)-1].MessageID
 		merged.CreatedAt = inputs[len(inputs)-1].CreatedAt
 	}
@@ -176,13 +181,14 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 		InputParts: inputParts,
 		Stream:     false,
 		RequestMetadata: map[string]any{
-			"source":              "solar",
-			"room_type":           input.RoomType,
-			"mentioned_bot":       input.MentionedBot,
-			"sender_account_id":   strings.TrimSpace(input.SenderAccountID),
-			"sender_account_name": strings.TrimSpace(input.SenderName),
-			"sender_nick":         strings.TrimSpace(input.SenderNick),
-			"replied_message_id":  strings.TrimSpace(input.RepliedMessageID),
+			"source":                "solar",
+			"room_type":             input.RoomType,
+			"mentioned_bot":         input.MentionedBot,
+			"sender_account_id":     strings.TrimSpace(input.SenderAccountID),
+			"sender_account_name":   strings.TrimSpace(input.SenderName),
+			"sender_nick":           strings.TrimSpace(input.SenderNick),
+			"replied_message_id":    strings.TrimSpace(input.RepliedMessageID),
+			"replied_message_content": strings.TrimSpace(input.RepliedMessageContent),
 		},
 	})
 	if err != nil {
@@ -454,10 +460,19 @@ func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
 		return "No special inbound routing hint is available for the latest message."
 	}
 	if meta.RoomType == 1 {
+		if strings.TrimSpace(meta.RepliedMessageContent) != "" {
+			return fmt.Sprintf("The latest inbound message is from a DM and is replying to: %q. It is appropriate to reply proactively.", meta.RepliedMessageContent)
+		}
 		return "The latest inbound message is from a DM. It is appropriate to reply proactively."
 	}
 	if meta.MentionedBot {
+		if strings.TrimSpace(meta.RepliedMessageContent) != "" {
+			return fmt.Sprintf("The latest inbound group message mentioned or replied to the bot. The replied message content is: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
+		}
 		return "The latest inbound group message mentioned or replied to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
+	}
+	if strings.TrimSpace(meta.RepliedMessageContent) != "" {
+		return fmt.Sprintf("The latest inbound group message did not mention or reply to the bot. It is replying to: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
 	}
 	return "The latest inbound group message did not mention or reply to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
 }

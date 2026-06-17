@@ -1,6 +1,8 @@
 # PersonalityCore API Reference
 
-Base URL: `http://<host>:<port>/api`
+Base URL: `<Solar Network Base URL>/personality`
+
+When using with the gateway, no need to add `/api` prefix, only the `/personality` is enough.
 
 All endpoints require authentication unless noted otherwise. Auth is handled via one of:
 

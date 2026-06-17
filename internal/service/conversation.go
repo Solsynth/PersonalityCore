@@ -1017,7 +1017,7 @@ func buildSchemaMessageInputImage(part userMessageInputPart, idx int) (*schema.M
 
 func cloneMetadataMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
-		return nil
+		return make(map[string]any)
 	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {

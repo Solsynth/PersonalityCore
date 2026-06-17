@@ -142,30 +142,17 @@ func (s *ConversationService) runWithChatTools(
 		}
 		if len(response.ToolCalls) == 0 {
 			finalContent := strings.TrimSpace(response.Content)
-			if binding != nil && !allowOutboundReply {
-				logging.Log.Info().
+			// ponytail: plain text without tool calls is now ignored - model must use tools
+			if strings.TrimSpace(finalContent) != "" {
+				logging.Log.Warn().
 					Str("agent_id", agentDef.ID).
 					Str("conversation_id", threadID).
 					Str("run_id", runID).
-					Msg("suppressing plain-text group chat reply because latest inbound message did not mention or reply to the bot")
-				finalContent = ""
+					Int("tool_loop_step", step+1).
+					Int("response_chars", len(finalContent)).
+					Msg("model returned plain text without tool calls - ignoring, should use send_chat_message or no_reply tool")
 			}
-			normalized, shouldFallbackSend := normalizeSolarChatFinalResponse(finalContent)
-			if shouldFallbackSend {
-				if err := s.deliverFallbackChatResponse(ctx, thread, agentDef.ID, runID, binding, normalized); err != nil {
-					return "", err
-				}
-			}
-			finalContent = normalized
-			logging.Log.Info().
-				Str("agent_id", agentDef.ID).
-				Str("conversation_id", threadID).
-				Str("run_id", runID).
-				Int("tool_loop_step", step+1).
-				Int("response_chars", len(finalContent)).
-				Str("response_content", finalContent).
-				Msg("chat model returned final response without tool calls")
-			return finalContent, nil
+			return "", nil
 		}
 
 		logging.Log.Info().
@@ -537,7 +524,7 @@ func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message str
 func (s *ConversationService) sendChatToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: sendChatToolName,
-		Desc: "Send one Solar Network chat message through this agent's configured bot identity. Use room_id when replying in an existing room. Use target_account_name when you need to open or reuse a direct message with a named account. Always call this tool instead of writing an unsent reply in assistant text.",
+		Desc: "REQUIRED to reply: Send a Solar chat message. You MUST use this tool for every reply. Do NOT write replies in assistant text - they will be silently ignored.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"room_id": {
 				Type: schema.String,
@@ -559,7 +546,7 @@ func (s *ConversationService) sendChatToolInfo() *schema.ToolInfo {
 func (s *ConversationService) sendChatBatchToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: sendChatBatchToolName,
-		Desc: "Send multiple Solar Network chat messages in order. Use this when you intentionally want to split a reply into multiple separate chat messages. Always use this tool instead of writing unsent outbound messages in assistant text.",
+		Desc: "Send multiple Solar chat messages in order. Use when you want to split a reply into separate messages. MANDATORY for all multi-part replies.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"room_id": {
 				Type: schema.String,
@@ -585,7 +572,7 @@ func (s *ConversationService) sendChatBatchToolInfo() *schema.ToolInfo {
 func (s *ConversationService) noReplyToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name:        noReplyToolName,
-		Desc:        "Choose this when you intentionally decide not to send any Solar chat reply for the current inbound message.",
+		Desc:        "Explicitly choose not to reply. Use this instead of leaving assistant text empty when you decide silence is appropriate.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }

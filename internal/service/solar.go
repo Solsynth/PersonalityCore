@@ -411,16 +411,14 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 
 	parts := []string{
 		solarRoomTypePrompt(binding.RemoteRoomType),
-		fmt.Sprintf("If you decide to reply in assistant text, every non-empty line will be sent as one outbound Solar message in order."),
-		"Use a newline when you intentionally want to send a separate follow-up message.",
-		fmt.Sprintf("If you intentionally stay silent, reply with exactly %q.", noChatReplyToken),
-		"Do not number or bullet multiple lines unless you want those prefixes to appear in chat.",
+		"IMPORTANT: You MUST use the send_chat_message or send_chat_message_batch tool to send any reply. Do NOT write reply text in assistant content.",
+		"If you decide not to reply, use the no_reply tool explicitly.",
+		"Do NOT output reply text directly - it will be ignored. Always use tools.",
 		solarRoomBehaviorPrompt(binding.RemoteRoomType),
 		solarInboundPrompt(inboundMeta),
 		solarRoomEngagementPrompt(binding),
 		solarSenderIdentityPrompt(inboundMeta, binding),
 		fmt.Sprintf("Current remote account: %q (%s).", binding.RemoteAccount, binding.RemoteAccountID),
-		"Any assistant-text reply will be sent automatically; do not claim it was sent separately.",
 	}
 
 	// Inject sender profile if available

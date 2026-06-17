@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -57,6 +58,7 @@ type ConversationService struct {
 	humanize     *humanize.Manager
 	solar        SolarChatBridge
 	solarInbound *solarInboundBatcher
+	profileCache sync.Map // ponyttl: simple cache, evict manually if needed
 }
 
 type CreateConversationInput struct {

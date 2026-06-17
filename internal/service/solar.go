@@ -408,20 +408,33 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 		return "", nil
 	}
 	inboundMeta := latestSolarInboundMetadata(records)
-	return strings.Join([]string{
+
+	parts := []string{
 		solarRoomTypePrompt(binding.RemoteRoomType),
 		fmt.Sprintf("If you decide to reply in assistant text, every non-empty line will be sent as one outbound Solar message in order."),
 		"Use a newline when you intentionally want to send a separate follow-up message.",
 		fmt.Sprintf("If you intentionally stay silent, reply with exactly %q.", noChatReplyToken),
 		"Do not number or bullet multiple lines unless you want those prefixes to appear in chat.",
-		"If you need Solar profile or post data, use the lookup tools before replying.",
 		solarRoomBehaviorPrompt(binding.RemoteRoomType),
 		solarInboundPrompt(inboundMeta),
 		solarRoomEngagementPrompt(binding),
 		solarSenderIdentityPrompt(inboundMeta, binding),
 		fmt.Sprintf("Current remote account: %q (%s).", binding.RemoteAccount, binding.RemoteAccountID),
 		"Any assistant-text reply will be sent automatically; do not claim it was sent separately.",
-	}, "\n"), nil
+	}
+
+	// Inject sender profile if available
+	senderName := binding.RemoteAccount
+	if inboundMeta != nil && strings.TrimSpace(inboundMeta.SenderAccountName) != "" {
+		senderName = inboundMeta.SenderAccountName
+	}
+	if senderName != "" {
+		if profile, err := s.getCachedSolarUserProfile(ctx, agentID, senderName); err == nil && profile != nil {
+			parts = append(parts, solarUserProfilePrompt(profile))
+		}
+	}
+
+	return strings.Join(parts, "\n"), nil
 }
 
 func solarRoomTypePrompt(roomType *int) string {
@@ -436,6 +449,37 @@ func solarRoomBehaviorPrompt(roomType *int) string {
 		return "Because this is a DM, you can respond more proactively, warmly, and conversationally."
 	}
 	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned or replied to."
+}
+
+func solarUserProfilePrompt(profile solar.AccountProfile) string {
+	if profile == nil {
+		return ""
+	}
+	var parts []string
+	if bio, ok := profile["bio"]; ok {
+		if s, ok := bio.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("bio: %s", s))
+		}
+	}
+	if gender, ok := profile["gender"]; ok {
+		if s, ok := gender.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("gender: %s", s))
+		}
+	}
+	if pronouns, ok := profile["pronouns"]; ok {
+		if s, ok := pronouns.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("pronouns: %s", s))
+		}
+	}
+	if location, ok := profile["location"]; ok {
+		if s, ok := location.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("location: %s", s))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Sender profile: %s.", strings.Join(parts, ", "))
 }
 
 func latestSolarInboundMetadata(records []database.ConversationMessage) *solarInboundRequestMetadata {
@@ -542,6 +586,24 @@ func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *d
 		return false, nil
 	}
 	return meta.MentionedBot || strings.TrimSpace(meta.RepliedMessageID) != "", nil
+}
+
+func (s *ConversationService) getCachedSolarUserProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error) {
+	if s.solar == nil || strings.TrimSpace(accountName) == "" {
+		return nil, nil
+	}
+	cacheKey := agentID + ":" + accountName
+	if cached, ok := s.profileCache.Load(cacheKey); ok {
+		return cached.(solar.AccountProfile), nil
+	}
+	profile, err := s.solar.GetAccountProfile(ctx, agentID, accountName)
+	if err != nil {
+		return nil, err
+	}
+	if profile != nil {
+		s.profileCache.Store(cacheKey, profile)
+	}
+	return profile, nil
 }
 
 func (s *ConversationService) applySolarRoomEngagementState(binding *database.ExternalChatBinding, input ExternalInboundMessage, now time.Time) {

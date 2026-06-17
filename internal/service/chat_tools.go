@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"src.solsynth.dev/sosys/personality/internal/agent"
@@ -136,7 +137,7 @@ func (s *ConversationService) runWithChatTools(
 			Int("tool_loop_step", step+1).
 			Int("message_count", len(messages)).
 			Msg("invoking chat tool-capable model")
-		response, err := toolModel.Generate(ctx, messages)
+		response, err := toolModel.Generate(ctx, messages, model.WithToolChoice(schema.ToolChoiceForced))
 		if err != nil {
 			return "", err
 		}

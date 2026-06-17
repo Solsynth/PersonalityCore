@@ -414,6 +414,7 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 		"IMPORTANT: You MUST use the send_chat_message or send_chat_message_batch tool to send any reply. Do NOT write reply text in assistant content.",
 		"If you decide not to reply, use the no_reply tool explicitly.",
 		"Do NOT output reply text directly - it will be ignored. Always use tools.",
+		fmt.Sprintf("Current room_id: %q. Always pass this as room_id when calling send_chat_message.", binding.RemoteRoomID),
 		solarRoomBehaviorPrompt(binding.RemoteRoomType),
 		solarInboundPrompt(inboundMeta),
 		solarRoomEngagementPrompt(binding),

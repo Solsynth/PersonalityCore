@@ -952,8 +952,8 @@ func TestAllowSolarRoomReplyForGroupRequiresMentionOrReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowSolarRoomReply() error = %v", err)
 	}
-	if allow {
-		t.Fatal("expected group reply to be suppressed without mention or reply")
+	if allow != solarReplySuppress {
+		t.Fatal("expected group reply to be suppressed without mention")
 	}
 }
 
@@ -986,8 +986,8 @@ func TestAllowSolarRoomReplyForGroupAllowsMention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowSolarRoomReply() error = %v", err)
 	}
-	if !allow {
-		t.Fatal("expected group reply to be allowed after mention")
+	if allow != solarReplyForceAllow {
+		t.Fatal("expected group reply to be force-allowed after mention")
 	}
 }
 
@@ -1023,7 +1023,7 @@ func TestAllowSolarRoomReplyForGroupAllowsActiveWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowSolarRoomReply() error = %v", err)
 	}
-	if !allow {
+	if allow != solarReplyAllow {
 		t.Fatal("expected group reply to be allowed during active window")
 	}
 }
@@ -1060,7 +1060,7 @@ func TestAllowSolarRoomReplyForGroupSuppressesExpiredActiveWindow(t *testing.T) 
 	if err != nil {
 		t.Fatalf("allowSolarRoomReply() error = %v", err)
 	}
-	if allow {
+	if allow != solarReplySuppress {
 		t.Fatal("expected group reply to be suppressed after active window expired")
 	}
 }

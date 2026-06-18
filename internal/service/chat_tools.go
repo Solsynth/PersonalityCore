@@ -127,7 +127,7 @@ func (s *ConversationService) runWithChatTools(
 	if err != nil {
 		return "", err
 	}
-	allowOutboundReply, err := s.allowSolarRoomReply(ctx, thread, binding)
+	replyMode, err := s.allowSolarRoomReply(ctx, thread, binding)
 	if err != nil {
 		return "", err
 	}
@@ -209,15 +209,27 @@ func (s *ConversationService) runWithChatTools(
 				Str("tool_arguments", call.Function.Arguments).
 				Msg("executing chat tool call")
 			result := &executedChatToolResult{}
-			if binding != nil && !allowOutboundReply && isSolarOutboundChatToolName(call.Function.Name) {
+			if binding != nil && isSolarOutboundChatToolName(call.Function.Name) && replyMode == solarReplySuppress {
 				logging.Log.Info().
 					Str("agent_id", agentDef.ID).
 					Str("conversation_id", threadID).
 					Str("run_id", runID).
 					Str("tool_name", call.Function.Name).
 					Str("tool_call_id", call.ID).
-					Msg("suppressing outbound group chat tool call because latest inbound message did not mention or reply to the bot")
+					Msg("suppressing outbound group chat tool call because latest inbound message did not mention the bot")
 				result, err = suppressedChatToolResult(call)
+			} else if binding != nil && replyMode == solarReplyForceAllow && call.Function.Name == noReplyToolName {
+				logging.Log.Info().
+					Str("agent_id", agentDef.ID).
+					Str("conversation_id", threadID).
+					Str("run_id", runID).
+					Str("tool_call_id", call.ID).
+					Msg("overriding no_reply because the bot was mentioned")
+				result = &executedChatToolResult{
+					Content: `{"ok":false,"error":"The bot was mentioned. You MUST send a reply using send_chat_message."}`,
+					ToolName:   call.Function.Name,
+					ToolCallID: call.ID,
+				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -242,7 +254,7 @@ func (s *ConversationService) runWithChatTools(
 				Str("tool_result", result.Content).
 				Msg("chat tool call completed")
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
-			if isSolarOutboundChatToolName(call.Function.Name) {
+			if call.Function.Name != noReplyToolName && isSolarOutboundChatToolName(call.Function.Name) {
 				shouldStopAfterTools = true
 			}
 		}
@@ -267,7 +279,7 @@ func suppressedChatToolResult(call schema.ToolCall) (*executedChatToolResult, er
 	payload, err := json.Marshal(map[string]any{
 		"ok":     true,
 		"status": "reply_suppressed",
-		"reason": "group_message_without_mention_or_reply",
+		"reason": "group_message_without_mention",
 	})
 	if err != nil {
 		return nil, err

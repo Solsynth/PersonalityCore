@@ -640,13 +640,13 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
-		allowOutboundReply, err := s.allowSolarRoomReply(ctx, thread, binding)
+		replyMode, err := s.allowSolarRoomReply(ctx, thread, binding)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
 		var outboundSender *solarOutboundStreamSender
-		if binding != nil && allowOutboundReply {
+		if binding != nil && replyMode != solarReplySuppress {
 			outboundSender = newSolarOutboundStreamSender(s, thread, binding, agentDef.ID, run.ID)
 		}
 
@@ -699,7 +699,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 				return nil, err
 			}
 		}
-		if binding != nil && !allowOutboundReply {
+		if binding != nil && replyMode == solarReplySuppress {
 			builder.Reset()
 		}
 	} else {

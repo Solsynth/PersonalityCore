@@ -52,6 +52,12 @@ const (
 	solarRoomEngagementStateActive  = "active"
 )
 
+const (
+	solarReplyForceAllow = "force_allow" // mentioned – must send
+	solarReplyAllow      = "allow"       // active engagement – agent decides
+	solarReplySuppress   = "suppress"    // passive – must not send
+)
+
 const solarRoomActiveWindow = 5 * time.Minute
 
 func (s *ConversationService) SetSolarChatBridge(bridge SolarChatBridge) {
@@ -447,7 +453,7 @@ func solarRoomBehaviorPrompt(roomType *int) string {
 	if roomType != nil && *roomType == 1 {
 		return "Because this is a DM, you can respond more proactively, warmly, and conversationally."
 	}
-	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned or replied to."
+	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned."
 }
 
 func solarUserProfilePrompt(profile solar.AccountProfile) string {
@@ -510,14 +516,14 @@ func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
 	}
 	if meta.MentionedBot {
 		if strings.TrimSpace(meta.RepliedMessageContent) != "" {
-			return fmt.Sprintf("The latest inbound group message mentioned or replied to the bot. The replied message content is: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
+			return fmt.Sprintf("The latest inbound group message mentioned the bot. The replied message content is: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
 		}
-		return "The latest inbound group message mentioned or replied to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
+		return "The latest inbound group message mentioned the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
 	}
 	if strings.TrimSpace(meta.RepliedMessageContent) != "" {
-		return fmt.Sprintf("The latest inbound group message did not mention or reply to the bot. It is replying to: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
+		return fmt.Sprintf("The latest inbound group message did not mention the bot. It is replying to: %q. Decide whether to join the conversation; if you reply, write the outbound chat message text directly.", meta.RepliedMessageContent)
 	}
-	return "The latest inbound group message did not mention or reply to the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
+	return "The latest inbound group message did not mention the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
 }
 
 func solarSenderIdentityPrompt(meta *solarInboundRequestMetadata, binding *database.ExternalChatBinding) string {
@@ -566,25 +572,25 @@ func (s *ConversationService) latestSolarInboundMetadataForThread(ctx context.Co
 	return latestSolarInboundMetadata(records), nil
 }
 
-func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *database.ConversationThread, binding *database.ExternalChatBinding) (bool, error) {
+func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *database.ConversationThread, binding *database.ExternalChatBinding) (string, error) {
 	if thread == nil || binding == nil {
-		return true, nil
+		return solarReplyAllow, nil
 	}
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
-		return true, nil
-	}
-	if solarRoomBindingIsActive(binding, time.Now()) {
-		return true, nil
+		return solarReplyAllow, nil
 	}
 
 	meta, err := s.latestSolarInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
 	if err != nil {
-		return false, err
+		return solarReplySuppress, err
 	}
-	if meta == nil {
-		return false, nil
+	if meta != nil && meta.MentionedBot {
+		return solarReplyForceAllow, nil
 	}
-	return meta.MentionedBot || strings.TrimSpace(meta.RepliedMessageID) != "", nil
+	if solarRoomBindingIsActive(binding, time.Now()) {
+		return solarReplyAllow, nil
+	}
+	return solarReplySuppress, nil
 }
 
 func (s *ConversationService) getCachedSolarUserProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error) {
@@ -618,7 +624,7 @@ func (s *ConversationService) applySolarRoomEngagementState(binding *database.Ex
 		return
 	}
 
-	involved := input.MentionedBot || strings.TrimSpace(input.RepliedMessageID) != ""
+	involved := input.MentionedBot
 	if involved {
 		binding.EngagementState = solarRoomEngagementStateActive
 		until := now.Add(solarRoomActiveWindow)
@@ -671,7 +677,7 @@ func solarRoomEngagementPrompt(binding *database.ExternalChatBinding) string {
 		return "No special follow-up engagement window is needed for this room."
 	}
 	if solarRoomBindingIsActive(binding, time.Now()) {
-		return "The bot is currently in an active follow-up window for this group chat because it was recently mentioned or replied to. Continue the conversation proactively even without a fresh mention."
+		return "The bot is currently in an active follow-up window for this group chat because it was recently mentioned. You may continue the conversation proactively even without a fresh mention, but you can still choose to stay silent if the conversation does not require your input."
 	}
-	return "The bot is not currently in an active follow-up window for this group chat. Be selective unless the latest message directly involved the bot."
+	return "The bot is not currently in an active follow-up window for this group chat. Do not reply unless the latest message directly mentioned the bot."
 }

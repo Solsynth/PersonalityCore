@@ -200,7 +200,7 @@ func (s *ConversationService) allowAutonomousOldMessagePickup(ctx context.Contex
 	if meta == nil {
 		return false, nil
 	}
-	return meta.MentionedBot || strings.TrimSpace(meta.RepliedMessageID) != "", nil
+	return meta.MentionedBot, nil
 }
 
 func (s *ConversationService) resolveAutonomousThread(ctx context.Context, def agent.Definition, input AutonomousRunInput) (*database.ConversationThread, error) {

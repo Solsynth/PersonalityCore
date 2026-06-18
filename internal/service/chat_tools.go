@@ -94,6 +94,41 @@ type executedChatToolResult struct {
 
 const noChatReplyToken = "NO_REPLY"
 
+func (s *ConversationService) ToolsForAgent(def agent.Definition) []*schema.ToolInfo {
+	return s.buildToolInfos(def)
+}
+
+func (s *ConversationService) buildToolInfos(def agent.Definition) []*schema.ToolInfo {
+	var tools []*schema.ToolInfo
+	if agent.HasAbility(def, "chat") {
+		tools = append(tools,
+			s.sendChatToolInfo(),
+			s.sendChatBatchToolInfo(),
+			s.noReplyToolInfo(),
+		)
+		if s.solar != nil {
+			tools = append(tools,
+				s.getChatMessageToolInfo(),
+				s.getUserProfileToolInfo(),
+				s.listUserPostsToolInfo(),
+				s.getPostToolInfo(),
+				s.listPostRepliesToolInfo(),
+			)
+		}
+	}
+	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
+		tools = append(tools,
+			s.listSelfNotesToolInfo(),
+			s.saveSelfNoteToolInfo(),
+			s.deleteSelfNoteToolInfo(),
+		)
+	}
+	if st := s.sequentialThinkingToolInfo(); st != nil {
+		tools = append(tools, st)
+	}
+	return tools
+}
+
 func (s *ConversationService) runWithChatTools(
 	ctx context.Context,
 	accountID, threadID string,
@@ -101,20 +136,7 @@ func (s *ConversationService) runWithChatTools(
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
 ) (string, error) {
-	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, []*schema.ToolInfo{
-		s.sendChatToolInfo(),
-		s.sendChatBatchToolInfo(),
-		s.noReplyToolInfo(),
-		s.getChatMessageToolInfo(),
-		s.getUserProfileToolInfo(),
-		s.listUserPostsToolInfo(),
-		s.getPostToolInfo(),
-		s.listPostRepliesToolInfo(),
-		s.listSelfNotesToolInfo(),
-		s.saveSelfNoteToolInfo(),
-		s.deleteSelfNoteToolInfo(),
-		s.sequentialThinkingToolInfo(),
-	})
+	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, s.buildToolInfos(agentDef))
 	if err != nil {
 		return "", err
 	}
@@ -264,6 +286,69 @@ func (s *ConversationService) runWithChatTools(
 	}
 
 	return "", fmt.Errorf("chat tool loop exceeded maximum iterations")
+}
+
+func (s *ConversationService) runWithGeneralTools(
+	ctx context.Context,
+	accountID, threadID string,
+	runID string,
+	modelMessages []*schema.Message,
+	agentDef agent.Definition,
+	tools []*schema.ToolInfo,
+) (string, error) {
+	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
+	if err != nil {
+		return "", err
+	}
+
+	thread, err := s.GetConversation(ctx, accountID, threadID)
+	if err != nil {
+		return "", err
+	}
+
+	messages := append([]*schema.Message(nil), modelMessages...)
+	for step := 0; step < 6; step++ {
+		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
+		response, err := toolModel.Generate(ctx, messages, genOpts...)
+		if err != nil {
+			if strings.Contains(err.Error(), "thinking mode") || strings.Contains(err.Error(), "tool_choice") {
+				response, err = toolModel.Generate(ctx, messages,
+					model.WithToolChoice(schema.ToolChoiceForced),
+					einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}),
+				)
+			}
+			if err != nil {
+				return "", err
+			}
+		}
+		if len(response.ToolCalls) == 0 {
+			return strings.TrimSpace(response.Content), nil
+		}
+
+		assistantMetadata := map[string]any{"tool_calls": response.ToolCalls}
+		if strings.TrimSpace(response.ReasoningContent) != "" {
+			assistantMetadata["reasoning_content"] = strings.TrimSpace(response.ReasoningContent)
+		}
+		if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "assistant", strings.TrimSpace(response.Content), stringPtr(agentDef.Model), assistantMetadata); err != nil {
+			return "", err
+		}
+		messages = append(messages, response)
+
+		for _, call := range response.ToolCalls {
+			result, err := s.executeChatToolCall(ctx, agentDef.ID, call)
+			if err != nil {
+				return "", err
+			}
+			if err := s.ensureSolarRoomBinding(ctx, thread, agentDef.ID, result.RoomID, result.TargetAccountName, time.Now()); err != nil {
+				return "", err
+			}
+			if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", result.Content, nil, map[string]any{"tool_call_id": result.ToolCallID, "tool_name": result.ToolName}); err != nil {
+				return "", err
+			}
+			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
+		}
+	}
+	return "", fmt.Errorf("tool loop exceeded maximum iterations")
 }
 
 func isSolarOutboundChatToolName(name string) bool {

@@ -563,12 +563,20 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			return nil, err
 		}
 	} else {
-		response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
+		tools := s.ToolsForAgent(agentDef)
+		if len(tools) > 0 {
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools)
+		} else {
+			var response *schema.Message
+			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
+			if err == nil {
+				responseContent = response.Content
+			}
+		}
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
-		responseContent = response.Content
 	}
 
 	responseMessage, err := s.CompleteRun(ctx, run, responseContent)

@@ -476,6 +476,9 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 	if senderName != "" {
 		if profile, err := s.getCachedSolarUserProfile(ctx, agentID, senderName); err == nil && profile != nil {
 			parts = append(parts, solarUserProfilePrompt(profile))
+			if localTime := solarUserLocalTime(profile); localTime != "" {
+				parts = append(parts, localTime)
+			}
 		}
 	}
 
@@ -521,10 +524,39 @@ func solarUserProfilePrompt(profile solar.AccountProfile) string {
 			parts = append(parts, fmt.Sprintf("location: %s", s))
 		}
 	}
+	if birthday, ok := profile["birthday"]; ok {
+		if s, ok := birthday.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("birthday: %s", s))
+		}
+	}
+	if lang, ok := profile["language"]; ok {
+		if s, ok := lang.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, fmt.Sprintf("language: %s", s))
+		}
+	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return fmt.Sprintf("Sender profile: %s.", strings.Join(parts, ", "))
+}
+
+func solarUserLocalTime(profile solar.AccountProfile) string {
+	if profile == nil {
+		return ""
+	}
+	tzRaw, ok := profile["time_zone"]
+	if !ok {
+		return ""
+	}
+	tzStr, ok := tzRaw.(string)
+	if !ok || strings.TrimSpace(tzStr) == "" {
+		return ""
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(tzStr))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("Current time for the sender (%s): %s.", tzStr, time.Now().In(loc).Format("2006-01-02 15:04 MST"))
 }
 
 func latestSolarInboundMetadata(records []database.ConversationMessage) *solarInboundRequestMetadata {

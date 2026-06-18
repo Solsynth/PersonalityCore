@@ -53,7 +53,8 @@ Sub-sections, in order:
 | Engagement prompt | binding exists | Active window: "may continue proactively even without a fresh mention, but can still choose to stay silent." Passive: "do not reply unless the latest message directly mentioned the bot." |
 | Sender identity | meta or binding | `username`, `display_name`, `account_id` of the latest sender. |
 | Remote account | binding | `Current remote account: "<name>" (<id>)` |
-| Sender profile | cached profile exists | `bio`, `gender`, `pronouns`, `location` from the sender's Solar account profile. |
+| Sender profile | cached profile exists | `bio`, `gender`, `pronouns`, `location`, `birthday`, `language` from the sender's Solar account profile. Only non-empty fields are included. |
+| Sender local time | cached profile has `time_zone` | `Current time for the sender (Asia/Shanghai): 2025-06-18 13:45 CST.` Invalid timezone values are silently skipped. |
 
 ---
 

@@ -103,8 +103,9 @@ type AgentAutonomousConfig struct {
 }
 
 type AgentSolarNetworkIntegration struct {
-	AccountName string `mapstructure:"accountName"`
-	AccessToken string `mapstructure:"accessToken"`
+	AccountName   string `mapstructure:"accountName"`
+	AccessToken   string `mapstructure:"accessToken"`
+	PublisherName string `mapstructure:"publisherName"`
 }
 
 type ProviderConfig struct {

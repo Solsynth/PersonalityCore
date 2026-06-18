@@ -72,6 +72,26 @@ func (s *stubSolarBridge) ListPostReplies(_ context.Context, _, _ string, _, _ i
 	return s.postReplies, nil
 }
 
+func (s *stubSolarBridge) ListFeed(_ context.Context, _ string, _, _ int, _ bool) (*solar_network.PaginatedPosts, error) {
+	return s.posts, nil
+}
+
+func (s *stubSolarBridge) SearchPosts(_ context.Context, _, _ string, _, _ int) (*solar_network.PaginatedPosts, error) {
+	return s.posts, nil
+}
+
+func (s *stubSolarBridge) CreatePost(_ context.Context, _, _ string, _ map[string]any) (solar_network.Post, error) {
+	return s.post, nil
+}
+
+func (s *stubSolarBridge) ReplyToPost(_ context.Context, _, _, _, _ string) (solar_network.Post, error) {
+	return s.post, nil
+}
+
+func (s *stubSolarBridge) RepostPost(_ context.Context, _, _, _ string, _ *string) (solar_network.Post, error) {
+	return s.post, nil
+}
+
 func TestExecuteChatToolCallRequiresDestination(t *testing.T) {
 	svc := &ConversationService{sn: &stubSolarBridge{}}
 	_, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{

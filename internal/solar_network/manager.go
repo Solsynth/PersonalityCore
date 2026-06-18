@@ -164,6 +164,46 @@ func (m *Manager) ListPostReplies(ctx context.Context, agentID, postID string, o
 	return conn.client.ListPostReplies(ctx, postID, offset, take)
 }
 
+func (m *Manager) ListFeed(ctx context.Context, agentID string, offset, take int, shuffle bool) (*PaginatedPosts, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.ListFeed(ctx, offset, take, shuffle)
+}
+
+func (m *Manager) SearchPosts(ctx context.Context, agentID, query string, offset, take int) (*PaginatedPosts, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.SearchPosts(ctx, query, offset, take)
+}
+
+func (m *Manager) CreatePost(ctx context.Context, agentID, publisherName string, body map[string]any) (Post, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.CreatePost(ctx, publisherName, body)
+}
+
+func (m *Manager) ReplyToPost(ctx context.Context, agentID, publisherName, postID, content string) (Post, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.ReplyToPost(ctx, publisherName, postID, content)
+}
+
+func (m *Manager) RepostPost(ctx context.Context, agentID, publisherName, postID string, comment *string) (Post, error) {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return nil, fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.RepostPost(ctx, publisherName, postID, comment)
+}
+
 func (m *Manager) getAgent(agentID string) *agentConnection {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

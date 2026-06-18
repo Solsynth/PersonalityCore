@@ -24,6 +24,11 @@ type SnChatBridge interface {
 	GetPost(ctx context.Context, agentID, postID string) (solar_network.Post, error)
 	ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*solar_network.PaginatedPosts, error)
 	ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*solar_network.PaginatedPosts, error)
+	ListFeed(ctx context.Context, agentID string, offset, take int, shuffle bool) (*solar_network.PaginatedPosts, error)
+	SearchPosts(ctx context.Context, agentID, query string, offset, take int) (*solar_network.PaginatedPosts, error)
+	CreatePost(ctx context.Context, agentID, publisherName string, body map[string]any) (solar_network.Post, error)
+	ReplyToPost(ctx context.Context, agentID, publisherName, postID, content string) (solar_network.Post, error)
+	RepostPost(ctx context.Context, agentID, publisherName, postID string, comment *string) (solar_network.Post, error)
 }
 
 type SnRoomState struct {

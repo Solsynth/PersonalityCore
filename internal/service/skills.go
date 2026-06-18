@@ -67,6 +67,22 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
+	"surfing": {
+		Name:        "surfing",
+		Description: "Browse, search, create, reply to, and repost posts on Solar Network",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listFeedToolInfo(),
+				s.searchPostsToolInfo(),
+				s.createPostToolInfo(),
+				s.replyToPostToolInfo(),
+				s.repostPostToolInfo(),
+				s.getPostSurfingToolInfo(),
+				s.getPostRepliesSurfingToolInfo(),
+				s.listMyPostsToolInfo(),
+			}
+		},
+	},
 }
 
 func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool) []Skill {

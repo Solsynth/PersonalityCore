@@ -187,6 +187,76 @@ func (c *Client) ListPublisherPosts(ctx context.Context, accountName string, off
 	return &PaginatedPosts{Items: out, Total: parseTotalHeader(headers)}, nil
 }
 
+func (c *Client) ListFeed(ctx context.Context, offset, take int, shuffle bool) (*PaginatedPosts, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if take < 1 {
+		take = 20
+	}
+	query := url.Values{}
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("take", fmt.Sprintf("%d", take))
+	if shuffle {
+		query.Set("shuffle", "true")
+	}
+	var out []Post
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/posts", query, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &PaginatedPosts{Items: out, Total: parseTotalHeader(headers)}, nil
+}
+
+func (c *Client) SearchPosts(ctx context.Context, q string, offset, take int) (*PaginatedPosts, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if take < 1 {
+		take = 20
+	}
+	query := url.Values{}
+	query.Set("q", strings.TrimSpace(q))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("take", fmt.Sprintf("%d", take))
+	var out []Post
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/posts/search", query, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &PaginatedPosts{Items: out, Total: parseTotalHeader(headers)}, nil
+}
+
+func (c *Client) CreatePost(ctx context.Context, publisherName string, body map[string]any) (Post, error) {
+	query := url.Values{}
+	if strings.TrimSpace(publisherName) != "" {
+		query.Set("pub", strings.TrimSpace(publisherName))
+	}
+	var out Post
+	if err := c.doJSON(ctx, http.MethodPost, "/sphere/posts", query, body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReplyToPost(ctx context.Context, publisherName, postID, content string) (Post, error) {
+	body := map[string]any{
+		"content":         strings.TrimSpace(content),
+		"replied_post_id": strings.TrimSpace(postID),
+	}
+	return c.CreatePost(ctx, publisherName, body)
+}
+
+func (c *Client) RepostPost(ctx context.Context, publisherName, postID string, comment *string) (Post, error) {
+	body := map[string]any{
+		"forwarded_post_id": strings.TrimSpace(postID),
+	}
+	if comment != nil && strings.TrimSpace(*comment) != "" {
+		body["content"] = strings.TrimSpace(*comment)
+	}
+	return c.CreatePost(ctx, publisherName, body)
+}
+
 func (c *Client) ListPostReplies(ctx context.Context, postID string, offset, take int) (*PaginatedPosts, error) {
 	if offset < 0 {
 		offset = 0

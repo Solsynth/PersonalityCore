@@ -268,6 +268,11 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
+			} else if isSurfingToolName(call.Function.Name) {
+				result, err = s.executeSurfingToolCall(ctx, agentDef.ID, accountID, call)
+				if err != nil {
+					return "", err
+				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -364,6 +369,11 @@ func (s *ConversationService) runWithGeneralTools(
 				}
 			} else if isTaskToolName(call.Function.Name) {
 				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
+				if err != nil {
+					return "", err
+				}
+			} else if isSurfingToolName(call.Function.Name) {
+				result, err = s.executeSurfingToolCall(ctx, agentDef.ID, accountID, call)
 				if err != nil {
 					return "", err
 				}

@@ -146,6 +146,7 @@ Tools are organized into **skills** — loadable bundles that add capabilities o
 | `chat` | `send_chat_message`, `send_chat_message_batch`, `no_reply` | Send and manage messages in Solar Network chats (non-chat agents only) |
 | `self_notes` | `list_self_notes`, `save_self_note`, `delete_self_note` | Remember and recall personal details (agents without humanizer only) |
 | `tasks` | `create_task`, `list_tasks`, `update_task`, `delete_task` | Create and manage scheduled tasks that run automatically |
+| `surfing` | `list_feed`, `search_posts`, `create_post`, `reply_to_post`, `repost_post`, `get_post`, `get_post_replies`, `list_my_posts` | Browse, search, create, reply to, and repost posts on Solar Network |
 
 When a skill is activated, its tools become available for the rest of the run. The tool model is rebuilt with the expanded tool set.
 
@@ -179,6 +180,14 @@ Non-chat agents with tools use `runWithGeneralTools` (same tool loop but without
 | `list_tasks` | List the agent's scheduled tasks. | *(none)* |
 | `update_task` | Update a scheduled task. | `task_id` (required), `description`, `enabled`, `interval_secs`, `run_at` (all optional) |
 | `delete_task` | Delete a scheduled task. | `task_id` (required) |
+| `list_feed` | Browse recent posts from the Solar Network feed. | `offset`, `take`, `shuffle` (all optional) |
+| `search_posts` | Search posts by keyword. | `query` (required), `offset`, `take` |
+| `create_post` | Create and publish a new post. | `content` (required), `title`, `tags` (optional) |
+| `reply_to_post` | Reply to an existing post. | `post_id` (required), `content` (required) |
+| `repost_post` | Repost/share a post with optional comment. | `post_id` (required), `comment` (optional) |
+| `get_post` | Get a single post by ID. | `post_id` (required) |
+| `get_post_replies` | Get replies to a post. | `post_id` (required), `offset`, `take` |
+| `list_my_posts` | List posts by the agent's publisher. | `offset`, `take` |
 | `sequentialthinking` | Structured step-by-step reasoning tool. | *(tool-defined)* |
 
 ### Reply Mode

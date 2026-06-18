@@ -164,6 +164,21 @@ func (e *Executor) SupportsVision(agent Definition) bool {
 	return strings.Contains(baseURL, "openai.com")
 }
 
+func (e *Executor) GenerateWithModel(ctx context.Context, modelRef string, messages []*schema.Message) (*schema.Message, error) {
+	if e == nil {
+		return nil, fmt.Errorf("executor config is missing")
+	}
+	provider, modelName, err := e.resolveModel(modelRef)
+	if err != nil {
+		return nil, err
+	}
+	m, err := e.newOpenAIChatModel(ctx, provider, modelName, Definition{Model: modelRef})
+	if err != nil {
+		return nil, err
+	}
+	return m.Generate(ctx, messages)
+}
+
 func float32Ptr(v float32) *float32 { return &v }
 
 func intPtr(v int) *int { return &v }

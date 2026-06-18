@@ -110,3 +110,11 @@ type ExternalChatBinding struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
+
+type ImageSummary struct {
+	ID           string    `gorm:"primaryKey;size:26" json:"id"`
+	AttachmentID string    `gorm:"size:128;uniqueIndex" json:"attachment_id"`
+	Summary      string    `gorm:"type:text" json:"summary"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

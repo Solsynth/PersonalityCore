@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/config"
@@ -405,7 +407,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 			var meta userMessageMetadata
 			if decodeMessageMetadata(record.Metadata, &meta) == nil && len(meta.InputParts) > 0 {
 				if !supportsVision {
-					msg.Content = renderTextOnlyMessageInputParts(meta.InputParts, msg.Content)
+					msg.Content = s.renderTextOnlyWithSummaries(ctx, meta.InputParts, msg.Content)
 					break
 				}
 				parts, err := buildSchemaMessageInputParts(meta.InputParts, renderedContent)
@@ -1130,6 +1132,24 @@ func renderTextOnlyMessageInputParts(parts []userMessageInputPart, baseContent s
 	return strings.Join(lines, "\n\n")
 }
 
+func (s *ConversationService) renderTextOnlyWithSummaries(ctx context.Context, parts []userMessageInputPart, baseContent string) string {
+	lines := make([]string, 0, len(parts)+1)
+	if trimmed := strings.TrimSpace(baseContent); trimmed != "" {
+		lines = append(lines, trimmed)
+	}
+	for _, part := range parts {
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text":
+			if text := strings.TrimSpace(part.Text); text != "" {
+				lines = append(lines, text)
+			}
+		case "image", "image_url":
+			lines = append(lines, s.renderImagePartWithSummary(ctx, part))
+		}
+	}
+	return strings.Join(lines, "\n\n")
+}
+
 func renderTextOnlyImagePart(part userMessageInputPart) string {
 	if url := strings.TrimSpace(part.ImageURL); url != "" {
 		return "[Image attachment provided but this model only accepts text input. Image URL: " + url + "]"
@@ -1138,6 +1158,146 @@ func renderTextOnlyImagePart(part userMessageInputPart) string {
 		return "[Image attachment provided but this model only accepts text input. MIME type: " + mimeType + "]"
 	}
 	return "[Image attachment provided but this model only accepts text input.]"
+}
+
+// Image summarization for non-vision models
+
+func extractAttachmentID(imageURL string) string {
+	// expects URLs like <base>/drive/files/<id>
+	idx := strings.LastIndex(imageURL, "/drive/files/")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(imageURL[idx+len("/drive/files/"):])
+}
+
+func (s *ConversationService) resolveFileMimeType(ctx context.Context, attachmentID string) string {
+	baseURL := strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+	if baseURL == "" {
+		return ""
+	}
+	infoURL := strings.TrimRight(baseURL, "/") + "/api/files/" + attachmentID + "/info"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, infoURL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var result struct {
+		Object *struct {
+			MimeType string `json:"mime_type"`
+		} `json:"object"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return ""
+	}
+	if result.Object == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.Object.MimeType)
+}
+
+func (s *ConversationService) getImageSummary(ctx context.Context, attachmentID string) (string, error) {
+	var img database.ImageSummary
+	err := s.db.WithContext(ctx).
+		Where("attachment_id = ?", attachmentID).
+		First(&img).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return img.Summary, nil
+}
+
+func (s *ConversationService) saveImageSummary(ctx context.Context, attachmentID, summary string) error {
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "attachment_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"summary", "updated_at"}),
+		}).
+		Create(&database.ImageSummary{
+			ID:           newID(),
+			AttachmentID: attachmentID,
+			Summary:      summary,
+		}).Error
+}
+
+func (s *ConversationService) summarizeImage(ctx context.Context, imageURL string) (string, error) {
+	visionModel := strings.TrimSpace(s.cfg.Personality.VisionModel)
+	if visionModel == "" {
+		return "", fmt.Errorf("no vision model configured")
+	}
+
+	// check MIME type from file server
+	attachmentID := extractAttachmentID(imageURL)
+	if attachmentID != "" {
+		mimeType := s.resolveFileMimeType(ctx, attachmentID)
+		if mimeType != "" && !strings.HasPrefix(mimeType, "image/") {
+			return "", fmt.Errorf("attachment %s is not an image (%s)", attachmentID, mimeType)
+		}
+	}
+
+	messages := []*schema.Message{
+		{
+			Role: schema.User,
+			UserInputMultiContent: []schema.MessageInputPart{
+				{Type: schema.ChatMessagePartTypeText, Text: "Describe this image concisely for context. Focus on key visual elements, text, and any information relevant to understanding the conversation."},
+				{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{URL: &imageURL}, Detail: schema.ImageURLDetailLow}},
+			},
+		},
+	}
+
+	resp, err := s.executor.GenerateWithModel(ctx, visionModel, messages)
+	if err != nil {
+		return "", fmt.Errorf("vision model error: %w", err)
+	}
+	return strings.TrimSpace(resp.Content), nil
+}
+
+func (s *ConversationService) getImageSummaryOrGenerate(ctx context.Context, imageURL string) (string, error) {
+	attachmentID := extractAttachmentID(imageURL)
+	if attachmentID == "" {
+		return s.summarizeImage(ctx, imageURL)
+	}
+
+	cached, err := s.getImageSummary(ctx, attachmentID)
+	if err != nil {
+		return "", err
+	}
+	if cached != "" {
+		return cached, nil
+	}
+
+	summary, err := s.summarizeImage(ctx, imageURL)
+	if err != nil {
+		return "", err
+	}
+	if err := s.saveImageSummary(ctx, attachmentID, summary); err != nil {
+		logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache image summary")
+	}
+	return summary, nil
+}
+
+func (s *ConversationService) renderImagePartWithSummary(ctx context.Context, part userMessageInputPart) string {
+	imageURL := strings.TrimSpace(part.ImageURL)
+	if imageURL == "" {
+		return renderTextOnlyImagePart(part)
+	}
+	summary, err := s.getImageSummaryOrGenerate(ctx, imageURL)
+	if err != nil {
+		logging.Log.Warn().Err(err).Str("image_url", imageURL).Msg("failed to get image summary, falling back to placeholder")
+		return renderTextOnlyImagePart(part)
+	}
+	return "[Image: " + summary + "]"
 }
 
 func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context, thread *database.ConversationThread, historyLimit int) error {

@@ -214,6 +214,46 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 	return err
 }
 
+func (s *ConversationService) SolarBaseURL() string {
+	if s.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+}
+
+func (s *ConversationService) GetImageSummary(ctx context.Context, attachmentID string) (string, error) {
+	return s.getImageSummary(ctx, strings.TrimSpace(attachmentID))
+}
+
+func (s *ConversationService) SummarizeAndCacheImage(ctx context.Context, imageURL, attachmentID string) (string, error) {
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" {
+		attachmentID = extractAttachmentID(imageURL)
+	}
+
+	// check cache first
+	if attachmentID != "" {
+		cached, err := s.getImageSummary(ctx, attachmentID)
+		if err != nil {
+			return "", err
+		}
+		if cached != "" {
+			return cached, nil
+		}
+	}
+
+	summary, err := s.summarizeImage(ctx, imageURL)
+	if err != nil {
+		return "", err
+	}
+	if attachmentID != "" {
+		if err := s.saveImageSummary(ctx, attachmentID, summary); err != nil {
+			logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache image summary")
+		}
+	}
+	return summary, nil
+}
+
 func (s *ConversationService) buildSolarInboundInputParts(attachments []solar.ChatAttachment) []userMessageInputPart {
 	if len(attachments) == 0 {
 		return nil

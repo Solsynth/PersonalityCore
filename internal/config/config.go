@@ -55,9 +55,10 @@ type AuthConfig struct {
 }
 
 type PersonalityConfig struct {
-	MaxHistoryMessages int           `mapstructure:"maxHistoryMessages"`
-	SSEHeartbeat       time.Duration `mapstructure:"sseHeartbeat"`
+	MaxHistoryMessages   int           `mapstructure:"maxHistoryMessages"`
+	SSEHeartbeat         time.Duration `mapstructure:"sseHeartbeat"`
 	SolarInboundDebounce time.Duration `mapstructure:"solarInboundDebounce"`
+	VisionModel          string        `mapstructure:"visionModel"`
 }
 
 type SentryConfig struct {

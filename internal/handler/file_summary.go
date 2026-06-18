@@ -53,7 +53,7 @@ func generateFileSummary(c *gin.Context, conversations *service.ConversationServ
 
 	// resolve imageURL from attachmentID if not provided
 	if imageURL == "" {
-		baseURL := strings.TrimSpace(conversations.SolarBaseURL())
+		baseURL := strings.TrimSpace(conversations.SnBaseURL())
 		if baseURL == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "image_url is required when solar baseUrl is not configured"})
 			return

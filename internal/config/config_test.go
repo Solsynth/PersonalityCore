@@ -299,7 +299,7 @@ accessToken = "secret-token"
 	}
 }
 
-func TestLoad_PersonalitySolarInboundDebounceLoads(t *testing.T) {
+func TestLoad_PersonalityChatInboundDebounceLoads(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(mainFile, []byte(`
@@ -307,7 +307,7 @@ func TestLoad_PersonalitySolarInboundDebounceLoads(t *testing.T) {
 dsn = "postgres://example"
 
 [personality]
-solarInboundDebounce = "5s"
+chatInboundDebounce = "5s"
 
 [[providers]]
 id = "openai"
@@ -322,7 +322,7 @@ timeout = "30s"
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got := cfg.Personality.SolarInboundDebounce; got != 5*time.Second {
+	if got := cfg.Personality.ChatInboundDebounce; got != 5*time.Second {
 		t.Fatalf("expected solar inbound debounce 5s, got %v", got)
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/config"
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/humanize"
-	"src.solsynth.dev/sosys/personality/internal/solar"
+	"src.solsynth.dev/sosys/personality/internal/solar_network"
 )
 
 func TestRunInputUserMessagePayloadSupportsImageParts(t *testing.T) {
@@ -94,12 +94,12 @@ func TestBuildSolarInboundInputPartsUsesDriveFileURL(t *testing.T) {
 	svc := &ConversationService{
 		cfg: &config.Config{
 			SolarNetwork: config.SolarNetworkConfig{
-				BaseURL: "https://solar.example",
+				BaseURL: "https://solar_network.example",
 			},
 		},
 	}
 
-	parts := svc.buildSolarInboundInputParts([]solar.ChatAttachment{
+	parts := svc.buildSnInboundInputParts([]solar_network.ChatAttachment{
 		{ID: "img-1", MIMEType: "image/png"},
 		{ID: "doc-1", MIMEType: "application/pdf"},
 	})
@@ -110,7 +110,7 @@ func TestBuildSolarInboundInputPartsUsesDriveFileURL(t *testing.T) {
 	if parts[0].Type != "image_url" {
 		t.Fatalf("unexpected part type: %q", parts[0].Type)
 	}
-	if parts[0].ImageURL != "https://solar.example/drive/files/img-1" {
+	if parts[0].ImageURL != "https://solar_network.example/drive/files/img-1" {
 		t.Fatalf("unexpected image url: %q", parts[0].ImageURL)
 	}
 	if parts[0].MIMEType != "image/png" {
@@ -222,24 +222,24 @@ func TestEffectiveChatAgentDefinitionOverridesMaxCompletionTokens(t *testing.T) 
 	}
 }
 
-func TestNewConversationServiceUsesConfiguredSolarInboundDebounce(t *testing.T) {
+func TestNewConversationServiceUsesConfiguredChatInboundDebounce(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewConversationService(db, &config.Config{
 		Personality: config.PersonalityConfig{
-			SolarInboundDebounce: 5 * time.Second,
+			ChatInboundDebounce: 5 * time.Second,
 		},
 	}, nil, nil)
 
-	if svc.solarInbound == nil {
+	if svc.snInbound == nil {
 		t.Fatal("expected solar inbound batcher")
 	}
-	if svc.solarInbound.delay != 5*time.Second {
-		t.Fatalf("expected debounce delay 5s, got %v", svc.solarInbound.delay)
+	if svc.snInbound.delay != 5*time.Second {
+		t.Fatalf("expected debounce delay 5s, got %v", svc.snInbound.delay)
 	}
 }
 
 func TestSolarSenderIdentityPromptPrefersUsername(t *testing.T) {
-	got := solarSenderIdentityPrompt(&solarInboundRequestMetadata{
+	got := snSenderIdentityPrompt(&snInboundRequestMetadata{
 		SenderAccountID:   "acct-user-1",
 		SenderAccountName: "alice",
 		SenderNick:        "Alice Chen",
@@ -668,9 +668,9 @@ func TestBuildSolarSystemOverlayMakesGroupMultiUserContextExplicit(t *testing.T)
 		t.Fatalf("create binding: %v", err)
 	}
 
-	overlay, err := svc.buildSolarSystemOverlay(context.Background(), "michan", thread.ID, nil)
+	overlay, err := svc.buildSnSystemOverlay(context.Background(), "michan", thread.ID, nil)
 	if err != nil {
-		t.Fatalf("buildSolarSystemOverlay() error = %v", err)
+		t.Fatalf("buildSnSystemOverlay() error = %v", err)
 	}
 	if !strings.Contains(overlay, "This is not a DM") {
 		t.Fatalf("expected non-DM hint, got %q", overlay)
@@ -915,7 +915,7 @@ func TestEnsureSolarRoomBindingUpsertsByRoom(t *testing.T) {
 	if bindings[0].LastMessageAt == nil || !bindings[0].LastMessageAt.Equal(seenAt.Add(time.Minute)) {
 		t.Fatalf("expected last message timestamp to be updated")
 	}
-	if bindings[0].EngagementState != solarRoomEngagementStateActive {
+	if bindings[0].EngagementState != snRoomEngagementStateActive {
 		t.Fatalf("expected active engagement state after outbound binding update, got %q", bindings[0].EngagementState)
 	}
 	if bindings[0].EngagedUntil == nil {
@@ -944,15 +944,15 @@ func TestAllowSolarRoomReplyForGroupRequiresMentionOrReply(t *testing.T) {
 		t.Fatalf("create user message: %v", err)
 	}
 
-	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+	allow, err := svc.allowSnRoomReply(context.Background(), thread, &database.ExternalChatBinding{
 		ThreadID:       thread.ID,
 		AccountID:      thread.AccountID,
 		RemoteRoomType: roomTypePtr(0),
 	})
 	if err != nil {
-		t.Fatalf("allowSolarRoomReply() error = %v", err)
+		t.Fatalf("allowSnRoomReply() error = %v", err)
 	}
-	if allow != solarReplySuppress {
+	if allow != snReplySuppress {
 		t.Fatal("expected group reply to be suppressed without mention")
 	}
 }
@@ -978,15 +978,15 @@ func TestAllowSolarRoomReplyForGroupAllowsMention(t *testing.T) {
 		t.Fatalf("create user message: %v", err)
 	}
 
-	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+	allow, err := svc.allowSnRoomReply(context.Background(), thread, &database.ExternalChatBinding{
 		ThreadID:       thread.ID,
 		AccountID:      thread.AccountID,
 		RemoteRoomType: roomTypePtr(0),
 	})
 	if err != nil {
-		t.Fatalf("allowSolarRoomReply() error = %v", err)
+		t.Fatalf("allowSnRoomReply() error = %v", err)
 	}
-	if allow != solarReplyForceAllow {
+	if allow != snReplyForceAllow {
 		t.Fatal("expected group reply to be force-allowed after mention")
 	}
 }
@@ -1013,17 +1013,17 @@ func TestAllowSolarRoomReplyForGroupAllowsActiveWindow(t *testing.T) {
 	}
 
 	until := time.Now().Add(3 * time.Minute)
-	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+	allow, err := svc.allowSnRoomReply(context.Background(), thread, &database.ExternalChatBinding{
 		ThreadID:        thread.ID,
 		AccountID:       thread.AccountID,
 		RemoteRoomType:  roomTypePtr(0),
-		EngagementState: solarRoomEngagementStateActive,
+		EngagementState: snRoomEngagementStateActive,
 		EngagedUntil:    &until,
 	})
 	if err != nil {
-		t.Fatalf("allowSolarRoomReply() error = %v", err)
+		t.Fatalf("allowSnRoomReply() error = %v", err)
 	}
-	if allow != solarReplyAllow {
+	if allow != snReplyAllow {
 		t.Fatal("expected group reply to be allowed during active window")
 	}
 }
@@ -1050,17 +1050,17 @@ func TestAllowSolarRoomReplyForGroupSuppressesExpiredActiveWindow(t *testing.T) 
 	}
 
 	until := time.Now().Add(-time.Minute)
-	allow, err := svc.allowSolarRoomReply(context.Background(), thread, &database.ExternalChatBinding{
+	allow, err := svc.allowSnRoomReply(context.Background(), thread, &database.ExternalChatBinding{
 		ThreadID:        thread.ID,
 		AccountID:       thread.AccountID,
 		RemoteRoomType:  roomTypePtr(0),
-		EngagementState: solarRoomEngagementStateActive,
+		EngagementState: snRoomEngagementStateActive,
 		EngagedUntil:    &until,
 	})
 	if err != nil {
-		t.Fatalf("allowSolarRoomReply() error = %v", err)
+		t.Fatalf("allowSnRoomReply() error = %v", err)
 	}
-	if allow != solarReplySuppress {
+	if allow != snReplySuppress {
 		t.Fatal("expected group reply to be suppressed after active window expired")
 	}
 }
@@ -1085,7 +1085,7 @@ func TestEnsureSolarRoomBindingRefreshesActiveWindowOnOutboundReply(t *testing.T
 		AgentID:         "support-bot",
 		RemoteRoomID:    "room-1",
 		RemoteRoomType:  roomTypePtr(0),
-		EngagementState: solarRoomEngagementStateActive,
+		EngagementState: snRoomEngagementStateActive,
 		EngagedUntil:    &initialUntil,
 		ThreadID:        thread.ID,
 		AccountID:       thread.AccountID,
@@ -1110,14 +1110,14 @@ func TestEnsureSolarRoomBindingRefreshesActiveWindowOnOutboundReply(t *testing.T
 	if !binding.EngagedUntil.After(initialUntil) {
 		t.Fatalf("expected engaged_until to extend beyond %v, got %v", initialUntil, *binding.EngagedUntil)
 	}
-	if binding.EngagementState != solarRoomEngagementStateActive {
+	if binding.EngagementState != snRoomEngagementStateActive {
 		t.Fatalf("expected active engagement state, got %q", binding.EngagementState)
 	}
 }
 
 func TestSolarInboundBatcherCoalescesMessages(t *testing.T) {
 	var flushed [][]ExternalInboundMessage
-	batcher := newSolarInboundBatcher(20*time.Millisecond, func(_ context.Context, _ string, items []ExternalInboundMessage) error {
+	batcher := newSnInboundBatcher(20*time.Millisecond, func(_ context.Context, _ string, items []ExternalInboundMessage) error {
 		flushed = append(flushed, append([]ExternalInboundMessage(nil), items...))
 		return nil
 	})

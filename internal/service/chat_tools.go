@@ -147,11 +147,11 @@ func (s *ConversationService) runWithChatTools(
 	if err != nil {
 		return "", err
 	}
-	binding, err := s.getSolarRoomBinding(ctx, agentDef.ID, threadID)
+	binding, err := s.getSnRoomBinding(ctx, agentDef.ID, threadID)
 	if err != nil {
 		return "", err
 	}
-	replyMode, err := s.allowSolarRoomReply(ctx, thread, binding)
+	replyMode, err := s.allowSnRoomReply(ctx, thread, binding)
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +233,7 @@ func (s *ConversationService) runWithChatTools(
 				Str("tool_arguments", call.Function.Arguments).
 				Msg("executing chat tool call")
 			result := &executedChatToolResult{}
-			if binding != nil && isSolarOutboundChatToolName(call.Function.Name) && replyMode == solarReplySuppress {
+			if binding != nil && isSolarOutboundChatToolName(call.Function.Name) && replyMode == snReplySuppress {
 				logging.Log.Info().
 					Str("agent_id", agentDef.ID).
 					Str("conversation_id", threadID).
@@ -242,7 +242,7 @@ func (s *ConversationService) runWithChatTools(
 					Str("tool_call_id", call.ID).
 					Msg("suppressing outbound group chat tool call because latest inbound message did not mention the bot")
 				result, err = suppressedChatToolResult(call)
-			} else if binding != nil && replyMode == solarReplyForceAllow && call.Function.Name == noReplyToolName {
+			} else if binding != nil && replyMode == snReplyForceAllow && call.Function.Name == noReplyToolName {
 				logging.Log.Info().
 					Str("agent_id", agentDef.ID).
 					Str("conversation_id", threadID).
@@ -443,7 +443,7 @@ func (s *ConversationService) deliverFallbackChatResponse(
 	binding *database.ExternalChatBinding,
 	content string,
 ) error {
-	if thread == nil || strings.TrimSpace(content) == "" || s.solar == nil {
+	if thread == nil || strings.TrimSpace(content) == "" || s.sn == nil {
 		return nil
 	}
 
@@ -481,7 +481,7 @@ func (s *ConversationService) deliverFallbackChatResponse(
 				return err
 			}
 		}
-		sentRoomID, sentMessageID, err := s.solar.SendBotMessage(ctx, agentID, roomID, targetAccountName, s.resolveAutonomousTargetAccountID(ctx, thread), message)
+		sentRoomID, sentMessageID, err := s.sn.SendBotMessage(ctx, agentID, roomID, targetAccountName, s.resolveAutonomousTargetAccountID(ctx, thread), message)
 		if err != nil {
 			return err
 		}
@@ -575,7 +575,7 @@ func splitSolarOutboundMessages(content string) []string {
 	return messages
 }
 
-type solarOutboundStreamSender struct {
+type snOutboundStreamSender struct {
 	service        *ConversationService
 	thread         *database.ConversationThread
 	binding        *database.ExternalChatBinding
@@ -587,12 +587,12 @@ type solarOutboundStreamSender struct {
 	sentMessageIDs []string
 }
 
-func newSolarOutboundStreamSender(service *ConversationService, thread *database.ConversationThread, binding *database.ExternalChatBinding, agentID, runID string) *solarOutboundStreamSender {
+func newSnOutboundStreamSender(service *ConversationService, thread *database.ConversationThread, binding *database.ExternalChatBinding, agentID, runID string) *snOutboundStreamSender {
 	lastRoomID := ""
 	if binding != nil {
 		lastRoomID = binding.RemoteRoomID
 	}
-	return &solarOutboundStreamSender{
+	return &snOutboundStreamSender{
 		service:    service,
 		thread:     thread,
 		binding:    binding,
@@ -602,8 +602,8 @@ func newSolarOutboundStreamSender(service *ConversationService, thread *database
 	}
 }
 
-func (s *solarOutboundStreamSender) Push(ctx context.Context, chunk string) error {
-	if s == nil || s.service == nil || s.binding == nil || s.service.solar == nil || chunk == "" {
+func (s *snOutboundStreamSender) Push(ctx context.Context, chunk string) error {
+	if s == nil || s.service == nil || s.binding == nil || s.service.sn == nil || chunk == "" {
 		return nil
 	}
 	s.buffer.WriteString(strings.ReplaceAll(chunk, "\r\n", "\n"))
@@ -626,8 +626,8 @@ func (s *solarOutboundStreamSender) Push(ctx context.Context, chunk string) erro
 	}
 }
 
-func (s *solarOutboundStreamSender) Flush(ctx context.Context) error {
-	if s == nil || s.binding == nil || s.service == nil || s.service.solar == nil {
+func (s *snOutboundStreamSender) Flush(ctx context.Context) error {
+	if s == nil || s.binding == nil || s.service == nil || s.service.sn == nil {
 		return nil
 	}
 	line := strings.TrimSpace(s.buffer.String())
@@ -638,7 +638,7 @@ func (s *solarOutboundStreamSender) Flush(ctx context.Context) error {
 	return s.sendMessage(ctx, line)
 }
 
-func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message string) error {
+func (s *snOutboundStreamSender) sendMessage(ctx context.Context, message string) error {
 	message = sanitizeSolarOutboundMessage(message)
 	if message == "" {
 		return nil
@@ -646,7 +646,7 @@ func (s *solarOutboundStreamSender) sendMessage(ctx context.Context, message str
 	if err := waitForSolarOutboundGap(ctx, s.lastSentAt); err != nil {
 		return err
 	}
-	roomID, messageID, err := s.service.solar.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", "", message)
+	roomID, messageID, err := s.service.sn.SendBotMessage(ctx, s.agentID, s.lastRoomID, "", "", message)
 	if err != nil {
 		return err
 	}
@@ -896,7 +896,7 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 	case sequentialThinkingToolName:
 		return s.executeSequentialThinkingToolCall(ctx, agentID, call)
 	}
-	if s.solar == nil {
+	if s.sn == nil {
 		return nil, fmt.Errorf("solar chat bridge is not configured")
 	}
 	if call.Function.Name == noReplyToolName {
@@ -958,7 +958,7 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 		Int("message_chars", len(input.Message)).
 		Msg("sending solar chat message via tool")
 
-	roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, input.RoomID, input.TargetAccountName, "", input.Message)
+	roomID, messageID, err := s.sn.SendBotMessage(ctx, agentID, input.RoomID, input.TargetAccountName, "", input.Message)
 	if err != nil {
 		logging.Log.Error().
 			Err(err).
@@ -1037,7 +1037,7 @@ func (s *ConversationService) executeChatBatchToolCall(ctx context.Context, agen
 				return nil, err
 			}
 		}
-		roomID, messageID, err := s.solar.SendBotMessage(ctx, agentID, resolvedRoomID, input.TargetAccountName, "", item)
+		roomID, messageID, err := s.sn.SendBotMessage(ctx, agentID, resolvedRoomID, input.TargetAccountName, "", item)
 		if err != nil {
 			logging.Log.Error().
 				Err(err).
@@ -1085,7 +1085,7 @@ func (s *ConversationService) executeGetChatMessageToolCall(ctx context.Context,
 		return nil, fmt.Errorf("%s requires room_id and message_id", getChatMessageToolName)
 	}
 
-	msg, err := s.solar.GetMessage(ctx, agentID, input.RoomID, input.MessageID)
+	msg, err := s.sn.GetMessage(ctx, agentID, input.RoomID, input.MessageID)
 	if err != nil {
 		return nil, err
 	}
@@ -1107,7 +1107,7 @@ func (s *ConversationService) executeGetUserProfileToolCall(ctx context.Context,
 		return nil, fmt.Errorf("%s requires account_name or account_id", getUserProfileToolName)
 	}
 
-	account, err := s.solar.GetAccount(ctx, agentID, input.AccountName, input.AccountID)
+	account, err := s.sn.GetAccount(ctx, agentID, input.AccountName, input.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1115,7 +1115,7 @@ func (s *ConversationService) executeGetUserProfileToolCall(ctx context.Context,
 		"account": account,
 	}
 	if account != nil && strings.TrimSpace(account.Name) != "" {
-		profile, err := s.solar.GetAccountProfile(ctx, agentID, account.Name)
+		profile, err := s.sn.GetAccountProfile(ctx, agentID, account.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -1140,7 +1140,7 @@ func (s *ConversationService) executeListUserPostsToolCall(ctx context.Context, 
 	if input.Take < 1 {
 		input.Take = 5
 	}
-	posts, err := s.solar.ListPublisherPosts(ctx, agentID, input.AccountName, input.Offset, input.Take)
+	posts, err := s.sn.ListPublisherPosts(ctx, agentID, input.AccountName, input.Offset, input.Take)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,7 +1166,7 @@ func (s *ConversationService) executeGetPostToolCall(ctx context.Context, agentI
 	if input.PostID == "" {
 		return nil, fmt.Errorf("%s requires post_id", getPostToolName)
 	}
-	post, err := s.solar.GetPost(ctx, agentID, input.PostID)
+	post, err := s.sn.GetPost(ctx, agentID, input.PostID)
 	if err != nil {
 		return nil, err
 	}
@@ -1189,7 +1189,7 @@ func (s *ConversationService) executeListPostRepliesToolCall(ctx context.Context
 	if input.Take < 1 {
 		input.Take = 5
 	}
-	replies, err := s.solar.ListPostReplies(ctx, agentID, input.PostID, input.Offset, input.Take)
+	replies, err := s.sn.ListPostReplies(ctx, agentID, input.PostID, input.Offset, input.Take)
 	if err != nil {
 		return nil, err
 	}

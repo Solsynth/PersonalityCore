@@ -41,7 +41,7 @@ type userMessageMetadata struct {
 	InputParts []userMessageInputPart `json:"input_parts"`
 }
 
-type solarInboundRequestMetadata struct {
+type snInboundRequestMetadata struct {
 	Source              string `json:"source"`
 	RoomType            int    `json:"room_type"`
 	MentionedBot        bool   `json:"mentioned_bot"`
@@ -58,8 +58,8 @@ type ConversationService struct {
 	registry     *agent.Registry
 	executor     *agent.Executor
 	humanize     *humanize.Manager
-	solar        SolarChatBridge
-	solarInbound *solarInboundBatcher
+	sn        SnChatBridge
+	snInbound *snInboundBatcher
 	profileCache sync.Map // ponyttl: simple cache, evict manually if needed
 }
 
@@ -120,10 +120,10 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 		humanize: humanize.NewManager(db),
 	}
 	debounceDelay := 2 * time.Second
-	if cfg != nil && cfg.Personality.SolarInboundDebounce > 0 {
-		debounceDelay = cfg.Personality.SolarInboundDebounce
+	if cfg != nil && cfg.Personality.ChatInboundDebounce > 0 {
+		debounceDelay = cfg.Personality.ChatInboundDebounce
 	}
-	svc.solarInbound = newSolarInboundBatcher(debounceDelay, svc.handleSolarInboundBatch)
+	svc.snInbound = newSnInboundBatcher(debounceDelay, svc.handleSnInboundBatch)
 	return svc
 }
 
@@ -339,7 +339,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		messages = append(messages, schema.SystemMessage("Earlier compacted thread context:\n\n"+strings.TrimSpace(thread.ContextSummary)))
 	}
 	if agent.HasAbility(def, "chat") {
-		overlay, err := s.buildSolarSystemOverlay(ctx, def.ID, threadID, records)
+		overlay, err := s.buildSnSystemOverlay(ctx, def.ID, threadID, records)
 		if err != nil {
 			return nil, agent.Definition{}, err
 		}
@@ -550,7 +550,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Int("message_count", len(modelMessages)).
 		Msg("invoking model")
 	responseContent := ""
-	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
 			Str("conversation_id", threadID).
@@ -631,7 +631,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Msg("opening model stream")
 	var builder strings.Builder
 	chunkCount := 0
-	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
 			Str("conversation_id", threadID).
@@ -645,19 +645,19 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		}
 		defer stream.Close()
 
-		binding, err := s.getSolarRoomBinding(ctx, agentDef.ID, threadID)
+		binding, err := s.getSnRoomBinding(ctx, agentDef.ID, threadID)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
-		replyMode, err := s.allowSolarRoomReply(ctx, thread, binding)
+		replyMode, err := s.allowSnRoomReply(ctx, thread, binding)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
-		var outboundSender *solarOutboundStreamSender
-		if binding != nil && replyMode != solarReplySuppress {
-			outboundSender = newSolarOutboundStreamSender(s, thread, binding, agentDef.ID, run.ID)
+		var outboundSender *snOutboundStreamSender
+		if binding != nil && replyMode != snReplySuppress {
+			outboundSender = newSnOutboundStreamSender(s, thread, binding, agentDef.ID, run.ID)
 		}
 
 		for {
@@ -709,7 +709,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 				return nil, err
 			}
 		}
-		if binding != nil && replyMode == solarReplySuppress {
+		if binding != nil && replyMode == snReplySuppress {
 			builder.Reset()
 		}
 	} else {
@@ -927,7 +927,7 @@ func (s *ConversationService) resolveImpressionAccountIDFromRecord(fallbackAccou
 }
 
 func resolveImpressionAccountIDFromMetadata(fallbackAccountID string, raw datatypes.JSON) string {
-	var meta solarInboundRequestMetadata
+	var meta snInboundRequestMetadata
 	if decodeMessageMetadata(raw, &meta) == nil {
 		if senderAccountID := strings.TrimSpace(meta.SenderAccountID); senderAccountID != "" {
 			return senderAccountID
@@ -1071,15 +1071,15 @@ func renderConversationRecordContent(record database.ConversationMessage) string
 		return renderMessageContextContent(content, record.CreatedAt)
 	}
 
-	if line, ok := renderSolarUserHistoryLine(record.Metadata, record.CreatedAt, content); ok {
+	if line, ok := renderSnUserHistoryLine(record.Metadata, record.CreatedAt, content); ok {
 		return line
 	}
 
 	return renderMessageContextContent(content, record.CreatedAt)
 }
 
-func renderSolarUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string) (string, bool) {
-	var meta solarInboundRequestMetadata
+func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string) (string, bool) {
+	var meta snInboundRequestMetadata
 	if decodeMessageMetadata(raw, &meta) != nil {
 		return "", false
 	}

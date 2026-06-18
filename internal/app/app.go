@@ -20,7 +20,7 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/logging"
 	"src.solsynth.dev/sosys/personality/internal/server"
 	"src.solsynth.dev/sosys/personality/internal/service"
-	"src.solsynth.dev/sosys/personality/internal/solar"
+	"src.solsynth.dev/sosys/personality/internal/solar_network"
 
 	gen "src.solsynth.dev/sosys/go/proto"
 )
@@ -32,7 +32,7 @@ type App struct {
 	httpSrv       *http.Server
 	grpcSrv       *grpc.Server
 	grpcLn        net.Listener
-	solar         *solar.Manager
+	sn            *solar_network.Manager
 	autonomous    *service.AutonomousWakeScheduler
 	backgroundCtx context.Context
 	cancel        context.CancelFunc
@@ -61,31 +61,31 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 	conversations := service.NewConversationService(db, cfg, registry, executor)
-	solarManager := solar.NewManager(
+	snManager := solar_network.NewManager(
 		cfg,
 		registry,
-		func(ctx context.Context, agentID string) ([]solar.TrackedRoomState, error) {
-			rooms, err := conversations.ListTrackedSolarRooms(ctx, agentID)
+		func(ctx context.Context, agentID string) ([]solar_network.TrackedRoomState, error) {
+			rooms, err := conversations.ListTrackedSnRooms(ctx, agentID)
 			if err != nil {
 				return nil, err
 			}
-			out := make([]solar.TrackedRoomState, 0, len(rooms))
+			out := make([]solar_network.TrackedRoomState, 0, len(rooms))
 			for _, room := range rooms {
-				out = append(out, solar.TrackedRoomState{
+				out = append(out, solar_network.TrackedRoomState{
 					RoomID:        room.RoomID,
 					LastMessageAt: room.LastMessageAt,
 				})
 			}
 			return out, nil
 		},
-		func(ctx context.Context, agentID string, msg solar.InboundMessage) error {
-			return conversations.HandleSolarInboundMessage(ctx, agentID, service.ExternalInboundMessage{
+		func(ctx context.Context, agentID string, msg solar_network.InboundMessage) error {
+			return conversations.HandleSnInboundMessage(ctx, agentID, service.ExternalInboundMessage{
 				RoomID:              msg.RoomID,
 				RoomType:            msg.RoomType,
 				MessageID:           msg.MessageID,
 				MessageType:         msg.MessageType,
 				Content:             msg.Content,
-				Attachments:         append([]solar.ChatAttachment(nil), msg.Attachments...),
+				Attachments:         append([]solar_network.ChatAttachment(nil), msg.Attachments...),
 				SenderAccountID:     msg.SenderAccountID,
 				SenderName:          msg.SenderName,
 				SenderNick:          msg.SenderNick,
@@ -96,7 +96,7 @@ func New(cfg *config.Config) (*App, error) {
 			})
 		},
 	)
-	conversations.SetSolarChatBridge(solarManager)
+	conversations.SetSnChatBridge(snManager)
 	autonomous := service.NewAutonomousWakeScheduler(conversations, registry)
 	router := server.NewRouter(cfg, conversations)
 	httpSrv := &http.Server{
@@ -122,7 +122,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, solar: solarManager, autonomous: autonomous}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous}, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
@@ -133,8 +133,8 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.grpcLn = ln
 
-	if a.solar != nil {
-		if err := a.solar.Start(context.Background()); err != nil {
+	if a.sn != nil {
+		if err := a.sn.Start(context.Background()); err != nil {
 			return err
 		}
 	}
@@ -178,10 +178,10 @@ func (a *App) Stop(ctx context.Context) error {
 		_ = a.grpcLn.Close()
 	}
 	if a.conversations != nil {
-		_ = a.conversations.FlushSolarInboundBatches(ctx)
+		_ = a.conversations.FlushSnInboundBatches(ctx)
 	}
-	if a.solar != nil {
-		_ = a.solar.Stop(ctx)
+	if a.sn != nil {
+		_ = a.sn.Stop(ctx)
 	}
 	a.wg.Wait()
 	return nil

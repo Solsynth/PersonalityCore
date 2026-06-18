@@ -11,15 +11,15 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/logging"
 )
 
-type solarInboundBatcher struct {
+type snInboundBatcher struct {
 	delay time.Duration
 	flush func(context.Context, string, []ExternalInboundMessage) error
 
 	mu      sync.Mutex
-	batches map[string]*solarInboundBatch
+	batches map[string]*snInboundBatch
 }
 
-type solarInboundBatch struct {
+type snInboundBatch struct {
 	agentID string
 	roomID  string
 	seq     int64
@@ -27,18 +27,18 @@ type solarInboundBatch struct {
 	items   []ExternalInboundMessage
 }
 
-func newSolarInboundBatcher(delay time.Duration, flush func(context.Context, string, []ExternalInboundMessage) error) *solarInboundBatcher {
+func newSnInboundBatcher(delay time.Duration, flush func(context.Context, string, []ExternalInboundMessage) error) *snInboundBatcher {
 	if delay < 100*time.Millisecond {
 		delay = 100 * time.Millisecond
 	}
-	return &solarInboundBatcher{
+	return &snInboundBatcher{
 		delay:   delay,
 		flush:   flush,
-		batches: make(map[string]*solarInboundBatch),
+		batches: make(map[string]*snInboundBatch),
 	}
 }
 
-func (b *solarInboundBatcher) Enqueue(ctx context.Context, agentID string, input ExternalInboundMessage) error {
+func (b *snInboundBatcher) Enqueue(ctx context.Context, agentID string, input ExternalInboundMessage) error {
 	if b == nil {
 		return fmt.Errorf("solar inbound batcher is not configured")
 	}
@@ -47,7 +47,7 @@ func (b *solarInboundBatcher) Enqueue(ctx context.Context, agentID string, input
 	b.mu.Lock()
 	batch, ok := b.batches[key]
 	if !ok {
-		batch = &solarInboundBatch{
+		batch = &snInboundBatch{
 			agentID: strings.TrimSpace(agentID),
 			roomID:  strings.TrimSpace(input.RoomID),
 		}
@@ -81,7 +81,7 @@ func (b *solarInboundBatcher) Enqueue(ctx context.Context, agentID string, input
 	return nil
 }
 
-func (b *solarInboundBatcher) FlushAll(ctx context.Context) error {
+func (b *snInboundBatcher) FlushAll(ctx context.Context) error {
 	if b == nil {
 		return nil
 	}
@@ -101,7 +101,7 @@ func (b *solarInboundBatcher) FlushAll(ctx context.Context) error {
 	return nil
 }
 
-func (b *solarInboundBatcher) flushBatch(ctx context.Context, key string, seq int64) error {
+func (b *snInboundBatcher) flushBatch(ctx context.Context, key string, seq int64) error {
 	if b == nil {
 		return nil
 	}

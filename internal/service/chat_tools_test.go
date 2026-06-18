@@ -10,7 +10,7 @@ import (
 
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/humanize"
-	"src.solsynth.dev/sosys/personality/internal/solar"
+	"src.solsynth.dev/sosys/personality/internal/solar_network"
 )
 
 type stubSolarBridge struct {
@@ -23,11 +23,11 @@ type stubSolarBridge struct {
 	lastTargetID string
 	lastBody    string
 	sendCount   int
-	account     *solar.Account
-	profile     solar.AccountProfile
-	post        solar.Post
-	posts       *solar.PaginatedPosts
-	postReplies *solar.PaginatedPosts
+	account     *solar_network.Account
+	profile     solar_network.AccountProfile
+	post        solar_network.Post
+	posts       *solar_network.PaginatedPosts
+	postReplies *solar_network.PaginatedPosts
 }
 
 func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {
@@ -48,32 +48,32 @@ func (s *stubSolarBridge) TrackRoom(agentID, roomID string) {
 	s.lastRoom = roomID
 }
 
-func (s *stubSolarBridge) GetAccount(_ context.Context, _, _, _ string) (*solar.Account, error) {
+func (s *stubSolarBridge) GetAccount(_ context.Context, _, _, _ string) (*solar_network.Account, error) {
 	return s.account, nil
 }
 
-func (s *stubSolarBridge) GetAccountProfile(_ context.Context, _, _ string) (solar.AccountProfile, error) {
+func (s *stubSolarBridge) GetAccountProfile(_ context.Context, _, _ string) (solar_network.AccountProfile, error) {
 	return s.profile, nil
 }
 
-func (s *stubSolarBridge) GetMessage(_ context.Context, _, _, _ string) (*solar.ChatMessage, error) {
-	return &solar.ChatMessage{ID: "stub-msg", Content: "stub content"}, nil
+func (s *stubSolarBridge) GetMessage(_ context.Context, _, _, _ string) (*solar_network.ChatMessage, error) {
+	return &solar_network.ChatMessage{ID: "stub-msg", Content: "stub content"}, nil
 }
 
-func (s *stubSolarBridge) GetPost(_ context.Context, _, _ string) (solar.Post, error) {
+func (s *stubSolarBridge) GetPost(_ context.Context, _, _ string) (solar_network.Post, error) {
 	return s.post, nil
 }
 
-func (s *stubSolarBridge) ListPublisherPosts(_ context.Context, _, _ string, _, _ int) (*solar.PaginatedPosts, error) {
+func (s *stubSolarBridge) ListPublisherPosts(_ context.Context, _, _ string, _, _ int) (*solar_network.PaginatedPosts, error) {
 	return s.posts, nil
 }
 
-func (s *stubSolarBridge) ListPostReplies(_ context.Context, _, _ string, _, _ int) (*solar.PaginatedPosts, error) {
+func (s *stubSolarBridge) ListPostReplies(_ context.Context, _, _ string, _, _ int) (*solar_network.PaginatedPosts, error) {
 	return s.postReplies, nil
 }
 
 func TestExecuteChatToolCallRequiresDestination(t *testing.T) {
-	svc := &ConversationService{solar: &stubSolarBridge{}}
+	svc := &ConversationService{sn: &stubSolarBridge{}}
 	_, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
 		Function: schema.FunctionCall{
 			Name:      sendChatToolName,
@@ -87,7 +87,7 @@ func TestExecuteChatToolCallRequiresDestination(t *testing.T) {
 
 func TestExecuteChatToolCallSendsMessage(t *testing.T) {
 	bridge := &stubSolarBridge{roomID: "room-1", messageID: "msg-1"}
-	svc := &ConversationService{solar: bridge}
+	svc := &ConversationService{sn: bridge}
 
 	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
 		Function: schema.FunctionCall{
@@ -117,7 +117,7 @@ func TestExecuteChatBatchToolCallSendsMessages(t *testing.T) {
 		roomID:     "room-1",
 		messageIDs: []string{"msg-1", "msg-2"},
 	}
-	svc := &ConversationService{solar: bridge}
+	svc := &ConversationService{sn: bridge}
 
 	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
 		ID: "call-1",
@@ -141,7 +141,7 @@ func TestExecuteChatBatchToolCallSendsMessages(t *testing.T) {
 }
 
 func TestExecuteChatToolCallNoReply(t *testing.T) {
-	svc := &ConversationService{solar: &stubSolarBridge{}}
+	svc := &ConversationService{sn: &stubSolarBridge{}}
 	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
 		ID: "call-1",
 		Function: schema.FunctionCall{
@@ -158,9 +158,9 @@ func TestExecuteChatToolCallNoReply(t *testing.T) {
 }
 
 func TestExecuteChatToolCallGetUserProfile(t *testing.T) {
-	svc := &ConversationService{solar: &stubSolarBridge{
-		account: &solar.Account{ID: "user-1", Name: "alice", Nick: "Alice"},
-		profile: solar.AccountProfile{"bio": "hello"},
+	svc := &ConversationService{sn: &stubSolarBridge{
+		account: &solar_network.Account{ID: "user-1", Name: "alice", Nick: "Alice"},
+		profile: solar_network.AccountProfile{"bio": "hello"},
 	}}
 	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
 		ID: "call-1",
@@ -178,10 +178,10 @@ func TestExecuteChatToolCallGetUserProfile(t *testing.T) {
 }
 
 func TestExecuteChatToolCallListUserPosts(t *testing.T) {
-	svc := &ConversationService{solar: &stubSolarBridge{
-		posts: &solar.PaginatedPosts{
+	svc := &ConversationService{sn: &stubSolarBridge{
+		posts: &solar_network.PaginatedPosts{
 			Total: 1,
-			Items: []solar.Post{{"id": "post-1", "content": "hello"}},
+			Items: []solar_network.Post{{"id": "post-1", "content": "hello"}},
 		},
 	}}
 	result, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{
@@ -240,7 +240,7 @@ func TestExecuteChatToolCallSaveAndListSelfNotes(t *testing.T) {
 func TestDeliverFallbackChatResponseUsesAutonomousTargetWhenBindingMissing(t *testing.T) {
 	db := openTestDB(t)
 	bridge := &stubSolarBridge{roomID: "room-dm-1", messageID: "msg-1"}
-	svc := &ConversationService{db: db, solar: bridge}
+	svc := &ConversationService{db: db, sn: bridge}
 
 	thread := &database.ConversationThread{
 		ID:        "thread-auto-dm-1",
@@ -315,13 +315,13 @@ func TestSolarOutboundStreamSenderSendsCompletedLines(t *testing.T) {
 		roomID:     "room-1",
 		messageIDs: []string{"msg-1", "msg-2"},
 	}
-	svc := &ConversationService{db: db, solar: bridge}
+	svc := &ConversationService{db: db, sn: bridge}
 	thread := &database.ConversationThread{ID: "thread-1", AccountID: "solar:support:room-1", AgentID: "support-bot", Title: "Room one"}
 	if err := db.Create(thread).Error; err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	binding := &database.ExternalChatBinding{RemoteRoomID: "room-1", RemoteAccount: "alice"}
-	sender := newSolarOutboundStreamSender(svc, thread, binding, "support-bot", "run-1")
+	sender := newSnOutboundStreamSender(svc, thread, binding, "support-bot", "run-1")
 
 	if err := sender.Push(context.Background(), "hello\nhow"); err != nil {
 		t.Fatalf("Push() error = %v", err)

@@ -45,7 +45,7 @@ topP = 1.0
 [personality]
 maxHistoryMessages = 24
 sseHeartbeat = "15s"
-solarInboundDebounce = "5s"
+chatInboundDebounce = "5s"
 
 [agents]
 dir = "./agents.d"

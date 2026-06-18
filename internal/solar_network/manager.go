@@ -1,4 +1,4 @@
-package solar
+package solar_network
 
 import (
 	"context"

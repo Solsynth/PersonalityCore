@@ -57,7 +57,7 @@ type AuthConfig struct {
 type PersonalityConfig struct {
 	MaxHistoryMessages   int           `mapstructure:"maxHistoryMessages"`
 	SSEHeartbeat         time.Duration `mapstructure:"sseHeartbeat"`
-	SolarInboundDebounce time.Duration `mapstructure:"solarInboundDebounce"`
+	ChatInboundDebounce time.Duration `mapstructure:"chatInboundDebounce"`
 	VisionModel          string        `mapstructure:"visionModel"`
 }
 
@@ -208,7 +208,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.autonomousSecret", "")
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
-	v.SetDefault("personality.solarInboundDebounce", 2*time.Second)
+	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
 	v.SetDefault("sentry.dsn", "")
 	v.SetDefault("sentry.tracesSampleRate", 0.01)
 	v.SetDefault("sentry.environment", "")

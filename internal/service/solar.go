@@ -12,21 +12,21 @@ import (
 
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/logging"
-	"src.solsynth.dev/sosys/personality/internal/solar"
+	"src.solsynth.dev/sosys/personality/internal/solar_network"
 )
 
-type SolarChatBridge interface {
+type SnChatBridge interface {
 	SendBotMessage(ctx context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (resolvedRoomID, messageID string, err error)
 	TrackRoom(agentID, roomID string)
-	GetAccount(ctx context.Context, agentID, accountName, accountID string) (*solar.Account, error)
-	GetAccountProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error)
-	GetMessage(ctx context.Context, agentID, roomID, messageID string) (*solar.ChatMessage, error)
-	GetPost(ctx context.Context, agentID, postID string) (solar.Post, error)
-	ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*solar.PaginatedPosts, error)
-	ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*solar.PaginatedPosts, error)
+	GetAccount(ctx context.Context, agentID, accountName, accountID string) (*solar_network.Account, error)
+	GetAccountProfile(ctx context.Context, agentID, accountName string) (solar_network.AccountProfile, error)
+	GetMessage(ctx context.Context, agentID, roomID, messageID string) (*solar_network.ChatMessage, error)
+	GetPost(ctx context.Context, agentID, postID string) (solar_network.Post, error)
+	ListPublisherPosts(ctx context.Context, agentID, accountName string, offset, take int) (*solar_network.PaginatedPosts, error)
+	ListPostReplies(ctx context.Context, agentID, postID string, offset, take int) (*solar_network.PaginatedPosts, error)
 }
 
-type SolarRoomState struct {
+type SnRoomState struct {
 	RoomID        string
 	LastMessageAt *time.Time
 }
@@ -37,7 +37,7 @@ type ExternalInboundMessage struct {
 	MessageID           string
 	MessageType         string
 	Content             string
-	Attachments         []solar.ChatAttachment
+	Attachments         []solar_network.ChatAttachment
 	SenderAccountID     string
 	SenderName          string
 	SenderNick          string
@@ -48,23 +48,23 @@ type ExternalInboundMessage struct {
 }
 
 const (
-	solarRoomEngagementStatePassive = "passive"
-	solarRoomEngagementStateActive  = "active"
+	snRoomEngagementStatePassive = "passive"
+	snRoomEngagementStateActive  = "active"
 )
 
 const (
-	solarReplyForceAllow = "force_allow" // mentioned – must send
-	solarReplyAllow      = "allow"       // active engagement – agent decides
-	solarReplySuppress   = "suppress"    // passive – must not send
+	snReplyForceAllow = "force_allow" // mentioned – must send
+	snReplyAllow      = "allow"       // active engagement – agent decides
+	snReplySuppress   = "suppress"    // passive – must not send
 )
 
-const solarRoomActiveWindow = 5 * time.Minute
+const snRoomActiveWindow = 5 * time.Minute
 
-func (s *ConversationService) SetSolarChatBridge(bridge SolarChatBridge) {
-	s.solar = bridge
+func (s *ConversationService) SetSnChatBridge(bridge SnChatBridge) {
+	s.sn = bridge
 }
 
-func (s *ConversationService) ListTrackedSolarRooms(ctx context.Context, agentID string) ([]SolarRoomState, error) {
+func (s *ConversationService) ListTrackedSnRooms(ctx context.Context, agentID string) ([]SnRoomState, error) {
 	var bindings []database.ExternalChatBinding
 	if err := s.db.WithContext(ctx).
 		Where("agent_id = ?", strings.TrimSpace(agentID)).
@@ -72,10 +72,10 @@ func (s *ConversationService) ListTrackedSolarRooms(ctx context.Context, agentID
 		return nil, err
 	}
 
-	rooms := make([]SolarRoomState, 0, len(bindings))
+	rooms := make([]SnRoomState, 0, len(bindings))
 	for _, binding := range bindings {
 		if roomID := strings.TrimSpace(binding.RemoteRoomID); roomID != "" {
-			rooms = append(rooms, SolarRoomState{
+			rooms = append(rooms, SnRoomState{
 				RoomID:        roomID,
 				LastMessageAt: binding.LastMessageAt,
 			})
@@ -84,14 +84,14 @@ func (s *ConversationService) ListTrackedSolarRooms(ctx context.Context, agentID
 	return rooms, nil
 }
 
-func (s *ConversationService) HandleSolarInboundMessage(ctx context.Context, agentID string, input ExternalInboundMessage) error {
-	if s.solarInbound == nil {
+func (s *ConversationService) HandleSnInboundMessage(ctx context.Context, agentID string, input ExternalInboundMessage) error {
+	if s.snInbound == nil {
 		return s.handleSolarInboundMessageNow(ctx, agentID, input)
 	}
-	return s.solarInbound.Enqueue(ctx, agentID, input)
+	return s.snInbound.Enqueue(ctx, agentID, input)
 }
 
-func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agentID string, inputs []ExternalInboundMessage) error {
+func (s *ConversationService) handleSnInboundBatch(ctx context.Context, agentID string, inputs []ExternalInboundMessage) error {
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -99,7 +99,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 	if len(inputs) > 1 {
 		var builder strings.Builder
 		var mentions bool
-		attachments := append([]solar.ChatAttachment(nil), merged.Attachments...)
+		attachments := append([]solar_network.ChatAttachment(nil), merged.Attachments...)
 		roomType := merged.RoomType
 		repliedMessageID := merged.RepliedMessageID
 		repliedMessageContent := merged.RepliedMessageContent
@@ -136,7 +136,7 @@ func (s *ConversationService) handleSolarInboundBatch(ctx context.Context, agent
 }
 
 func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, agentID string, input ExternalInboundMessage) error {
-	inputParts := s.buildSolarInboundInputParts(input.Attachments)
+	inputParts := s.buildSnInboundInputParts(input.Attachments)
 	if strings.TrimSpace(input.RoomID) == "" || (strings.TrimSpace(input.Content) == "" && len(inputParts) == 0) {
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
@@ -171,8 +171,8 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	if s.solar != nil {
-		s.solar.TrackRoom(agentID, input.RoomID)
+	if s.sn != nil {
+		s.sn.TrackRoom(agentID, input.RoomID)
 	}
 
 	logging.Log.Info().
@@ -214,7 +214,7 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 	return err
 }
 
-func (s *ConversationService) SolarBaseURL() string {
+func (s *ConversationService) SnBaseURL() string {
 	if s.cfg == nil {
 		return ""
 	}
@@ -254,7 +254,7 @@ func (s *ConversationService) SummarizeAndCacheImage(ctx context.Context, imageU
 	return summary, model, nil
 }
 
-func (s *ConversationService) buildSolarInboundInputParts(attachments []solar.ChatAttachment) []userMessageInputPart {
+func (s *ConversationService) buildSnInboundInputParts(attachments []solar_network.ChatAttachment) []userMessageInputPart {
 	if len(attachments) == 0 {
 		return nil
 	}
@@ -282,11 +282,11 @@ func (s *ConversationService) buildSolarInboundInputParts(attachments []solar.Ch
 	return parts
 }
 
-func (s *ConversationService) FlushSolarInboundBatches(ctx context.Context) error {
-	if s.solarInbound == nil {
+func (s *ConversationService) FlushSnInboundBatches(ctx context.Context) error {
+	if s.snInbound == nil {
 		return nil
 	}
-	return s.solarInbound.FlushAll(ctx)
+	return s.snInbound.FlushAll(ctx)
 }
 
 func (s *ConversationService) ensureSolarRoomBinding(
@@ -316,9 +316,9 @@ func (s *ConversationService) ensureSolarRoomBinding(
 			binding.RemoteAccount = strings.TrimSpace(remoteAccount)
 		}
 		if strings.TrimSpace(binding.EngagementState) == "" {
-			binding.EngagementState = solarRoomEngagementStatePassive
+			binding.EngagementState = snRoomEngagementStatePassive
 		}
-		s.applySolarOutboundEngagementState(&binding, at)
+		s.applySnOutboundEngagementState(&binding, at)
 		return s.db.WithContext(ctx).Save(&binding).Error
 	}
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -329,13 +329,13 @@ func (s *ConversationService) ensureSolarRoomBinding(
 		ID:              newID(),
 		AgentID:         agentID,
 		RemoteRoomID:    roomID,
-		EngagementState: solarRoomEngagementStatePassive,
+		EngagementState: snRoomEngagementStatePassive,
 		ThreadID:        thread.ID,
 		AccountID:       thread.AccountID,
 		RemoteAccount:   strings.TrimSpace(remoteAccount),
 		LastMessageAt:   &at,
 	}
-	s.applySolarOutboundEngagementState(&binding, at)
+	s.applySnOutboundEngagementState(&binding, at)
 	return s.db.WithContext(ctx).Create(&binding).Error
 }
 
@@ -359,7 +359,7 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 		if remoteAccount := firstNonEmpty(input.SenderName, input.SenderNick); remoteAccount != "" {
 			binding.RemoteAccount = remoteAccount
 		}
-		s.applySolarRoomEngagementState(&binding, input, at)
+		s.applySnRoomEngagementState(&binding, input, at)
 		logging.Log.Debug().
 			Str("agent_id", strings.TrimSpace(agentID)).
 			Str("room_id", strings.TrimSpace(input.RoomID)).
@@ -390,14 +390,14 @@ func (s *ConversationService) getOrCreateExternalBinding(ctx context.Context, ag
 		AgentID:         strings.TrimSpace(agentID),
 		RemoteRoomID:    strings.TrimSpace(input.RoomID),
 		RemoteRoomType:  roomTypePtr(input.RoomType),
-		EngagementState: solarRoomEngagementStatePassive,
+		EngagementState: snRoomEngagementStatePassive,
 		ThreadID:        thread.ID,
 		AccountID:       accountID,
 		RemoteAccountID: strings.TrimSpace(input.SenderAccountID),
 		RemoteAccount:   firstNonEmpty(input.SenderName, input.SenderNick),
 		LastMessageAt:   &now,
 	}
-	s.applySolarRoomEngagementState(&binding, input, now)
+	s.applySnRoomEngagementState(&binding, input, now)
 	if err := s.db.WithContext(ctx).Create(&binding).Error; err != nil {
 		return nil, err
 	}
@@ -431,7 +431,7 @@ func roomTypePtr(value int) *int {
 	return &v
 }
 
-func (s *ConversationService) getSolarRoomBinding(ctx context.Context, agentID, threadID string) (*database.ExternalChatBinding, error) {
+func (s *ConversationService) getSnRoomBinding(ctx context.Context, agentID, threadID string) (*database.ExternalChatBinding, error) {
 	var binding database.ExternalChatBinding
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ? AND thread_id = ?", strings.TrimSpace(agentID), strings.TrimSpace(threadID)).
@@ -445,26 +445,26 @@ func (s *ConversationService) getSolarRoomBinding(ctx context.Context, agentID, 
 	return &binding, nil
 }
 
-func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agentID, threadID string, records []database.ConversationMessage) (string, error) {
-	binding, err := s.getSolarRoomBinding(ctx, agentID, threadID)
+func (s *ConversationService) buildSnSystemOverlay(ctx context.Context, agentID, threadID string, records []database.ConversationMessage) (string, error) {
+	binding, err := s.getSnRoomBinding(ctx, agentID, threadID)
 	if err != nil {
 		return "", err
 	}
 	if binding == nil {
 		return "", nil
 	}
-	inboundMeta := latestSolarInboundMetadata(records)
+	inboundMeta := latestSnInboundMetadata(records)
 
 	parts := []string{
-		solarRoomTypePrompt(binding.RemoteRoomType),
+		snRoomTypePrompt(binding.RemoteRoomType),
 		"IMPORTANT: You MUST use the send_chat_message or send_chat_message_batch tool to send any reply. Do NOT write reply text in assistant content.",
 		"If you decide not to reply, use the no_reply tool explicitly.",
 		"Do NOT output reply text directly - it will be ignored. Always use tools.",
 		fmt.Sprintf("Current room_id: %q. Always pass this as room_id when calling send_chat_message.", binding.RemoteRoomID),
-		solarRoomBehaviorPrompt(binding.RemoteRoomType),
-		solarInboundPrompt(inboundMeta),
-		solarRoomEngagementPrompt(binding),
-		solarSenderIdentityPrompt(inboundMeta, binding),
+		snRoomBehaviorPrompt(binding.RemoteRoomType),
+		snInboundPrompt(inboundMeta),
+		snRoomEngagementPrompt(binding),
+		snSenderIdentityPrompt(inboundMeta, binding),
 		fmt.Sprintf("Current remote account: %q (%s).", binding.RemoteAccount, binding.RemoteAccountID),
 	}
 
@@ -474,9 +474,9 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 		senderName = inboundMeta.SenderAccountName
 	}
 	if senderName != "" {
-		if profile, err := s.getCachedSolarUserProfile(ctx, agentID, senderName); err == nil && profile != nil {
-			parts = append(parts, solarUserProfilePrompt(profile))
-			if localTime := solarUserLocalTime(profile); localTime != "" {
+		if profile, err := s.getCachedSnUserProfile(ctx, agentID, senderName); err == nil && profile != nil {
+			parts = append(parts, snUserProfilePrompt(profile))
+			if localTime := snUserLocalTime(profile); localTime != "" {
 				parts = append(parts, localTime)
 			}
 		}
@@ -485,21 +485,21 @@ func (s *ConversationService) buildSolarSystemOverlay(ctx context.Context, agent
 	return strings.Join(parts, "\n"), nil
 }
 
-func solarRoomTypePrompt(roomType *int) string {
+func snRoomTypePrompt(roomType *int) string {
 	if roomType != nil && *roomType == 1 {
 		return "This conversation is connected to a Solar Network direct message. This is a DM, not a group chat."
 	}
 	return "This conversation is connected to a Solar Network group chat. This is not a DM. Multiple different users may be speaking, so track participants carefully."
 }
 
-func solarRoomBehaviorPrompt(roomType *int) string {
+func snRoomBehaviorPrompt(roomType *int) string {
 	if roomType != nil && *roomType == 1 {
 		return "Because this is a DM, you can respond more proactively, warmly, and conversationally."
 	}
 	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned."
 }
 
-func solarUserProfilePrompt(profile solar.AccountProfile) string {
+func snUserProfilePrompt(profile solar_network.AccountProfile) string {
 	if profile == nil {
 		return ""
 	}
@@ -540,7 +540,7 @@ func solarUserProfilePrompt(profile solar.AccountProfile) string {
 	return fmt.Sprintf("Sender profile: %s.", strings.Join(parts, ", "))
 }
 
-func solarUserLocalTime(profile solar.AccountProfile) string {
+func snUserLocalTime(profile solar_network.AccountProfile) string {
 	if profile == nil {
 		return ""
 	}
@@ -559,12 +559,12 @@ func solarUserLocalTime(profile solar.AccountProfile) string {
 	return fmt.Sprintf("Current time for the sender (%s): %s.", tzStr, time.Now().In(loc).Format("2006-01-02 15:04 MST"))
 }
 
-func latestSolarInboundMetadata(records []database.ConversationMessage) *solarInboundRequestMetadata {
+func latestSnInboundMetadata(records []database.ConversationMessage) *snInboundRequestMetadata {
 	for _, record := range records {
 		if strings.ToLower(record.Role) != "user" {
 			continue
 		}
-		var meta solarInboundRequestMetadata
+		var meta snInboundRequestMetadata
 		if decodeMessageMetadata(record.Metadata, &meta) != nil {
 			continue
 		}
@@ -576,7 +576,7 @@ func latestSolarInboundMetadata(records []database.ConversationMessage) *solarIn
 	return nil
 }
 
-func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
+func snInboundPrompt(meta *snInboundRequestMetadata) string {
 	if meta == nil {
 		return "No special inbound routing hint is available for the latest message."
 	}
@@ -598,7 +598,7 @@ func solarInboundPrompt(meta *solarInboundRequestMetadata) string {
 	return "The latest inbound group message did not mention the bot. Decide whether to join the conversation; if you reply, write the outbound chat message text directly."
 }
 
-func solarSenderIdentityPrompt(meta *solarInboundRequestMetadata, binding *database.ExternalChatBinding) string {
+func snSenderIdentityPrompt(meta *snInboundRequestMetadata, binding *database.ExternalChatBinding) string {
 	username := ""
 	accountID := ""
 	displayName := ""
@@ -632,7 +632,7 @@ func solarSenderIdentityPrompt(meta *solarInboundRequestMetadata, binding *datab
 	}
 }
 
-func (s *ConversationService) latestSolarInboundMetadataForThread(ctx context.Context, accountID, threadID string) (*solarInboundRequestMetadata, error) {
+func (s *ConversationService) latestSnInboundMetadataForThread(ctx context.Context, accountID, threadID string) (*snInboundRequestMetadata, error) {
 	var records []database.ConversationMessage
 	if err := s.db.WithContext(ctx).
 		Where("thread_id = ? AND account_id = ? AND role = ?", threadID, accountID, "user").
@@ -641,39 +641,39 @@ func (s *ConversationService) latestSolarInboundMetadataForThread(ctx context.Co
 		Find(&records).Error; err != nil {
 		return nil, err
 	}
-	return latestSolarInboundMetadata(records), nil
+	return latestSnInboundMetadata(records), nil
 }
 
-func (s *ConversationService) allowSolarRoomReply(ctx context.Context, thread *database.ConversationThread, binding *database.ExternalChatBinding) (string, error) {
+func (s *ConversationService) allowSnRoomReply(ctx context.Context, thread *database.ConversationThread, binding *database.ExternalChatBinding) (string, error) {
 	if thread == nil || binding == nil {
-		return solarReplyAllow, nil
+		return snReplyAllow, nil
 	}
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
-		return solarReplyAllow, nil
+		return snReplyAllow, nil
 	}
 
-	meta, err := s.latestSolarInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
+	meta, err := s.latestSnInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
 	if err != nil {
-		return solarReplySuppress, err
+		return snReplySuppress, err
 	}
 	if meta != nil && meta.MentionedBot {
-		return solarReplyForceAllow, nil
+		return snReplyForceAllow, nil
 	}
-	if solarRoomBindingIsActive(binding, time.Now()) {
-		return solarReplyAllow, nil
+	if snRoomBindingIsActive(binding, time.Now()) {
+		return snReplyAllow, nil
 	}
-	return solarReplySuppress, nil
+	return snReplySuppress, nil
 }
 
-func (s *ConversationService) getCachedSolarUserProfile(ctx context.Context, agentID, accountName string) (solar.AccountProfile, error) {
-	if s.solar == nil || strings.TrimSpace(accountName) == "" {
+func (s *ConversationService) getCachedSnUserProfile(ctx context.Context, agentID, accountName string) (solar_network.AccountProfile, error) {
+	if s.sn == nil || strings.TrimSpace(accountName) == "" {
 		return nil, nil
 	}
 	cacheKey := agentID + ":" + accountName
 	if cached, ok := s.profileCache.Load(cacheKey); ok {
-		return cached.(solar.AccountProfile), nil
+		return cached.(solar_network.AccountProfile), nil
 	}
-	profile, err := s.solar.GetAccountProfile(ctx, agentID, accountName)
+	profile, err := s.sn.GetAccountProfile(ctx, agentID, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -683,7 +683,7 @@ func (s *ConversationService) getCachedSolarUserProfile(ctx context.Context, age
 	return profile, nil
 }
 
-func (s *ConversationService) applySolarRoomEngagementState(binding *database.ExternalChatBinding, input ExternalInboundMessage, now time.Time) {
+func (s *ConversationService) applySnRoomEngagementState(binding *database.ExternalChatBinding, input ExternalInboundMessage, now time.Time) {
 	if binding == nil {
 		return
 	}
@@ -691,27 +691,27 @@ func (s *ConversationService) applySolarRoomEngagementState(binding *database.Ex
 		now = time.Now()
 	}
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
-		binding.EngagementState = solarRoomEngagementStateActive
+		binding.EngagementState = snRoomEngagementStateActive
 		binding.EngagedUntil = nil
 		return
 	}
 
 	involved := input.MentionedBot
 	if involved {
-		binding.EngagementState = solarRoomEngagementStateActive
-		until := now.Add(solarRoomActiveWindow)
+		binding.EngagementState = snRoomEngagementStateActive
+		until := now.Add(snRoomActiveWindow)
 		binding.EngagedUntil = &until
 		return
 	}
-	if solarRoomBindingIsActive(binding, now) {
-		binding.EngagementState = solarRoomEngagementStateActive
+	if snRoomBindingIsActive(binding, now) {
+		binding.EngagementState = snRoomEngagementStateActive
 		return
 	}
-	binding.EngagementState = solarRoomEngagementStatePassive
+	binding.EngagementState = snRoomEngagementStatePassive
 	binding.EngagedUntil = nil
 }
 
-func (s *ConversationService) applySolarOutboundEngagementState(binding *database.ExternalChatBinding, now time.Time) {
+func (s *ConversationService) applySnOutboundEngagementState(binding *database.ExternalChatBinding, now time.Time) {
 	if binding == nil {
 		return
 	}
@@ -719,23 +719,23 @@ func (s *ConversationService) applySolarOutboundEngagementState(binding *databas
 		now = time.Now()
 	}
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
-		binding.EngagementState = solarRoomEngagementStateActive
+		binding.EngagementState = snRoomEngagementStateActive
 		binding.EngagedUntil = nil
 		return
 	}
-	binding.EngagementState = solarRoomEngagementStateActive
-	until := now.Add(solarRoomActiveWindow)
+	binding.EngagementState = snRoomEngagementStateActive
+	until := now.Add(snRoomActiveWindow)
 	binding.EngagedUntil = &until
 }
 
-func solarRoomBindingIsActive(binding *database.ExternalChatBinding, now time.Time) bool {
+func snRoomBindingIsActive(binding *database.ExternalChatBinding, now time.Time) bool {
 	if binding == nil {
 		return false
 	}
 	if binding.RemoteRoomType != nil && *binding.RemoteRoomType == 1 {
 		return true
 	}
-	if strings.TrimSpace(binding.EngagementState) != solarRoomEngagementStateActive {
+	if strings.TrimSpace(binding.EngagementState) != snRoomEngagementStateActive {
 		return false
 	}
 	if binding.EngagedUntil == nil {
@@ -744,11 +744,11 @@ func solarRoomBindingIsActive(binding *database.ExternalChatBinding, now time.Ti
 	return binding.EngagedUntil.After(now)
 }
 
-func solarRoomEngagementPrompt(binding *database.ExternalChatBinding) string {
+func snRoomEngagementPrompt(binding *database.ExternalChatBinding) string {
 	if binding == nil || binding.RemoteRoomType == nil || *binding.RemoteRoomType == 1 {
 		return "No special follow-up engagement window is needed for this room."
 	}
-	if solarRoomBindingIsActive(binding, time.Now()) {
+	if snRoomBindingIsActive(binding, time.Now()) {
 		return "The bot is currently in an active follow-up window for this group chat because it was recently mentioned. You may continue the conversation proactively even without a fresh mention, but you can still choose to stay silent if the conversation does not require your input."
 	}
 	return "The bot is not currently in an active follow-up window for this group chat. Do not reply unless the latest message directly mentioned the bot."

@@ -26,8 +26,8 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 	if strings.TrimSpace(input.Prompt) == "" {
 		input.Prompt = strings.TrimSpace(def.Autonomous.WakePrompt)
 	}
-	if strings.TrimSpace(input.TargetAccountID) == "" && strings.TrimSpace(input.TargetAccountName) != "" && s.solar != nil {
-		account, err := s.solar.GetAccount(ctx, def.ID, input.TargetAccountName, "")
+	if strings.TrimSpace(input.TargetAccountID) == "" && strings.TrimSpace(input.TargetAccountName) != "" && s.sn != nil {
+		account, err := s.sn.GetAccount(ctx, def.ID, input.TargetAccountName, "")
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +90,7 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 
 	run.Model = agentDef.Model
 	responseContent := ""
-	if agent.HasAbility(agentDef, "chat") && s.solar != nil {
+	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		responseContent, err = s.runWithChatTools(ctx, thread.AccountID, thread.ID, run.ID, modelMessages, agentDef)
 		if err != nil {
@@ -193,7 +193,7 @@ func (s *ConversationService) allowAutonomousOldMessagePickup(ctx context.Contex
 		return true, nil
 	}
 
-	meta, err := s.latestSolarInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
+	meta, err := s.latestSnInboundMetadataForThread(ctx, thread.AccountID, thread.ID)
 	if err != nil {
 		return false, err
 	}
@@ -239,7 +239,7 @@ func (s *ConversationService) resolveAutonomousThread(ctx context.Context, def a
 			ThreadID:        thread.ID,
 			AccountID:       accountID,
 			RemoteAccount:   strings.TrimSpace(input.TargetAccountName),
-			EngagementState: solarRoomEngagementStatePassive,
+			EngagementState: snRoomEngagementStatePassive,
 		}
 		if err := s.db.WithContext(ctx).Create(binding).Error; err != nil {
 			return nil, err

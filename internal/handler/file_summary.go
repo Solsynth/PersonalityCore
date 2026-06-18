@@ -10,11 +10,11 @@ import (
 )
 
 func RegisterImageSummaryRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
-	r.GET("/image-summaries/:id", func(c *gin.Context) { getImageSummary(c, conversations) })
-	r.POST("/image-summaries", func(c *gin.Context) { generateImageSummary(c, conversations) })
+	r.GET("/files/:id/summary", func(c *gin.Context) { getFileSummary(c, conversations) })
+	r.POST("/files/summary", func(c *gin.Context) { generateFileSummary(c, conversations) })
 }
 
-func getImageSummary(c *gin.Context, conversations *service.ConversationService) {
+func getFileSummary(c *gin.Context, conversations *service.ConversationService) {
 	attachmentID := strings.TrimSpace(c.Param("id"))
 	if attachmentID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
@@ -34,7 +34,7 @@ func getImageSummary(c *gin.Context, conversations *service.ConversationService)
 	c.JSON(http.StatusOK, gin.H{"attachment_id": attachmentID, "summary": summary})
 }
 
-func generateImageSummary(c *gin.Context, conversations *service.ConversationService) {
+func generateFileSummary(c *gin.Context, conversations *service.ConversationService) {
 	var req struct {
 		AttachmentID string `json:"attachment_id"`
 		ImageURL     string `json:"image_url"`

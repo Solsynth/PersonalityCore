@@ -119,6 +119,34 @@ type ProviderConfig struct {
 	MaxCompletionTokens int           `mapstructure:"maxCompletionTokens"`
 	Temperature         float32       `mapstructure:"temperature"`
 	TopP                float32       `mapstructure:"topP"`
+	Models              []ModelConfig `mapstructure:"models"`
+}
+
+type ModelConfig struct {
+	Name               string   `mapstructure:"name"`
+	Modalities         []string `mapstructure:"modalities"`
+	MaxCompletionTokens int      `mapstructure:"maxCompletionTokens"`
+	Temperature        float32  `mapstructure:"temperature"`
+	TopP               float32  `mapstructure:"topP"`
+}
+
+func (m ModelConfig) SupportsModality(modality string) bool {
+	for _, v := range m.Modalities {
+		if strings.EqualFold(strings.TrimSpace(v), modality) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p ProviderConfig) ResolveModel(modelName string) *ModelConfig {
+	modelName = strings.TrimSpace(modelName)
+	for i := range p.Models {
+		if strings.EqualFold(strings.TrimSpace(p.Models[i].Name), modelName) {
+			return &p.Models[i]
+		}
+	}
+	return nil
 }
 
 type agentFile struct {

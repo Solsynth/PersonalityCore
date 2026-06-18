@@ -97,15 +97,26 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 		return nil, fmt.Errorf("provider %q apiKey is required", provider.ID)
 	}
 
+	mc := provider.ResolveModel(modelName)
+
 	temperature := provider.Temperature
+	if mc != nil && mc.Temperature != 0 {
+		temperature = mc.Temperature
+	}
 	if agent.Temperature != nil {
 		temperature = *agent.Temperature
 	}
 	topP := provider.TopP
+	if mc != nil && mc.TopP != 0 {
+		topP = mc.TopP
+	}
 	if agent.TopP != nil {
 		topP = *agent.TopP
 	}
 	maxTokens := provider.MaxCompletionTokens
+	if mc != nil && mc.MaxCompletionTokens != 0 {
+		maxTokens = mc.MaxCompletionTokens
+	}
 	if agent.MaxCompletionTokens != nil {
 		maxTokens = *agent.MaxCompletionTokens
 	}
@@ -147,9 +158,12 @@ func (e *Executor) SupportsVision(agent Definition) bool {
 	if e == nil {
 		return true
 	}
-	provider, _, err := e.resolveModel(agent.Model)
+	provider, modelName, err := e.resolveModel(agent.Model)
 	if err != nil {
 		return false
+	}
+	if mc := provider.ResolveModel(modelName); mc != nil {
+		return mc.SupportsModality("image")
 	}
 	if provider.SupportsVision != nil {
 		return *provider.SupportsVision
@@ -162,6 +176,23 @@ func (e *Executor) SupportsVision(agent Definition) bool {
 		return strings.EqualFold(strings.TrimSpace(provider.ID), "openai")
 	}
 	return strings.Contains(baseURL, "openai.com")
+}
+
+func (e *Executor) SupportsModality(agent Definition, modality string) bool {
+	if e == nil {
+		return false
+	}
+	provider, modelName, err := e.resolveModel(agent.Model)
+	if err != nil {
+		return false
+	}
+	if mc := provider.ResolveModel(modelName); mc != nil {
+		return mc.SupportsModality(modality)
+	}
+	if modality == "image" {
+		return e.SupportsVision(agent)
+	}
+	return false
 }
 
 func (e *Executor) GenerateWithModel(ctx context.Context, modelRef string, messages []*schema.Message) (*schema.Message, error) {

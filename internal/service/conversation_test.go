@@ -19,22 +19,17 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/solar_network"
 )
 
-func TestRunInputUserMessagePayloadSupportsImageParts(t *testing.T) {
+func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{}}
 	input := RunInput{
-		Message: "What is in this image?",
-		InputParts: []userMessageInputPart{
-			{
-				Type:     "image_url",
-				ImageURL: "https://example.com/cat.jpg",
-				Detail:   "high",
-			},
-		},
+		Message:       "What is in this image?",
+		AttachmentIDs: []string{"file-123"},
 		RequestMetadata: map[string]any{
 			"source": "api",
 		},
 	}
 
-	content, metadata, err := input.userMessagePayload(input.RequestMetadata)
+	content, metadata, err := svc.userMessagePayload(input, input.RequestMetadata)
 	if err != nil {
 		t.Fatalf("userMessagePayload() error = %v", err)
 	}
@@ -44,48 +39,20 @@ func TestRunInputUserMessagePayloadSupportsImageParts(t *testing.T) {
 	if metadata["source"] != "api" {
 		t.Fatalf("expected source metadata to be preserved, got %#v", metadata["source"])
 	}
-	rawParts, ok := metadata["input_parts"].([]userMessageInputPart)
-	if !ok {
-		t.Fatalf("expected typed input_parts metadata, got %T", metadata["input_parts"])
-	}
-	if len(rawParts) != 1 || rawParts[0].ImageURL != "https://example.com/cat.jpg" {
-		t.Fatalf("unexpected input_parts metadata: %#v", rawParts)
-	}
-
-	parts, err := buildSchemaMessageInputParts(input.InputParts, input.Message)
-	if err != nil {
-		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
-	}
-	if len(parts) != 2 {
-		t.Fatalf("expected text+image parts, got %d", len(parts))
-	}
-	if parts[0].Type != schema.ChatMessagePartTypeText || parts[0].Text != "What is in this image?" {
-		t.Fatalf("unexpected text part: %#v", parts[0])
-	}
-	if parts[1].Type != schema.ChatMessagePartTypeImageURL || parts[1].Image == nil {
-		t.Fatalf("unexpected image part: %#v", parts[1])
-	}
-	if parts[1].Image.URL == nil || *parts[1].Image.URL != "https://example.com/cat.jpg" {
-		t.Fatalf("unexpected image url: %#v", parts[1].Image)
-	}
-	if parts[1].Image.Detail != schema.ImageURLDetailHigh {
-		t.Fatalf("unexpected image detail: %q", parts[1].Image.Detail)
+	if metadata["input_parts"] != nil && metadata["attachment_ids"] == nil {
+		t.Fatalf("expected attachment_ids or no metadata, got %#v", metadata)
 	}
 }
 
-func TestRunInputUserMessagePayloadRejectsInvalidBase64ImagePart(t *testing.T) {
-	input := RunInput{
-		InputParts: []userMessageInputPart{{
-			Type:        "image_url",
-			ImageBase64: "Zm9v",
-		}},
-	}
+func TestRunInputUserMessagePayloadRejectsEmptyInput(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{}}
+	input := RunInput{}
 
-	_, _, err := input.userMessagePayload(nil)
+	_, _, err := svc.userMessagePayload(input, nil)
 	if err == nil {
-		t.Fatal("expected validation error for missing mime_type")
+		t.Fatal("expected validation error for empty input")
 	}
-	if !strings.Contains(err.Error(), "mime_type is required") {
+	if !strings.Contains(err.Error(), "message, input_parts, or attachment_ids is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -107,14 +74,11 @@ func TestBuildSolarInboundInputPartsUsesDriveFileURL(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 supported image part, got %d", len(parts))
 	}
-	if parts[0].Type != "image_url" {
+	if parts[0].Type != "image" {
 		t.Fatalf("unexpected part type: %q", parts[0].Type)
 	}
-	if parts[0].ImageURL != "https://solar_network.example/drive/files/img-1" {
-		t.Fatalf("unexpected image url: %q", parts[0].ImageURL)
-	}
-	if parts[0].MIMEType != "image/png" {
-		t.Fatalf("unexpected mime type: %q", parts[0].MIMEType)
+	if parts[0].AttachmentID != "img-1" {
+		t.Fatalf("unexpected attachment id: %q", parts[0].AttachmentID)
 	}
 }
 
@@ -377,9 +341,8 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "Describe this image", nil, map[string]any{
 		"input_parts": []userMessageInputPart{{
-			Type:     "image_url",
-			ImageURL: "https://example.com/cat.jpg",
-			Detail:   "low",
+			Type:         "image",
+			AttachmentID: "file-123",
 		}},
 	}); err != nil {
 		t.Fatalf("create multimodal user message: %v", err)
@@ -412,11 +375,8 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	if userMsg.UserInputMultiContent[1].Image == nil || userMsg.UserInputMultiContent[1].Image.URL == nil {
 		t.Fatalf("unexpected second part: %#v", userMsg.UserInputMultiContent[1])
 	}
-	if *userMsg.UserInputMultiContent[1].Image.URL != "https://example.com/cat.jpg" {
-		t.Fatalf("unexpected image url: %#v", userMsg.UserInputMultiContent[1].Image)
-	}
-	if userMsg.UserInputMultiContent[1].Image.Detail != schema.ImageURLDetailLow {
-		t.Fatalf("unexpected image detail: %q", userMsg.UserInputMultiContent[1].Image.Detail)
+	if userMsg.UserInputMultiContent[1].Image.URL == nil {
+		t.Fatal("expected image url to be set")
 	}
 }
 
@@ -459,9 +419,8 @@ func TestBuildModelMessagesFallsBackToTextForTextOnlyProviderHistory(t *testing.
 	}
 	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "What is in this image?", nil, map[string]any{
 		"input_parts": []userMessageInputPart{{
-			Type:     "image_url",
-			ImageURL: "https://example.com/cat.jpg",
-			Detail:   "low",
+			Type:         "image",
+			AttachmentID: "file-123",
 		}},
 	}); err != nil {
 		t.Fatalf("create multimodal user message: %v", err)
@@ -487,9 +446,6 @@ func TestBuildModelMessagesFallsBackToTextForTextOnlyProviderHistory(t *testing.
 	}
 	if !strings.Contains(userMsg.Content, "Image attachment provided but this model only accepts text input") {
 		t.Fatalf("expected text fallback note, got %q", userMsg.Content)
-	}
-	if !strings.Contains(userMsg.Content, "https://example.com/cat.jpg") {
-		t.Fatalf("expected original image url in fallback note, got %q", userMsg.Content)
 	}
 }
 

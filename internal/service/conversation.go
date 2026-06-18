@@ -69,20 +69,19 @@ type CreateConversationInput struct {
 }
 
 type AddMessageInput struct {
-	Content string `json:"content"`
+	Content        string   `json:"content"`
+	AttachmentIDs  []string `json:"attachment_ids,omitempty"`
 }
 
 type userMessageInputPart struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	ImageURL    string `json:"image_url,omitempty"`
-	ImageBase64 string `json:"image_base64,omitempty"`
-	MIMEType    string `json:"mime_type,omitempty"`
-	Detail      string `json:"detail,omitempty"`
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	AttachmentID string `json:"attachment_id,omitempty"`
 }
 
 type RunInput struct {
 	Message         string                 `json:"message"`
+	AttachmentIDs   []string               `json:"attachment_ids,omitempty"`
 	InputParts      []userMessageInputPart `json:"input_parts"`
 	Stream          bool                   `json:"stream"`
 	RequestMetadata map[string]any         `json:"-"`
@@ -202,7 +201,11 @@ func (s *ConversationService) AddUserMessage(ctx context.Context, accountID, thr
 	if err != nil {
 		return nil, err
 	}
-	return s.createMessage(ctx, thread, nil, "user", strings.TrimSpace(input.Content), nil)
+	var metadata map[string]any
+	if len(input.AttachmentIDs) > 0 {
+		metadata = map[string]any{"attachment_ids": input.AttachmentIDs}
+	}
+	return s.createMessageWithMetadata(ctx, thread, nil, "user", strings.TrimSpace(input.Content), nil, metadata)
 }
 
 func (s *ConversationService) ListRuns(ctx context.Context, accountID, threadID string, input ListInput) ([]database.ConversationRun, int64, error) {
@@ -243,7 +246,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	content, metadata, err := input.userMessagePayload(input.RequestMetadata)
+	content, metadata, err := s.userMessagePayload(input, input.RequestMetadata)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -410,7 +413,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 					msg.Content = s.renderTextOnlyWithSummaries(ctx, meta.InputParts, msg.Content)
 					break
 				}
-				parts, err := buildSchemaMessageInputParts(meta.InputParts, renderedContent)
+				parts, err := s.buildSchemaMessageInputParts(meta.InputParts, renderedContent, nil)
 				if err != nil {
 					return nil, agent.Definition{}, err
 				}
@@ -936,27 +939,33 @@ func resolveImpressionAccountIDFromMetadata(fallbackAccountID string, raw dataty
 	return strings.TrimSpace(fallbackAccountID)
 }
 
-func (input RunInput) userMessagePayload(baseMetadata map[string]any) (string, map[string]any, error) {
+func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata map[string]any) (string, map[string]any, error) {
 	content := strings.TrimSpace(input.Message)
-	if content == "" && len(input.InputParts) == 0 {
-		return "", nil, fmt.Errorf("message or input_parts is required")
+	if content == "" && len(input.InputParts) == 0 && len(input.AttachmentIDs) == 0 {
+		return "", nil, fmt.Errorf("message, input_parts, or attachment_ids is required")
 	}
 
-	parts, err := buildSchemaMessageInputParts(input.InputParts, content)
+	parsed, err := s.buildSchemaMessageInputParts(input.InputParts, content, input.AttachmentIDs)
 	if err != nil {
 		return "", nil, err
 	}
 
 	metadata := cloneMetadataMap(baseMetadata)
-	if len(parts) == 0 {
+	if len(parsed) == 0 {
 		return content, metadata, nil
 	}
-	metadata["input_parts"] = input.InputParts
+	if len(input.InputParts) > 0 {
+		metadata["input_parts"] = input.InputParts
+	}
+	if len(input.AttachmentIDs) > 0 {
+		metadata["attachment_ids"] = input.AttachmentIDs
+	}
 	return content, metadata, nil
 }
 
-func buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string) ([]schema.MessageInputPart, error) {
-	parts := make([]schema.MessageInputPart, 0, len(rawParts)+1)
+func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, attachmentIDs []string) ([]schema.MessageInputPart, error) {
+	parts := make([]schema.MessageInputPart, 0, len(rawParts)+len(attachmentIDs)+1)
+
 	if text := strings.TrimSpace(message); text != "" {
 		parts = append(parts, schema.MessageInputPart{
 			Type: schema.ChatMessagePartTypeText,
@@ -975,57 +984,90 @@ func buildSchemaMessageInputParts(rawParts []userMessageInputPart, message strin
 				Type: schema.ChatMessagePartTypeText,
 				Text: text,
 			})
-		case "image", "image_url":
-			image, err := buildSchemaMessageInputImage(part, idx)
+		case "image":
+			id := strings.TrimSpace(part.AttachmentID)
+			if id == "" {
+				return nil, fmt.Errorf("input_parts[%d].attachment_id is required for image type", idx)
+			}
+			image, err := s.buildAttachmentImage(id)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("input_parts[%d]: %w", idx, err)
 			}
 			parts = append(parts, schema.MessageInputPart{
 				Type:  schema.ChatMessagePartTypeImageURL,
 				Image: image,
 			})
 		default:
-			return nil, fmt.Errorf("input_parts[%d].type %q is unsupported", idx, part.Type)
+			return nil, fmt.Errorf("input_parts[%d].type %q is unsupported (only \"text\" and \"image\" are allowed)", idx, part.Type)
 		}
+	}
+
+	for _, id := range attachmentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		image, err := s.buildAttachmentImage(id)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, schema.MessageInputPart{
+			Type:  schema.ChatMessagePartTypeImageURL,
+			Image: image,
+		})
 	}
 
 	return parts, nil
 }
 
-func buildSchemaMessageInputImage(part userMessageInputPart, idx int) (*schema.MessageInputImage, error) {
+func (s *ConversationService) buildAttachmentImage(attachmentID string) (*schema.MessageInputImage, error) {
+	resolvedURL, mimeType := s.resolveAttachmentURL(attachmentID)
+	if resolvedURL == "" {
+		return nil, fmt.Errorf("attachment_id %q could not be resolved", attachmentID)
+	}
 	image := &schema.MessageInputImage{
-		Detail: schema.ImageURLDetailAuto,
+		MessagePartCommon: schema.MessagePartCommon{URL: &resolvedURL},
+		Detail:           schema.ImageURLDetailAuto,
 	}
-	url := strings.TrimSpace(part.ImageURL)
-	base64Data := strings.TrimSpace(part.ImageBase64)
-	switch {
-	case url != "" && base64Data != "":
-		return nil, fmt.Errorf("input_parts[%d] cannot set both image_url and image_base64", idx)
-	case url != "":
-		image.URL = &url
-	case base64Data != "":
-		image.Base64Data = &base64Data
-		image.MIMEType = strings.TrimSpace(part.MIMEType)
-		if image.MIMEType == "" {
-			return nil, fmt.Errorf("input_parts[%d].mime_type is required when image_base64 is set", idx)
-		}
-	default:
-		return nil, fmt.Errorf("input_parts[%d] requires image_url or image_base64", idx)
-	}
-
-	if detail := strings.ToLower(strings.TrimSpace(part.Detail)); detail != "" {
-		switch detail {
-		case string(schema.ImageURLDetailAuto):
-			image.Detail = schema.ImageURLDetailAuto
-		case string(schema.ImageURLDetailLow):
-			image.Detail = schema.ImageURLDetailLow
-		case string(schema.ImageURLDetailHigh):
-			image.Detail = schema.ImageURLDetailHigh
-		default:
-			return nil, fmt.Errorf("input_parts[%d].detail %q is unsupported", idx, part.Detail)
-		}
+	if mimeType != "" {
+		image.MIMEType = mimeType
 	}
 	return image, nil
+}
+
+func (s *ConversationService) resolveAttachmentURL(attachmentID string) (fileURL string, mimeType string) {
+	baseURL := strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+	if baseURL == "" {
+		// ponytail: no base URL configured, return synthetic URL for model context
+		return "attachment://" + attachmentID, ""
+	}
+	fileURL = strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID
+	infoURL := strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID + "/info"
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, infoURL, nil)
+	if err != nil {
+		return fileURL, ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fileURL, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fileURL, ""
+	}
+	var result struct {
+		Object *struct {
+			MimeType string `json:"mime_type"`
+		} `json:"object"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return fileURL, ""
+	}
+	if result.Object != nil {
+		mimeType = strings.TrimSpace(result.Object.MimeType)
+	}
+	return fileURL, mimeType
 }
 
 func cloneMetadataMap(in map[string]any) map[string]any {
@@ -1159,12 +1201,6 @@ func (s *ConversationService) renderTextOnlyWithSummaries(ctx context.Context, p
 }
 
 func renderTextOnlyImagePart(part userMessageInputPart) string {
-	if url := strings.TrimSpace(part.ImageURL); url != "" {
-		return "[Image attachment provided but this model only accepts text input. Image URL: " + url + "]"
-	}
-	if mimeType := strings.TrimSpace(part.MIMEType); mimeType != "" {
-		return "[Image attachment provided but this model only accepts text input. MIME type: " + mimeType + "]"
-	}
 	return "[Image attachment provided but this model only accepts text input.]"
 }
 
@@ -1298,13 +1334,13 @@ func (s *ConversationService) getImageSummaryOrGenerate(ctx context.Context, ima
 }
 
 func (s *ConversationService) renderImagePartWithSummary(ctx context.Context, part userMessageInputPart) string {
-	imageURL := strings.TrimSpace(part.ImageURL)
-	if imageURL == "" {
+	attachmentID := strings.TrimSpace(part.AttachmentID)
+	if attachmentID == "" {
 		return renderTextOnlyImagePart(part)
 	}
-	summary, err := s.getImageSummaryOrGenerate(ctx, imageURL)
+	summary, err := s.getImageSummaryOrGenerate(ctx, attachmentID)
 	if err != nil {
-		logging.Log.Warn().Err(err).Str("image_url", imageURL).Msg("failed to get image summary, falling back to placeholder")
+		logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to get image summary, falling back to placeholder")
 		return renderTextOnlyImagePart(part)
 	}
 	return "[Image: " + summary + "]"

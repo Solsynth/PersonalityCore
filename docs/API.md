@@ -122,7 +122,8 @@ POST /api/conversations/:id/messages
 
 ```json
 {
-  "content": "Hello, how are you?"
+  "content": "Hello, how are you?",
+  "attachment_ids": ["abc123", "def456"]
 }
 ```
 
@@ -173,6 +174,7 @@ POST /api/conversations/:id/runs
 |-------|------|----------|-------------|
 | `message` | string | yes | User message content. |
 | `stream` | bool | no | `false` (default) returns a JSON response. `true` opens an SSE stream. |
+| `attachment_ids` | array of strings | no | File IDs from Solar Network FileSystem. Resolved to image URLs automatically. |
 | `input_parts` | array | no | Multimodal input (images, extra text). See [Input parts](#input-parts). |
 
 **Response** `200 OK`
@@ -273,17 +275,23 @@ Requires `X-Autonomous-Secret` header matching the server config.
 
 ## Input Parts
 
-For multimodal input, pass `input_parts` alongside `message`:
+For multimodal input, pass `attachment_ids` alongside `message`:
 
 ```json
 {
   "message": "What's in this image?",
+  "attachment_ids": ["abc123", "def456"]
+}
+```
+
+For extra text parts, use `input_parts`:
+
+```json
+{
+  "message": "Compare these images",
+  "attachment_ids": ["abc123", "def456"],
   "input_parts": [
-    {
-      "type": "image_url",
-      "image_url": "https://example.com/photo.jpg",
-      "detail": "high"
-    }
+    {"type": "text", "text": "Focus on the colors"}
   ]
 }
 ```
@@ -291,7 +299,7 @@ For multimodal input, pass `input_parts` alongside `message`:
 | Part type | Fields |
 |-----------|--------|
 | `text` | `text` (required) |
-| `image_url` | `image_url` or `image_base64` (one required). `mime_type` required for base64. `detail` optional: `auto` (default), `low`, `high`. |
+| `image` | `attachment_id` (required). Resolved from Solar Network FileSystem. |
 
 ### Vision and summarization
 

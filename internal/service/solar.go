@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -280,9 +279,8 @@ func (s *ConversationService) buildSnInboundInputParts(attachments []solar_netwo
 			continue
 		}
 		parts = append(parts, userMessageInputPart{
-			Type:     "image_url",
-			ImageURL: strings.TrimRight(baseURL, "/") + "/drive/files/" + url.PathEscape(fileID),
-			MIMEType: mimeType,
+			Type:         "image",
+			AttachmentID: fileID,
 		})
 	}
 	return parts

@@ -55,6 +55,18 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
+	"tasks": {
+		Name:        "tasks",
+		Description: "Create and manage scheduled tasks that run automatically",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.createTaskToolInfo(),
+				s.listTasksToolInfo(),
+				s.updateTaskToolInfo(),
+				s.deleteTaskToolInfo(),
+			}
+		},
+	},
 }
 
 func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool) []Skill {

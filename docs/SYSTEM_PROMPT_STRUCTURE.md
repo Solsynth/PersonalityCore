@@ -145,6 +145,7 @@ Tools are organized into **skills** — loadable bundles that add capabilities o
 | `solar_network` | `get_chat_message`, `get_user_profile`, `list_user_posts`, `get_post`, `list_post_replies` | Look up Solar Network users, posts, profiles, and messages |
 | `chat` | `send_chat_message`, `send_chat_message_batch`, `no_reply` | Send and manage messages in Solar Network chats (non-chat agents only) |
 | `self_notes` | `list_self_notes`, `save_self_note`, `delete_self_note` | Remember and recall personal details (agents without humanizer only) |
+| `tasks` | `create_task`, `list_tasks`, `update_task`, `delete_task` | Create and manage scheduled tasks that run automatically |
 
 When a skill is activated, its tools become available for the rest of the run. The tool model is rebuilt with the expanded tool set.
 
@@ -174,6 +175,10 @@ Non-chat agents with tools use `runWithGeneralTools` (same tool loop but without
 | `list_self_notes` | List the agent's persistent self-notes. | `category` (optional) |
 | `save_self_note` | Create or update a persistent self-note. | `key` (required), `content` (required), `category` (optional) |
 | `delete_self_note` | Delete a persistent self-note by key. | `key` (required) |
+| `create_task` | Create a scheduled task (one-time or repeating). | `description` (required), `schedule_type` (required: `once`/`interval`), `run_at` (for once), `interval_secs` (for interval) |
+| `list_tasks` | List the agent's scheduled tasks. | *(none)* |
+| `update_task` | Update a scheduled task. | `task_id` (required), `description`, `enabled`, `interval_secs`, `run_at` (all optional) |
+| `delete_task` | Delete a scheduled task. | `task_id` (required) |
 | `sequentialthinking` | Structured step-by-step reasoning tool. | *(tool-defined)* |
 
 ### Reply Mode

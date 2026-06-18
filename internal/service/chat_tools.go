@@ -263,6 +263,11 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
+			} else if isTaskToolName(call.Function.Name) {
+				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
+				if err != nil {
+					return "", err
+				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -354,6 +359,11 @@ func (s *ConversationService) runWithGeneralTools(
 				result = s.executeActivateSkillToolCall(call, activeSkills)
 				tools = s.buildToolInfos(agentDef, activeSkills)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				if err != nil {
+					return "", err
+				}
+			} else if isTaskToolName(call.Function.Name) {
+				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
 				if err != nil {
 					return "", err
 				}

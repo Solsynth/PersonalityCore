@@ -39,5 +39,6 @@ func (d *DB) AutoMigrate() error {
 		&AgentSelfNote{},
 		&ExternalChatBinding{},
 		&FileSummary{},
+		&ScheduledTask{},
 	)
 }

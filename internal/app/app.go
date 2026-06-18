@@ -34,6 +34,7 @@ type App struct {
 	grpcLn        net.Listener
 	sn            *solar_network.Manager
 	autonomous    *service.AutonomousWakeScheduler
+	scheduler     *service.TaskScheduler
 	backgroundCtx context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
@@ -97,6 +98,7 @@ func New(cfg *config.Config) (*App, error) {
 		},
 	)
 	conversations.SetSnChatBridge(snManager)
+	scheduler := service.NewTaskScheduler(db, conversations, 0)
 	autonomous := service.NewAutonomousWakeScheduler(conversations, registry)
 	router := server.NewRouter(cfg, conversations)
 	httpSrv := &http.Server{
@@ -122,7 +124,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler}, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
@@ -156,6 +158,7 @@ func (a *App) Start(ctx context.Context) error {
 			a.autonomous.Run(a.backgroundCtx)
 		}()
 	}
+	a.scheduler.Start(a.backgroundCtx)
 
 	logging.Log.Info().
 		Str("http", a.cfg.HTTP.Port).
@@ -183,6 +186,7 @@ func (a *App) Stop(ctx context.Context) error {
 	if a.sn != nil {
 		_ = a.sn.Stop(ctx)
 	}
+	a.scheduler.Stop()
 	a.wg.Wait()
 	return nil
 }

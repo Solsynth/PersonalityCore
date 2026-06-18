@@ -293,6 +293,12 @@ For multimodal input, pass `input_parts` alongside `message`:
 | `text` | `text` (required) |
 | `image_url` | `image_url` or `image_base64` (one required). `mime_type` required for base64. `detail` optional: `auto` (default), `low`, `high`. |
 
+### Vision and summarization
+
+Models declare supported modalities via the `modalities` field in their provider model config (e.g. `["image"]`, `["image", "audio", "video"]`). When a model supports `image`, image parts are sent directly to the model. When it does not, PersonalityCore automatically summarizes each image using the app-wide `visionModel` configured under `[personality]` and injects the summary as text. Summaries are cached and reused.
+
+If no `visionModel` is configured, image parts for non-vision models are replaced with a placeholder.
+
 ---
 
 ## SSE Events
@@ -372,6 +378,66 @@ Emitted if the run fails. No further events follow.
 ```
 
 Sent every 15 seconds to keep the connection alive.
+
+---
+
+## File Summaries
+
+PersonalityCore can summarize image attachments for models that do not support vision natively. Summaries are cached in the database and reused across runs.
+
+### Get file summary
+
+```
+GET /api/files/:id/summary
+```
+
+Returns the cached summary for an attachment. No authentication required.
+
+**Response** `200 OK`
+
+```json
+{
+  "attachment_id": "abc123",
+  "summary": "A photo of a sunset over the ocean with orange and purple clouds.",
+  "model": "openai/gpt-4.1-mini"
+}
+```
+
+**Response** `404 Not Found` — no summary exists for this attachment.
+
+### Generate file summary
+
+```
+POST /api/files/summary
+```
+
+Generates and caches a summary using the configured vision model. Requires authentication.
+
+**Request body**
+
+```json
+{
+  "attachment_id": "abc123"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `attachment_id` | string | one of both | File ID from Solar Network. Image URL is resolved from `solarNetwork.baseUrl`. |
+| `image_url` | string | one of both | Direct image URL. |
+
+**Response** `200 OK`
+
+```json
+{
+  "attachment_id": "abc123",
+  "summary": "A photo of a sunset over the ocean with orange and purple clouds.",
+  "model": "openai/gpt-4.1-mini"
+}
+```
+
+**Response** `400 Bad Request` — missing both fields or no vision model configured.
+**Response** `500 Internal Server Error` — vision model error or attachment is not an image.
 
 ---
 

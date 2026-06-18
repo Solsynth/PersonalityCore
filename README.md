@@ -591,7 +591,8 @@ curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
 
 `POST /api/conversations/:id/runs` also accepts `input_parts` for multimodal user input.
 Use `message` for the main text prompt, then append image parts by URL or base64.
-Vision replay depends on provider capability. `supportsVision` overrides the default behavior. Without that override, official OpenAI and Azure-style OpenAI providers are treated as vision-capable, while custom OpenAI-compatible backends are treated as text-only by default.
+
+Models declare which modalities they support via `modalities` in their provider model config. When a model supports `image`, image parts are sent directly. When it does not, PersonalityCore automatically summarizes images using the app-wide `visionModel` and injects the summary as text. Summaries are cached in the database.
 
 ```bash
 curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
@@ -626,17 +627,35 @@ Base64 uploads are also supported:
 }
 ```
 
-Example provider override for an OpenAI-compatible backend that supports image inputs:
+Example provider config with per-model modalities:
 
 ```toml
 [[providers]]
-id = "some-compatible-provider"
-type = "openai-compatible"
+id = "openai"
+type = "openai"
 apiKey = "..."
-supportsVision = true
+
+  [[providers.models]]
+  name = "gpt-4o"
+  modalities = ["image", "audio", "video"]
+
+  [[providers.models]]
+  name = "gpt-4.1-mini"
+  modalities = ["image"]
+
+  [[providers.models]]
+  name = "gpt-3.5-turbo"
+  # no modalities — treated as text-only, images summarized via visionModel
 ```
 
-If a provider is text-only, prior image inputs are replayed back to the model as text placeholders instead of `image_url` parts, so runs do not fail on text-only backends.
+To enable image summarization for non-vision models, set `visionModel` under `[personality]`:
+
+```toml
+[personality]
+visionModel = "openai/gpt-4.1-mini"
+```
+
+If no `visionModel` is configured, image parts for non-vision models are replaced with a placeholder.
 
 ### Streaming run over SSE
 

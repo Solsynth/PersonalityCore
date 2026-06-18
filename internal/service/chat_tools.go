@@ -95,37 +95,37 @@ type executedChatToolResult struct {
 const noChatReplyToken = "NO_REPLY"
 
 func (s *ConversationService) ToolsForAgent(def agent.Definition) []*schema.ToolInfo {
-	return s.buildToolInfos(def)
+	return s.buildToolInfos(def, nil)
 }
 
-func (s *ConversationService) buildToolInfos(def agent.Definition) []*schema.ToolInfo {
+func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool) []*schema.ToolInfo {
 	var tools []*schema.ToolInfo
-	if agent.HasAbility(def, "chat") {
-		tools = append(tools,
-			s.sendChatToolInfo(),
-			s.sendChatBatchToolInfo(),
-			s.noReplyToolInfo(),
-		)
-		if s.solar != nil {
-			tools = append(tools,
-				s.getChatMessageToolInfo(),
-				s.getUserProfileToolInfo(),
-				s.listUserPostsToolInfo(),
-				s.getPostToolInfo(),
-				s.listPostRepliesToolInfo(),
-			)
-		}
-	}
-	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
-		tools = append(tools,
-			s.listSelfNotesToolInfo(),
-			s.saveSelfNoteToolInfo(),
-			s.deleteSelfNoteToolInfo(),
-		)
-	}
+
+	// always-loaded meta tools
+	tools = append(tools, s.listSkillsToolInfo(), s.activateSkillToolInfo())
 	if st := s.sequentialThinkingToolInfo(); st != nil {
 		tools = append(tools, st)
 	}
+
+	// auto-load chat skill for chat agents
+	if agent.HasAbility(def, "chat") {
+		if skill, ok := skillRegistry["chat"]; ok {
+			tools = append(tools, skill.Tools(s)...)
+		}
+	}
+
+	// auto-load self_notes for humanizer agents
+	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
+		if skill, ok := skillRegistry["self_notes"]; ok {
+			tools = append(tools, skill.Tools(s)...)
+		}
+	}
+
+	// add activated skill tools
+	if activeSkills != nil {
+		tools = append(tools, s.resolveSkillTools(activeSkills)...)
+	}
+
 	return tools
 }
 
@@ -136,7 +136,9 @@ func (s *ConversationService) runWithChatTools(
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
 ) (string, error) {
-	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, s.buildToolInfos(agentDef))
+	activeSkills := map[string]bool{}
+	tools := s.buildToolInfos(agentDef, activeSkills)
+	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
 		return "", err
 	}
@@ -252,6 +254,15 @@ func (s *ConversationService) runWithChatTools(
 					ToolName:   call.Function.Name,
 					ToolCallID: call.ID,
 				}
+			} else if call.Function.Name == "list_skills" {
+				result = s.executeListSkillsToolCall(agentDef, activeSkills)
+			} else if call.Function.Name == "activate_skill" {
+				result = s.executeActivateSkillToolCall(call, activeSkills)
+				tools = s.buildToolInfos(agentDef, activeSkills)
+				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				if err != nil {
+					return "", err
+				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -296,6 +307,7 @@ func (s *ConversationService) runWithGeneralTools(
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
 ) (string, error) {
+	activeSkills := map[string]bool{}
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
 		return "", err
@@ -335,9 +347,21 @@ func (s *ConversationService) runWithGeneralTools(
 		messages = append(messages, response)
 
 		for _, call := range response.ToolCalls {
-			result, err := s.executeChatToolCall(ctx, agentDef.ID, call)
-			if err != nil {
-				return "", err
+			var result *executedChatToolResult
+			if call.Function.Name == "list_skills" {
+				result = s.executeListSkillsToolCall(agentDef, activeSkills)
+			} else if call.Function.Name == "activate_skill" {
+				result = s.executeActivateSkillToolCall(call, activeSkills)
+				tools = s.buildToolInfos(agentDef, activeSkills)
+				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				if err != nil {
+					return "", err
+				}
+			} else {
+				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
 			}
 			if err := s.ensureSolarRoomBinding(ctx, thread, agentDef.ID, result.RoomID, result.TargetAccountName, time.Now()); err != nil {
 				return "", err

@@ -126,14 +126,35 @@ The Solar overlay (section 4 above) is only attached on this path. It instructs 
 
 ### Tool Registration
 
-Tools are registered based on the agent's abilities, not the execution path. This means non-chat agents also get tools when they have relevant abilities.
+Tools are organized into **skills** — loadable bundles that add capabilities on demand. This keeps the initial tool set small and saves context tokens.
 
-| Tools | Condition |
-|---|---|
-| `send_chat_message`, `send_chat_message_batch`, `no_reply` | agent has `chat` ability |
-| `get_chat_message`, `get_user_profile`, `list_user_posts`, `get_post`, `list_post_replies` | agent has `chat` ability AND solar bridge exists |
-| `list_self_notes`, `save_self_note`, `delete_self_note` | agent has `humanizer` or `self_notes` ability |
-| `sequentialthinking` | always available |
+**Always loaded** (every run):
+- `list_skills` — discover loadable skills
+- `activate_skill` — load a skill's tools
+- `sequentialthinking` — structured reasoning
+
+**Auto-loaded** (based on agent abilities, not shown in `list_skills`):
+- `chat` ability → `send_chat_message`, `send_chat_message_batch`, `no_reply`
+- `humanizer` / `self_notes` ability → `list_self_notes`, `save_self_note`, `delete_self_note`
+
+**Loadable skills** (model calls `activate_skill` to load):
+
+| Skill | Tools | Description |
+|---|---|---|
+| `solar_network` | `get_chat_message`, `get_user_profile`, `list_user_posts`, `get_post`, `list_post_replies` | Look up Solar Network users, posts, profiles, and messages |
+| `chat` | `send_chat_message`, `send_chat_message_batch`, `no_reply` | Send and manage messages in Solar Network chats (non-chat agents only) |
+| `self_notes` | `list_self_notes`, `save_self_note`, `delete_self_note` | Remember and recall personal details (agents without humanizer only) |
+
+When a skill is activated, its tools become available for the rest of the run. The tool model is rebuilt with the expanded tool set.
+
+**Example flow:**
+```
+Model sees: list_skills, activate_skill, sequentialthinking
+Model calls: list_skills → {skills: [{name: "solar_network", ...}]}
+Model calls: activate_skill(skill: "solar_network") → {ok: true, tools: [...]}
+Model now sees: + get_user_profile, list_user_posts, ...
+Model calls: list_user_posts(account_name: "alice")
+```
 
 Non-chat agents with tools use `runWithGeneralTools` (same tool loop but without Solar reply-mode suppression). Agents without any registered tools use plain `Generate`.
 

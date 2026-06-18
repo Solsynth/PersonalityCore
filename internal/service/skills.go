@@ -77,6 +77,7 @@ var skillRegistry = map[string]Skill{
 				s.createPostToolInfo(),
 				s.replyToPostToolInfo(),
 				s.repostPostToolInfo(),
+				s.reactToPostToolInfo(),
 				s.getPostSurfingToolInfo(),
 				s.getPostRepliesSurfingToolInfo(),
 				s.listMyPostsToolInfo(),

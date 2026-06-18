@@ -59,6 +59,13 @@ type PersonalityConfig struct {
 	SSEHeartbeat         time.Duration `mapstructure:"sseHeartbeat"`
 	ChatInboundDebounce time.Duration `mapstructure:"chatInboundDebounce"`
 	VisionModel          string        `mapstructure:"visionModel"`
+	Surfing              SurfingConfig `mapstructure:"surfing"`
+}
+
+type SurfingConfig struct {
+	Enabled  bool          `mapstructure:"enabled"`
+	Interval time.Duration `mapstructure:"interval"`
+	Prompt   string        `mapstructure:"prompt"`
 }
 
 type SentryConfig struct {
@@ -210,6 +217,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
 	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
+	v.SetDefault("personality.surfing.enabled", false)
+	v.SetDefault("personality.surfing.interval", 1*time.Hour)
 	v.SetDefault("sentry.dsn", "")
 	v.SetDefault("sentry.tracesSampleRate", 0.01)
 	v.SetDefault("sentry.environment", "")

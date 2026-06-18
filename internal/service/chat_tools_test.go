@@ -92,6 +92,10 @@ func (s *stubSolarBridge) RepostPost(_ context.Context, _, _, _ string, _ *strin
 	return s.post, nil
 }
 
+func (s *stubSolarBridge) ReactToPost(_ context.Context, _, _, _ string, _ int) error {
+	return nil
+}
+
 func TestExecuteChatToolCallRequiresDestination(t *testing.T) {
 	svc := &ConversationService{sn: &stubSolarBridge{}}
 	_, err := svc.executeChatToolCall(context.Background(), "support-bot", schema.ToolCall{

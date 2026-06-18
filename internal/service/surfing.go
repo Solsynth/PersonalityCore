@@ -14,6 +14,7 @@ const (
 	createPostToolName        = "create_post"
 	replyToPostToolName       = "reply_to_post"
 	repostPostToolName        = "repost_post"
+	reactToPostToolName       = "react_to_post"
 	getPostSurfingToolName    = "get_post"
 	getPostRepliesToolName    = "get_post_replies"
 	listMyPostsToolName       = "list_my_posts"
@@ -79,6 +80,18 @@ func (s *ConversationService) repostPostToolInfo() *schema.ToolInfo {
 	}
 }
 
+func (s *ConversationService) reactToPostToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: reactToPostToolName,
+		Desc: "React to a post with an emoji. Valid symbols: thumb_up, heart, clap, laugh, party, pray, cry, confuse, angry, just_okay, thumb_down.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"post_id":  {Type: schema.String, Desc: "The post ID to react to.", Required: true},
+			"symbol":   {Type: schema.String, Desc: "Reaction symbol. Default thumb_up."},
+			"attitude": {Type: schema.String, Desc: "Positive, Neutral, or Negative. Default Positive."},
+		}),
+	}
+}
+
 func (s *ConversationService) getPostSurfingToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getPostSurfingToolName,
@@ -117,8 +130,8 @@ func (s *ConversationService) listMyPostsToolInfo() *schema.ToolInfo {
 func isSurfingToolName(name string) bool {
 	switch name {
 	case listFeedToolName, searchPostsToolName, createPostToolName,
-		replyToPostToolName, repostPostToolName, getPostSurfingToolName,
-		getPostRepliesToolName, listMyPostsToolName:
+		replyToPostToolName, repostPostToolName, reactToPostToolName,
+		getPostSurfingToolName, getPostRepliesToolName, listMyPostsToolName:
 		return true
 	}
 	return false
@@ -140,6 +153,8 @@ func (s *ConversationService) executeSurfingToolCall(ctx context.Context, agentI
 		return s.executeReplyToPostToolCall(ctx, agentID, call)
 	case repostPostToolName:
 		return s.executeRepostPostToolCall(ctx, agentID, call)
+	case reactToPostToolName:
+		return s.executeReactToPostToolCall(ctx, agentID, call)
 	case getPostSurfingToolName:
 		return s.executeGetPostSurfingToolCall(ctx, agentID, call)
 	case getPostRepliesToolName:
@@ -179,6 +194,12 @@ type replyToPostInput struct {
 type repostPostInput struct {
 	PostID  string  `json:"post_id"`
 	Comment *string `json:"comment"`
+}
+
+type reactToPostInput struct {
+	PostID   string `json:"post_id"`
+	Symbol   string `json:"symbol"`
+	Attitude string `json:"attitude"`
 }
 
 type getPostInput struct {
@@ -305,6 +326,41 @@ func (s *ConversationService) executeRepostPostToolCall(ctx context.Context, age
 		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
 	}
 	return toolResultJSON(call, map[string]any{"ok": true, "post": post})
+}
+
+var validReactionSymbols = map[string]bool{
+	"thumb_up": true, "thumb_down": true, "just_okay": true,
+	"cry": true, "confuse": true, "clap": true, "laugh": true,
+	"angry": true, "party": true, "pray": true, "heart": true,
+}
+
+func (s *ConversationService) executeReactToPostToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input reactToPostInput
+	if err := decodeToolCallArgs(call, &input); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", reactToPostToolName, err)
+	}
+	if strings.TrimSpace(input.PostID) == "" {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": "post_id is required"})
+	}
+	symbol := strings.TrimSpace(input.Symbol)
+	if symbol == "" {
+		symbol = "thumb_up"
+	}
+	if !validReactionSymbols[symbol] {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": "invalid symbol, valid: thumb_up, heart, clap, laugh, party, pray, cry, confuse, angry, just_okay, thumb_down"})
+	}
+	attitude := 0 // Positive
+	switch strings.ToLower(strings.TrimSpace(input.Attitude)) {
+	case "negative":
+		attitude = 2
+	case "neutral":
+		attitude = 1
+	}
+
+	if err := s.sn.ReactToPost(ctx, agentID, input.PostID, symbol, attitude); err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toolResultJSON(call, map[string]any{"ok": true, "reacted": symbol})
 }
 
 func (s *ConversationService) executeGetPostSurfingToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {

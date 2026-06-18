@@ -257,6 +257,15 @@ func (c *Client) RepostPost(ctx context.Context, publisherName, postID string, c
 	return c.CreatePost(ctx, publisherName, body)
 }
 
+func (c *Client) ReactToPost(ctx context.Context, postID, symbol string, attitude int) error {
+	body := map[string]any{
+		"symbol":   strings.TrimSpace(symbol),
+		"attitude": attitude,
+	}
+	path := "/sphere/posts/" + url.PathEscape(strings.TrimSpace(postID)) + "/reactions"
+	return c.doJSON(ctx, http.MethodPost, path, nil, body, nil)
+}
+
 func (c *Client) ListPostReplies(ctx context.Context, postID string, offset, take int) (*PaginatedPosts, error) {
 	if offset < 0 {
 		offset = 0

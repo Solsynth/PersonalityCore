@@ -29,6 +29,7 @@ type SnChatBridge interface {
 	CreatePost(ctx context.Context, agentID, publisherName string, body map[string]any) (solar_network.Post, error)
 	ReplyToPost(ctx context.Context, agentID, publisherName, postID, content string) (solar_network.Post, error)
 	RepostPost(ctx context.Context, agentID, publisherName, postID string, comment *string) (solar_network.Post, error)
+	ReactToPost(ctx context.Context, agentID, postID, symbol string, attitude int) error
 }
 
 type SnRoomState struct {

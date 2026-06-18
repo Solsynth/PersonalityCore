@@ -46,6 +46,12 @@ topP = 1.0
 maxHistoryMessages = 24
 sseHeartbeat = "15s"
 chatInboundDebounce = "5s"
+visionModel = ""
+
+[personality.surfing]
+enabled = false
+interval = "1h"
+prompt = "Browse the feed and interact with interesting posts. Reply, react, or repost as you see fit."
 
 [agents]
 dir = "./agents.d"

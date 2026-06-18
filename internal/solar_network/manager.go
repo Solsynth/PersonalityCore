@@ -204,6 +204,14 @@ func (m *Manager) RepostPost(ctx context.Context, agentID, publisherName, postID
 	return conn.client.RepostPost(ctx, publisherName, postID, comment)
 }
 
+func (m *Manager) ReactToPost(ctx context.Context, agentID, postID, symbol string, attitude int) error {
+	conn := m.getAgent(agentID)
+	if conn == nil {
+		return fmt.Errorf("solar chat integration unavailable for agent %q", agentID)
+	}
+	return conn.client.ReactToPost(ctx, postID, symbol, attitude)
+}
+
 func (m *Manager) getAgent(agentID string) *agentConnection {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

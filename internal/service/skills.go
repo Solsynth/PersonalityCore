@@ -86,7 +86,7 @@ var skillRegistry = map[string]Skill{
 	},
 }
 
-func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool) []Skill {
+func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []Skill {
 	var skills []Skill
 	isChat := agent.HasAbility(def, "chat")
 	for name, skill := range skillRegistry {
@@ -95,6 +95,9 @@ func (s *ConversationService) availableSkills(def agent.Definition, activeSkills
 			continue
 		}
 		if activeSkills[name] {
+			continue
+		}
+		if !s.isSkillAllowed(perkLevel, name) {
 			continue
 		}
 		skills = append(skills, skill)
@@ -134,8 +137,8 @@ func (s *ConversationService) activateSkillToolInfo() *schema.ToolInfo {
 	}
 }
 
-func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, activeSkills map[string]bool) *executedChatToolResult {
-	skills := s.availableSkills(def, activeSkills)
+func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, activeSkills map[string]bool, perkLevel int32) *executedChatToolResult {
+	skills := s.availableSkills(def, activeSkills, perkLevel)
 	if len(skills) == 0 {
 		return &executedChatToolResult{
 			Content: `{"skills":[],"message":"No additional skills available."}`,

@@ -72,6 +72,7 @@ type InboundMessage struct {
 	SenderAccountID     string
 	SenderName          string
 	SenderNick          string
+	SenderPerkLevel     int32
 	MentionedBot        bool
 	RepliedMessageID    string
 	RepliedMessageContent string

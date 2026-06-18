@@ -60,12 +60,30 @@ type PersonalityConfig struct {
 	ChatInboundDebounce time.Duration `mapstructure:"chatInboundDebounce"`
 	VisionModel          string        `mapstructure:"visionModel"`
 	Surfing              SurfingConfig `mapstructure:"surfing"`
+	PerkTiers            map[int]PerkTierConfig `mapstructure:"perkTiers"`
 }
 
 type SurfingConfig struct {
 	Enabled  bool          `mapstructure:"enabled"`
 	Interval time.Duration `mapstructure:"interval"`
 	Prompt   string        `mapstructure:"prompt"`
+}
+
+type PerkTierConfig struct {
+	MaxHistoryMessages  *int     `mapstructure:"maxHistoryMessages"`
+	MaxCompletionTokens *int     `mapstructure:"maxCompletionTokens"`
+	BlockedSkills       []string `mapstructure:"blockedSkills"`
+	AllowVision         *bool    `mapstructure:"allowVision"`
+	AllowFileSummary    *bool    `mapstructure:"allowFileSummary"`
+}
+
+type ModelPerkOverride struct {
+	Blocked             *bool `mapstructure:"blocked"`
+	MaxCompletionTokens *int  `mapstructure:"maxCompletionTokens"`
+}
+
+type AgentPerkOverride struct {
+	MaxCompletionTokens *int `mapstructure:"maxCompletionTokens"`
 }
 
 type SentryConfig struct {
@@ -101,6 +119,7 @@ type AgentConfig struct {
 	Autonomous              AgentAutonomousConfig        `mapstructure:"autonomous"`
 	SolarNetworkIntegration AgentSolarNetworkIntegration `mapstructure:"solar-network-integration"`
 	Enabled                 bool                         `mapstructure:"enabled"`
+	PerkOverrides           map[int]AgentPerkOverride    `mapstructure:"perkOverrides"`
 	sourceDir               string                       `mapstructure:"-"`
 }
 
@@ -136,6 +155,7 @@ type ModelConfig struct {
 	MaxCompletionTokens int      `mapstructure:"maxCompletionTokens"`
 	Temperature        float32  `mapstructure:"temperature"`
 	TopP               float32  `mapstructure:"topP"`
+	PerkOverrides      map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
 }
 
 func (m ModelConfig) SupportsModality(modality string) bool {

@@ -65,6 +65,7 @@ func authMiddleware(cfg *config.Config) gin.HandlerFunc {
 				if accountID, ok := identity.ExtractAccountIDFromAuth(c); ok {
 					identity.SetAccountID(c, accountID)
 				}
+				identity.SetPerkLevel(c, identity.ExtractPerkLevelFromAuth(c))
 			}
 		}
 

@@ -23,6 +23,9 @@ type Definition struct {
 	Enabled                 bool                                `json:"enabled"`
 	Autonomous              config.AgentAutonomousConfig        `json:"-"`
 	SolarIntegration        config.AgentSolarNetworkIntegration `json:"-"`
+	PerkOverrides           map[int]config.AgentPerkOverride    `json:"-"`
+	// PerkMaxTokens is set by the perk resolver; executor checks this first.
+	PerkMaxTokens *int `json:"-"`
 }
 
 type Registry struct {
@@ -61,6 +64,7 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 			Enabled:                 cfg.Enabled,
 			Autonomous:              cfg.Autonomous,
 			SolarIntegration:        cfg.SolarNetworkIntegration,
+			PerkOverrides:           cfg.PerkOverrides,
 		}
 		order = append(order, id)
 	}

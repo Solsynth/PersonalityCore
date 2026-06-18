@@ -46,6 +46,7 @@ type ExternalInboundMessage struct {
 	SenderAccountID     string
 	SenderName          string
 	SenderNick          string
+	SenderPerkLevel     int32
 	MentionedBot        bool
 	RepliedMessageID    string
 	RepliedMessageContent string
@@ -186,6 +187,13 @@ func (s *ConversationService) handleSolarInboundMessageNow(ctx context.Context, 
 		Str("conversation_id", binding.ThreadID).
 		Str("account_id", binding.AccountID).
 		Msg("triggering agent run for solar inbound message")
+
+	// Update thread perk level from sender
+	if input.SenderPerkLevel > 0 {
+		_ = s.db.WithContext(ctx).Model(&database.ConversationThread{}).
+			Where("id = ?", binding.ThreadID).
+			Update("perk_level", input.SenderPerkLevel).Error
+	}
 
 	_, err = s.ExecuteRun(ctx, binding.AccountID, binding.ThreadID, RunInput{
 		Message:    strings.TrimSpace(input.Content),
@@ -501,6 +509,39 @@ func snRoomBehaviorPrompt(roomType *int) string {
 		return "Because this is a DM, you can respond more proactively, warmly, and conversationally."
 	}
 	return "Because this is a group chat, pay extra attention to which participant sent each message, avoid mixing different users together, be selective, keep replies concise, and avoid jumping into every message unless the bot was explicitly mentioned."
+}
+
+// buildUserIdentityOverlay builds a system message for authenticated REST API users
+// so the agent knows who it's talking to.
+func (s *ConversationService) buildUserIdentityOverlay(ctx context.Context, agentID, accountID string) string {
+	if s.sn == nil || strings.TrimSpace(accountID) == "" {
+		return ""
+	}
+
+	account, err := s.sn.GetAccount(ctx, agentID, "", accountID)
+	if err != nil || account == nil {
+		return ""
+	}
+
+	var parts []string
+	name := strings.TrimSpace(account.Nick)
+	if name == "" {
+		name = strings.TrimSpace(account.Name)
+		}
+	if name != "" {
+		parts = append(parts, fmt.Sprintf("The user you are talking to is named %q.", name))
+	}
+
+	// Try to get profile for timezone and extra info
+	if accountName := strings.TrimSpace(account.Name); accountName != "" {
+		if profile, err := s.getCachedSnUserProfile(ctx, agentID, accountName); err == nil && profile != nil {
+			if localTime := snUserLocalTime(profile); localTime != "" {
+				parts = append(parts, localTime)
+			}
+		}
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 func snUserProfilePrompt(profile solar_network.AccountProfile) string {

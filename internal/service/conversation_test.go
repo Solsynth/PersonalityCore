@@ -29,7 +29,7 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 		},
 	}
 
-	content, metadata, err := svc.userMessagePayload(input, input.RequestMetadata)
+	content, metadata, err := svc.userMessagePayload(input, input.RequestMetadata, 0)
 	if err != nil {
 		t.Fatalf("userMessagePayload() error = %v", err)
 	}
@@ -48,7 +48,7 @@ func TestRunInputUserMessagePayloadRejectsEmptyInput(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}}
 	input := RunInput{}
 
-	_, _, err := svc.userMessagePayload(input, nil)
+	_, _, err := svc.userMessagePayload(input, nil, 0)
 	if err == nil {
 		t.Fatal("expected validation error for empty input")
 	}
@@ -145,7 +145,7 @@ func TestBuildModelMessagesPrefixesSolarUserHistoryWithUsername(t *testing.T) {
 		t.Fatalf("create user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -273,7 +273,7 @@ func TestBuildModelMessagesRehydratesToolHistory(t *testing.T) {
 		t.Fatalf("create tool result message: %v", err)
 	}
 
-	messages, def, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, def, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -348,7 +348,7 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 		t.Fatalf("create multimodal user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -426,7 +426,7 @@ func TestBuildModelMessagesFallsBackToTextForTextOnlyProviderHistory(t *testing.
 		t.Fatalf("create multimodal user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -497,7 +497,7 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 		t.Fatalf("create message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -577,7 +577,7 @@ func TestBuildModelMessagesCompactsOlderThreadContext(t *testing.T) {
 		}
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -675,7 +675,7 @@ func TestBuildModelMessagesSkipsToolMessageWithoutToolCallID(t *testing.T) {
 		t.Fatalf("create fallback tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -723,7 +723,7 @@ func TestBuildModelMessagesSkipsOrphanedToolMessageWithUnknownToolCallID(t *test
 		t.Fatalf("create orphaned tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -777,7 +777,7 @@ func TestBuildModelMessagesDropsAssistantToolCallsWithoutToolResponses(t *testin
 		t.Fatalf("create assistant tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -822,7 +822,7 @@ func TestBuildModelMessagesSkipsEmptyAssistantMessage(t *testing.T) {
 		t.Fatalf("create empty assistant message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}

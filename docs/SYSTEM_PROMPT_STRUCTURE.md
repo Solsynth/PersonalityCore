@@ -214,3 +214,25 @@ prompt = "Browse the feed and interact with interesting posts."
 ```
 
 The scheduler uses the agent's first existing conversation to resolve the target account. Agents with no conversations are skipped.
+
+### Perk Tiers
+
+User access is controlled by perk level (0-3, from Solar account). Each level can restrict:
+
+| Restriction | Global tier | Per-model | Per-agent |
+|---|---|---|---|
+| Max history messages | `[personality.perkTiers.N].maxHistoryMessages` | — | — |
+| Max completion tokens | `[personality.perkTiers.N].maxCompletionTokens` | `models.perkOverrides.N.maxCompletionTokens` | `agents.items.perkOverrides.N.maxCompletionTokens` |
+| Model access | — | `models.perkOverrides.N.blocked = true` | — |
+| Vision access | `[personality.perkTiers.N].allowVision = false` | — | — |
+| File summary | `[personality.perkTiers.N].allowFileSummary = false` | — | — |
+| Skills | `[personality.perkTiers.N].blockedSkills = [...]` | — | — |
+
+Resolution order for max completion tokens (first non-zero wins):
+1. Agent `perkOverrides[N].maxCompletionTokens`
+2. Model `perkOverrides[N].maxCompletionTokens`
+3. Global tier `maxCompletionTokens`
+4. Agent config `maxCompletionTokens`
+5. Model/provider default
+
+Perk level is stored on the conversation thread and refreshed from the sender's account on each SN inbound message.

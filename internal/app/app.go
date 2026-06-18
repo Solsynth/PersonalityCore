@@ -91,6 +91,7 @@ func New(cfg *config.Config) (*App, error) {
 				SenderAccountID:     msg.SenderAccountID,
 				SenderName:          msg.SenderName,
 				SenderNick:          msg.SenderNick,
+				SenderPerkLevel:     msg.SenderPerkLevel,
 				MentionedBot:        msg.MentionedBot,
 				RepliedMessageID:    msg.RepliedMessageID,
 				RepliedMessageContent: msg.RepliedMessageContent,

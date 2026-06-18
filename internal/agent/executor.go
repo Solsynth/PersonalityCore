@@ -120,6 +120,10 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 	if agent.MaxCompletionTokens != nil {
 		maxTokens = *agent.MaxCompletionTokens
 	}
+	// Perk override takes highest priority
+	if agent.PerkMaxTokens != nil {
+		maxTokens = *agent.PerkMaxTokens
+	}
 
 	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
 		APIKey:              provider.APIKey,

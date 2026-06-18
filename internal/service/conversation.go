@@ -246,7 +246,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	content, metadata, err := s.userMessagePayload(input, input.RequestMetadata)
+	content, metadata, err := s.userMessagePayload(input, input.RequestMetadata, thread.PerkLevel)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -300,7 +300,7 @@ func (s *ConversationService) createRunWithRequest(
 	return thread, run, requestMessage, nil
 }
 
-func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string) ([]*schema.Message, agent.Definition, error) {
+func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32) ([]*schema.Message, agent.Definition, error) {
 	thread, err := s.GetConversation(ctx, accountID, threadID)
 	if err != nil {
 		return nil, agent.Definition{}, err
@@ -313,11 +313,16 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		Str("conversation_id", threadID).
 		Str("agent_id", def.ID).
 		Str("model", def.Model).
+		Int32("perk_level", perkLevel).
 		Msg("building model messages")
 
 	limit := s.cfg.Personality.MaxHistoryMessages
 	if limit < 1 {
 		limit = 24
+	}
+	perkLimits := s.resolvePerkLimits(perkLevel)
+	if perkLimits.MaxHistoryMessages > 0 {
+		limit = min(limit, perkLimits.MaxHistoryMessages)
 	}
 	if err := s.ensureThreadContextCompaction(ctx, thread, limit); err != nil {
 		return nil, agent.Definition{}, err
@@ -377,6 +382,14 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 	}
 
+	// Inject authenticated user identity for REST API callers
+	// (skipped for synthetic solar:agent:room accounts used by chat path)
+	if !strings.HasPrefix(thread.AccountID, "solar:") {
+		if overlay := s.buildUserIdentityOverlay(ctx, def.ID, thread.AccountID); strings.TrimSpace(overlay) != "" {
+			messages = append(messages, schema.SystemMessage(overlay))
+		}
+	}
+
 	toolResponseIDs := make(map[string]struct{})
 	for _, record := range records {
 		if strings.ToLower(record.Role) != "tool" {
@@ -410,10 +423,10 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 			var meta userMessageMetadata
 			if decodeMessageMetadata(record.Metadata, &meta) == nil && len(meta.InputParts) > 0 {
 				if !supportsVision {
-					msg.Content = s.renderTextOnlyWithSummaries(ctx, meta.InputParts, msg.Content)
+					msg.Content = s.renderTextOnlyWithSummaries(ctx, meta.InputParts, msg.Content, perkLimits)
 					break
 				}
-				parts, err := s.buildSchemaMessageInputParts(meta.InputParts, renderedContent, nil)
+				parts, err := s.buildSchemaMessageInputParts(meta.InputParts, renderedContent, nil, perkLevel)
 				if err != nil {
 					return nil, agent.Definition{}, err
 				}
@@ -483,6 +496,14 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		messages = append(messages, msg)
 	}
 	messages = append(messages, schema.SystemMessage(renderCurrentDateTimeContext(time.Now())))
+	perkMaxTokens := s.resolveMaxCompletionTokens(perkLevel, agentDefLite{
+		Model:               def.Model,
+		MaxCompletionTokens: def.MaxCompletionTokens,
+		PerkOverrides:       def.PerkOverrides,
+	})
+	if perkMaxTokens > 0 {
+		def.PerkMaxTokens = &perkMaxTokens
+	}
 	return messages, def, nil
 }
 
@@ -538,13 +559,18 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Str("agent_id", thread.AgentID).
 		Msg("starting non-streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
 	}
 
 	run.Model = agentDef.Model
+	if s.isModelBlocked(thread.PerkLevel, agentDef.Model) {
+		err := fmt.Errorf("this model requires a higher access level (perk level %d)", thread.PerkLevel)
+		_ = s.FailRun(ctx, run, err)
+		return nil, err
+	}
 	logging.Log.Debug().
 		Str("conversation_id", threadID).
 		Str("run_id", run.ID).
@@ -560,15 +586,15 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			Str("run_id", run.ID).
 			Str("agent_id", agentDef.ID).
 			Msg("routing run through chat tool execution path")
-		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef)
+		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, thread.PerkLevel)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
 	} else {
-		tools := s.ToolsForAgent(agentDef)
+		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
 		if len(tools) > 0 {
-			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools)
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel)
 		} else {
 			var response *schema.Message
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
@@ -618,13 +644,18 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Str("agent_id", thread.AgentID).
 		Msg("starting streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
 	}
 
 	run.Model = agentDef.Model
+	if s.isModelBlocked(thread.PerkLevel, agentDef.Model) {
+		err := fmt.Errorf("this model requires a higher access level (perk level %d)", thread.PerkLevel)
+		_ = s.FailRun(ctx, run, err)
+		return nil, err
+	}
 	logging.Log.Debug().
 		Str("conversation_id", threadID).
 		Str("run_id", run.ID).
@@ -939,13 +970,13 @@ func resolveImpressionAccountIDFromMetadata(fallbackAccountID string, raw dataty
 	return strings.TrimSpace(fallbackAccountID)
 }
 
-func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata map[string]any) (string, map[string]any, error) {
+func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata map[string]any, perkLevel int32) (string, map[string]any, error) {
 	content := strings.TrimSpace(input.Message)
 	if content == "" && len(input.InputParts) == 0 && len(input.AttachmentIDs) == 0 {
 		return "", nil, fmt.Errorf("message, input_parts, or attachment_ids is required")
 	}
 
-	parsed, err := s.buildSchemaMessageInputParts(input.InputParts, content, input.AttachmentIDs)
+	parsed, err := s.buildSchemaMessageInputParts(input.InputParts, content, input.AttachmentIDs, perkLevel)
 	if err != nil {
 		return "", nil, err
 	}
@@ -963,7 +994,7 @@ func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata ma
 	return content, metadata, nil
 }
 
-func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, attachmentIDs []string) ([]schema.MessageInputPart, error) {
+func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, attachmentIDs []string, perkLevel int32) ([]schema.MessageInputPart, error) {
 	parts := make([]schema.MessageInputPart, 0, len(rawParts)+len(attachmentIDs)+1)
 
 	if text := strings.TrimSpace(message); text != "" {
@@ -972,6 +1003,8 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 			Text: text,
 		})
 	}
+
+	perkLimits := s.resolvePerkLimits(perkLevel)
 
 	for idx, part := range rawParts {
 		switch strings.ToLower(strings.TrimSpace(part.Type)) {
@@ -989,6 +1022,13 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 			if id == "" {
 				return nil, fmt.Errorf("input_parts[%d].attachment_id is required for image type", idx)
 			}
+			if !perkLimits.AllowVision {
+				parts = append(parts, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeText,
+					Text: "[Image attachment: image analysis is not available for your current access level]",
+				})
+				continue
+			}
 			image, err := s.buildAttachmentImage(id)
 			if err != nil {
 				return nil, fmt.Errorf("input_parts[%d]: %w", idx, err)
@@ -1005,6 +1045,13 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 	for _, id := range attachmentIDs {
 		id = strings.TrimSpace(id)
 		if id == "" {
+			continue
+		}
+		if !perkLimits.AllowVision {
+			parts = append(parts, schema.MessageInputPart{
+				Type: schema.ChatMessagePartTypeText,
+				Text: "[Image attachment: image analysis is not available for your current access level]",
+			})
 			continue
 		}
 		image, err := s.buildAttachmentImage(id)
@@ -1182,7 +1229,7 @@ func renderTextOnlyMessageInputParts(parts []userMessageInputPart, baseContent s
 	return strings.Join(lines, "\n\n")
 }
 
-func (s *ConversationService) renderTextOnlyWithSummaries(ctx context.Context, parts []userMessageInputPart, baseContent string) string {
+func (s *ConversationService) renderTextOnlyWithSummaries(ctx context.Context, parts []userMessageInputPart, baseContent string, perkLimits PerkLimits) string {
 	lines := make([]string, 0, len(parts)+1)
 	if trimmed := strings.TrimSpace(baseContent); trimmed != "" {
 		lines = append(lines, trimmed)
@@ -1194,7 +1241,13 @@ func (s *ConversationService) renderTextOnlyWithSummaries(ctx context.Context, p
 				lines = append(lines, text)
 			}
 		case "image", "image_url":
-			lines = append(lines, s.renderImagePartWithSummary(ctx, part))
+			if !perkLimits.AllowVision {
+				lines = append(lines, "[Image attachment: image analysis is not available for your current access level]")
+			} else if !perkLimits.AllowFileSummary {
+				lines = append(lines, renderTextOnlyImagePart(part))
+			} else {
+				lines = append(lines, s.renderImagePartWithSummary(ctx, part))
+			}
 		}
 	}
 	return strings.Join(lines, "\n\n")

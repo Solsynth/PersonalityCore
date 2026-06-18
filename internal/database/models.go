@@ -12,6 +12,7 @@ type ConversationThread struct {
 	AccountID      string         `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
 	AgentID        string         `gorm:"size:64;index" json:"agent_id"`
 	Title          string         `gorm:"size:255" json:"title"`
+	PerkLevel      int32          `gorm:"default:0" json:"perk_level"`
 	ContextSummary string         `gorm:"type:text" json:"context_summary"`
 	SummarySeq     int64          `json:"summary_seq"`
 	SummaryAt      *time.Time     `json:"summary_at"`

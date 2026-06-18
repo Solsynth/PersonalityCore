@@ -82,17 +82,22 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 		Str("trigger", trigger).
 		Msg("starting autonomous generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, thread.AccountID, thread.ID)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, thread.AccountID, thread.ID, thread.PerkLevel)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
 	}
 
 	run.Model = agentDef.Model
+	if s.isModelBlocked(thread.PerkLevel, agentDef.Model) {
+		err := fmt.Errorf("this model requires a higher access level (perk level %d)", thread.PerkLevel)
+		_ = s.FailRun(ctx, run, err)
+		return nil, err
+	}
 	responseContent := ""
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
-		responseContent, err = s.runWithChatTools(ctx, thread.AccountID, thread.ID, run.ID, modelMessages, agentDef)
+		responseContent, err = s.runWithChatTools(ctx, thread.AccountID, thread.ID, run.ID, modelMessages, agentDef, thread.PerkLevel)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err

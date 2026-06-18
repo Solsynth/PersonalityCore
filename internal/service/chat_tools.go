@@ -94,11 +94,11 @@ type executedChatToolResult struct {
 
 const noChatReplyToken = "NO_REPLY"
 
-func (s *ConversationService) ToolsForAgent(def agent.Definition) []*schema.ToolInfo {
-	return s.buildToolInfos(def, nil)
+func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int32) []*schema.ToolInfo {
+	return s.buildToolInfos(def, nil, perkLevel)
 }
 
-func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool) []*schema.ToolInfo {
+func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []*schema.ToolInfo {
 	var tools []*schema.ToolInfo
 
 	// always-loaded meta tools
@@ -109,20 +109,29 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 
 	// auto-load chat skill for chat agents
 	if agent.HasAbility(def, "chat") {
-		if skill, ok := skillRegistry["chat"]; ok {
-			tools = append(tools, skill.Tools(s)...)
+		if s.isSkillAllowed(perkLevel, "chat") {
+			if skill, ok := skillRegistry["chat"]; ok {
+				tools = append(tools, skill.Tools(s)...)
+			}
 		}
 	}
 
 	// auto-load self_notes for humanizer agents
 	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
-		if skill, ok := skillRegistry["self_notes"]; ok {
-			tools = append(tools, skill.Tools(s)...)
+		if s.isSkillAllowed(perkLevel, "self_notes") {
+			if skill, ok := skillRegistry["self_notes"]; ok {
+				tools = append(tools, skill.Tools(s)...)
+			}
 		}
 	}
 
-	// add activated skill tools
+	// add activated skill tools (filtered by perk)
 	if activeSkills != nil {
+		for name := range activeSkills {
+			if !s.isSkillAllowed(perkLevel, name) {
+				delete(activeSkills, name)
+			}
+		}
 		tools = append(tools, s.resolveSkillTools(activeSkills)...)
 	}
 
@@ -135,9 +144,10 @@ func (s *ConversationService) runWithChatTools(
 	runID string,
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
+	perkLevel int32,
 ) (string, error) {
 	activeSkills := map[string]bool{}
-	tools := s.buildToolInfos(agentDef, activeSkills)
+	tools := s.buildToolInfos(agentDef, activeSkills, perkLevel)
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
 		return "", err
@@ -255,10 +265,10 @@ func (s *ConversationService) runWithChatTools(
 					ToolCallID: call.ID,
 				}
 			} else if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills)
-				tools = s.buildToolInfos(agentDef, activeSkills)
+				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", err
@@ -316,6 +326,7 @@ func (s *ConversationService) runWithGeneralTools(
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
+	perkLevel int32,
 ) (string, error) {
 	activeSkills := map[string]bool{}
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
@@ -359,10 +370,10 @@ func (s *ConversationService) runWithGeneralTools(
 		for _, call := range response.ToolCalls {
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills)
-				tools = s.buildToolInfos(agentDef, activeSkills)
+				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", err

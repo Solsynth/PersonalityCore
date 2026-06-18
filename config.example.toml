@@ -53,6 +53,33 @@ enabled = false
 interval = "1h"
 prompt = "Browse the feed and interact with interesting posts. Reply, react, or repost as you see fit."
 
+# Perk tiers control access limits per user perk level (0-3).
+# Unset fields = unrestricted. Only configure tiers that differ from default.
+#
+# [personality.perkTiers.0]
+# maxHistoryMessages = 8         # shorter context window
+# maxCompletionTokens = 1024     # global fallback cap
+# allowVision = false            # block image analysis
+# allowFileSummary = false       # block file summarization
+# blockedSkills = ["surfing", "tasks"]
+#
+# [personality.perkTiers.1]
+# maxHistoryMessages = 16
+# blockedSkills = ["surfing"]
+#
+# Per-model overrides go under the model config:
+# [[providers.models]]
+# name = "gpt-4o"
+# modalities = ["image"]
+# [providers.models.perkOverrides.0]
+# blocked = true                 # perk 0 can't use gpt-4o
+# [providers.models.perkOverrides.1]
+# maxCompletionTokens = 2048
+#
+# Per-agent overrides go under the agent config:
+# [agents.items.perkOverrides.0]
+# maxCompletionTokens = 512
+
 [agents]
 dir = "./agents.d"
 

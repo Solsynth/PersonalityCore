@@ -221,11 +221,11 @@ func (s *ConversationService) SolarBaseURL() string {
 	return strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
 }
 
-func (s *ConversationService) GetImageSummary(ctx context.Context, attachmentID string) (string, error) {
+func (s *ConversationService) GetImageSummary(ctx context.Context, attachmentID string) (string, string, error) {
 	return s.getImageSummary(ctx, strings.TrimSpace(attachmentID))
 }
 
-func (s *ConversationService) SummarizeAndCacheImage(ctx context.Context, imageURL, attachmentID string) (string, error) {
+func (s *ConversationService) SummarizeAndCacheImage(ctx context.Context, imageURL, attachmentID string) (string, string, error) {
 	attachmentID = strings.TrimSpace(attachmentID)
 	if attachmentID == "" {
 		attachmentID = extractAttachmentID(imageURL)
@@ -233,25 +233,25 @@ func (s *ConversationService) SummarizeAndCacheImage(ctx context.Context, imageU
 
 	// check cache first
 	if attachmentID != "" {
-		cached, err := s.getImageSummary(ctx, attachmentID)
+		cached, model, err := s.getImageSummary(ctx, attachmentID)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if cached != "" {
-			return cached, nil
+			return cached, model, nil
 		}
 	}
 
-	summary, err := s.summarizeImage(ctx, imageURL)
+	summary, model, err := s.summarizeImage(ctx, imageURL)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if attachmentID != "" {
-		if err := s.saveImageSummary(ctx, attachmentID, summary); err != nil {
-			logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache image summary")
+		if err := s.saveImageSummary(ctx, attachmentID, summary, model); err != nil {
+			logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache file summary")
 		}
 	}
-	return summary, nil
+	return summary, model, nil
 }
 
 func (s *ConversationService) buildSolarInboundInputParts(attachments []solar.ChatAttachment) []userMessageInputPart {

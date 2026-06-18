@@ -1204,37 +1204,38 @@ func (s *ConversationService) resolveFileMimeType(ctx context.Context, attachmen
 	return strings.TrimSpace(result.Object.MimeType)
 }
 
-func (s *ConversationService) getImageSummary(ctx context.Context, attachmentID string) (string, error) {
-	var img database.ImageSummary
+func (s *ConversationService) getImageSummary(ctx context.Context, attachmentID string) (string, string, error) {
+	var file database.FileSummary
 	err := s.db.WithContext(ctx).
 		Where("attachment_id = ?", attachmentID).
-		First(&img).Error
+		First(&file).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil
+			return "", "", nil
 		}
-		return "", err
+		return "", "", err
 	}
-	return img.Summary, nil
+	return file.Summary, file.Model, nil
 }
 
-func (s *ConversationService) saveImageSummary(ctx context.Context, attachmentID, summary string) error {
+func (s *ConversationService) saveImageSummary(ctx context.Context, attachmentID, summary, model string) error {
 	return s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "attachment_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"summary", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"summary", "model", "updated_at"}),
 		}).
-		Create(&database.ImageSummary{
+		Create(&database.FileSummary{
 			ID:           newID(),
 			AttachmentID: attachmentID,
 			Summary:      summary,
+			Model:        model,
 		}).Error
 }
 
-func (s *ConversationService) summarizeImage(ctx context.Context, imageURL string) (string, error) {
+func (s *ConversationService) summarizeImage(ctx context.Context, imageURL string) (string, string, error) {
 	visionModel := strings.TrimSpace(s.cfg.Personality.VisionModel)
 	if visionModel == "" {
-		return "", fmt.Errorf("no vision model configured")
+		return "", "", fmt.Errorf("no vision model configured")
 	}
 
 	// check MIME type from file server
@@ -1242,7 +1243,7 @@ func (s *ConversationService) summarizeImage(ctx context.Context, imageURL strin
 	if attachmentID != "" {
 		mimeType := s.resolveFileMimeType(ctx, attachmentID)
 		if mimeType != "" && !strings.HasPrefix(mimeType, "image/") {
-			return "", fmt.Errorf("attachment %s is not an image (%s)", attachmentID, mimeType)
+			return "", "", fmt.Errorf("attachment %s is not an image (%s)", attachmentID, mimeType)
 		}
 	}
 
@@ -1258,18 +1259,19 @@ func (s *ConversationService) summarizeImage(ctx context.Context, imageURL strin
 
 	resp, err := s.executor.GenerateWithModel(ctx, visionModel, messages)
 	if err != nil {
-		return "", fmt.Errorf("vision model error: %w", err)
+		return "", "", fmt.Errorf("vision model error: %w", err)
 	}
-	return strings.TrimSpace(resp.Content), nil
+	return strings.TrimSpace(resp.Content), visionModel, nil
 }
 
 func (s *ConversationService) getImageSummaryOrGenerate(ctx context.Context, imageURL string) (string, error) {
 	attachmentID := extractAttachmentID(imageURL)
 	if attachmentID == "" {
-		return s.summarizeImage(ctx, imageURL)
+		summary, _, err := s.summarizeImage(ctx, imageURL)
+		return summary, err
 	}
 
-	cached, err := s.getImageSummary(ctx, attachmentID)
+	cached, _, err := s.getImageSummary(ctx, attachmentID)
 	if err != nil {
 		return "", err
 	}
@@ -1277,12 +1279,12 @@ func (s *ConversationService) getImageSummaryOrGenerate(ctx context.Context, ima
 		return cached, nil
 	}
 
-	summary, err := s.summarizeImage(ctx, imageURL)
+	summary, model, err := s.summarizeImage(ctx, imageURL)
 	if err != nil {
 		return "", err
 	}
-	if err := s.saveImageSummary(ctx, attachmentID, summary); err != nil {
-		logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache image summary")
+	if err := s.saveImageSummary(ctx, attachmentID, summary, model); err != nil {
+		logging.Log.Warn().Err(err).Str("attachment_id", attachmentID).Msg("failed to cache file summary")
 	}
 	return summary, nil
 }

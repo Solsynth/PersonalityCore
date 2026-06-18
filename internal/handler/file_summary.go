@@ -21,7 +21,7 @@ func getFileSummary(c *gin.Context, conversations *service.ConversationService) 
 		return
 	}
 
-	summary, err := conversations.GetImageSummary(c.Request.Context(), attachmentID)
+	summary, model, err := conversations.GetImageSummary(c.Request.Context(), attachmentID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -31,7 +31,7 @@ func getFileSummary(c *gin.Context, conversations *service.ConversationService) 
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"attachment_id": attachmentID, "summary": summary})
+	c.JSON(http.StatusOK, gin.H{"attachment_id": attachmentID, "summary": summary, "model": model})
 }
 
 func generateFileSummary(c *gin.Context, conversations *service.ConversationService) {
@@ -61,11 +61,11 @@ func generateFileSummary(c *gin.Context, conversations *service.ConversationServ
 		imageURL = strings.TrimRight(baseURL, "/") + "/drive/files/" + attachmentID
 	}
 
-	summary, err := conversations.SummarizeAndCacheImage(c.Request.Context(), imageURL, attachmentID)
+	summary, model, err := conversations.SummarizeAndCacheImage(c.Request.Context(), imageURL, attachmentID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"attachment_id": attachmentID, "summary": summary})
+	c.JSON(http.StatusOK, gin.H{"attachment_id": attachmentID, "summary": summary, "model": model})
 }

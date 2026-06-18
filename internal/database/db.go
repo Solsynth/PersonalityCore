@@ -38,6 +38,6 @@ func (d *DB) AutoMigrate() error {
 		&AgentManualMemory{},
 		&AgentSelfNote{},
 		&ExternalChatBinding{},
-		&ImageSummary{},
+		&FileSummary{},
 	)
 }

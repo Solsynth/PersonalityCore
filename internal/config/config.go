@@ -12,7 +12,6 @@ import (
 )
 
 type Config struct {
-	App          AppConfig          `mapstructure:"app"`
 	HTTP         HTTPConfig         `mapstructure:"http"`
 	GRPC         GRPCConfig         `mapstructure:"grpc"`
 	Database     DatabaseConfig     `mapstructure:"database"`
@@ -23,10 +22,6 @@ type Config struct {
 	Agents       AgentsConfig       `mapstructure:"agents"`
 	ProvidersDir string             `mapstructure:"providersDir"`
 	Providers    []ProviderConfig   `mapstructure:"providers"`
-}
-
-type AppConfig struct {
-	Name string `mapstructure:"name"`
 }
 
 type HTTPConfig struct {
@@ -220,7 +215,6 @@ func Load(configPath string) (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("app.name", "PersonalityCore")
 	v.SetDefault("http.port", "8090")
 	v.SetDefault("grpc.port", "9095")
 	v.SetDefault("grpc.useTLS", false)

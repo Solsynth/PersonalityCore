@@ -1439,9 +1439,94 @@ func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context,
 		return err
 	}
 	if len(records) == 0 {
-		return nil
+		thread.SummarySeq = cutoffSeq
+		now := time.Now()
+		thread.SummaryAt = &now
+		return s.db.WithContext(ctx).Save(thread).Error
 	}
 
+	prevSummary := strings.TrimSpace(thread.ContextSummary)
+	newSummary := s.summarizeWithModel(ctx, thread, records, prevSummary)
+	if newSummary == "" {
+		// fall back to raw snippets if model summarization fails
+		newSummary = s.buildRawSnippetSummary(records, prevSummary)
+	}
+
+	thread.ContextSummary = trimCompactedSummary(newSummary, 5000)
+	thread.SummarySeq = cutoffSeq
+	now := time.Now()
+	thread.SummaryAt = &now
+	return s.db.WithContext(ctx).Save(thread).Error
+}
+
+// summarizeWithModel uses the agent's model to produce a coherent summary
+// of older conversation messages, preserving key information.
+func (s *ConversationService) summarizeWithModel(ctx context.Context, thread *database.ConversationThread, records []database.ConversationMessage, prevSummary string) string {
+	if s.executor == nil {
+		return ""
+	}
+
+	def, ok := s.registry.Get(thread.AgentID)
+	if !ok {
+		return ""
+	}
+
+	// Build the conversation transcript for summarization
+	var transcript strings.Builder
+	for _, r := range records {
+		role := strings.TrimSpace(strings.ToLower(r.Role))
+		switch role {
+		case "system", "tool":
+			continue
+		case "user", "assistant":
+		default:
+			role = "message"
+		}
+		content := strings.TrimSpace(r.Content)
+		if content == "" {
+			continue
+		}
+		transcript.WriteString(role + ": " + content + "\n\n")
+	}
+
+	if transcript.Len() == 0 {
+		return ""
+	}
+
+	// Build summarization prompt
+	var prompt strings.Builder
+	prompt.WriteString("You are a conversation summarizer. Summarize the following conversation into a concise context note for future reference.\n\n")
+	prompt.WriteString("Rules:\n")
+	prompt.WriteString("- Preserve names, dates, numbers, decisions, preferences, and key facts\n")
+	prompt.WriteString("- Use bullet points for clarity\n")
+	prompt.WriteString("- Focus on information that would be useful for continuing the conversation later\n")
+	prompt.WriteString("- Omit pleasantries, greetings, and filler\n")
+	prompt.WriteString("- Keep it under 500 words\n")
+	prompt.WriteString("- Write in third person (\"the user asked...\", \"the assistant agreed...\")\n")
+
+	if prevSummary != "" {
+		prompt.WriteString("\nExisting summary (merge new info into this, don't repeat):\n")
+		prompt.WriteString(prevSummary + "\n")
+	}
+
+	prompt.WriteString("\nConversation to summarize:\n")
+	prompt.WriteString(transcript.String())
+
+	messages := []*schema.Message{
+		schema.SystemMessage(prompt.String()),
+		schema.UserMessage("Summarize this conversation."),
+	}
+
+	resp, err := s.executor.Generate(ctx, agent.RunRequest{Agent: def, Messages: messages})
+	if err != nil {
+		logging.Log.Warn().Err(err).Str("thread_id", thread.ID).Msg("model summarization failed, falling back to raw snippets")
+		return ""
+	}
+	return strings.TrimSpace(resp.Content)
+}
+
+// buildRawSnippetSummary creates a raw snippet summary as fallback.
+func (s *ConversationService) buildRawSnippetSummary(records []database.ConversationMessage, prevSummary string) string {
 	snippets := make([]string, 0, len(records))
 	for _, record := range records {
 		if snippet := compactConversationRecord(record); snippet != "" {
@@ -1449,22 +1534,14 @@ func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context,
 		}
 	}
 	if len(snippets) == 0 {
-		thread.SummarySeq = cutoffSeq
-		now := time.Now()
-		thread.SummaryAt = &now
-		return s.db.WithContext(ctx).Save(thread).Error
+		return prevSummary
 	}
-
-	summary := strings.TrimSpace(thread.ContextSummary)
+	summary := prevSummary
 	if summary != "" {
 		summary += "\n"
 	}
 	summary += strings.Join(snippets, "\n")
-	thread.ContextSummary = trimCompactedSummary(summary, 5000)
-	thread.SummarySeq = cutoffSeq
-	now := time.Now()
-	thread.SummaryAt = &now
-	return s.db.WithContext(ctx).Save(thread).Error
+	return summary
 }
 
 func compactConversationRecord(record database.ConversationMessage) string {

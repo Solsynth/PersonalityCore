@@ -1,111 +1,180 @@
-app = { name = "PersonalityCore" }
 providersDir = "./models.d"
 
+# ─── HTTP ────────────────────────────────────────────────────────────
 [http]
 port = "8090"
 
+# ─── gRPC ────────────────────────────────────────────────────────────
 [grpc]
 port = "9095"
 useTLS = false
 certFile = ""
 keyFile = ""
 
+# ─── Database ────────────────────────────────────────────────────────
 [database]
 dsn = "host=postgres port=5432 user=dyson password=dyson dbname=personality_core sslmode=disable"
 
+# ─── Auth ────────────────────────────────────────────────────────────
 [auth]
-target = ""
+target = ""                    # Solar auth gRPC target (host:port)
 useTLS = false
-tlsSkipVerify = false
-allowDevIds = true
-offline = false
+tlsSkipVerify = false          # true for self-signed certs
+allowDevIds = true             # allow X-Account-Id header for dev
+offline = false                # true = every request becomes offlineAccountId
 offlineAccountId = "local-dev"
-autonomousSecret = ""
+autonomousSecret = ""          # shared secret for X-Autonomous-Secret header
 
+# ─── Solar Network ──────────────────────────────────────────────────
 [solarNetwork]
 baseUrl = "https://api.dyson.example"
 
-# Solar Network gRPC commonly uses self-signed certs.
-# When connecting to Solar auth over TLS, set:
-# useTLS = true
-# tlsSkipVerify = true
+# ─── Sentry (optional) ─────────────────────────────────────────────
+# [sentry]
+# dsn = ""
+# tracesSampleRate = 0.01
+# environment = "production"
+# release = "v1.0.0"
+
+# ─── Providers ──────────────────────────────────────────────────────
+# Providers define model backends. Each provider has an id and one or more models.
+# Models can be split into separate .toml files under providersDir.
 
 [[providers]]
 id = "openai"
 type = "openai"
-apiKey = ""
-baseUrl = ""
+apiKey = "sk-..."
+baseUrl = "https://api.openai.com/v1"
 byAzure = false
 apiVersion = ""
 timeout = "90s"
-maxCompletionTokens = 2048
+maxCompletionTokens = 2048    # default for all models under this provider
 temperature = 0.7
 topP = 1.0
 
-[personality]
-maxHistoryMessages = 24
-sseHeartbeat = "15s"
-chatInboundDebounce = "5s"
-visionModel = ""
+# Model-level config overrides provider defaults.
+[[providers.models]]
+name = "gpt-4o"
+modalities = ["image"]        # this model supports image input
+maxCompletionTokens = 4096
+temperature = 0.7
 
+# Per-model perk overrides: restrict or cap specific models per perk level.
+[providers.models.perkOverrides.0]
+blocked = true                # perk 0 users cannot use gpt-4o at all
+
+[providers.models.perkOverrides.1]
+maxCompletionTokens = 2048    # perk 1 users get capped output on gpt-4o
+
+[[providers.models]]
+name = "gpt-4.1-mini"
+modalities = ["image"]
+maxCompletionTokens = 4096
+
+[providers.models.perkOverrides.0]
+maxCompletionTokens = 1024    # perk 0 users get less output on mini too
+
+[[providers]]
+id = "anthropic"
+type = "openai-compatible"
+apiKey = "sk-ant-..."
+baseUrl = "https://api.anthropic.com/v1"
+timeout = "120s"
+maxCompletionTokens = 4096
+temperature = 1.0
+
+[[providers.models]]
+name = "claude-sonnet-4"
+maxCompletionTokens = 8192
+
+[[providers.models]]
+name = "claude-opus-4"
+maxCompletionTokens = 8192
+
+[providers.models.perkOverrides.0]
+blocked = true                # perk 0 can't use opus
+
+[providers.models.perkOverrides.1]
+blocked = true                # perk 1 can't use opus either
+
+[providers.models.perkOverrides.2]
+maxCompletionTokens = 4096    # perk 2 gets capped output on opus
+
+# ─── Personality ────────────────────────────────────────────────────
+[personality]
+maxHistoryMessages = 24       # how many recent messages to include in context
+sseHeartbeat = "15s"          # SSE heartbeat interval
+chatInboundDebounce = "5s"   # debounce window for inbound solar messages
+visionModel = "openai/gpt-4o" # model used to summarize images for non-vision models
+
+# ─── Surfing ────────────────────────────────────────────────────────
 [personality.surfing]
 enabled = false
 interval = "1h"
 prompt = "Browse the feed and interact with interesting posts. Reply, react, or repost as you see fit."
 
-# Perk tiers control access limits per user perk level (0-3).
-# Unset fields = unrestricted. Only configure tiers that differ from default.
-#
-# [personality.perkTiers.0]
-# maxHistoryMessages = 8         # shorter context window
-# maxCompletionTokens = 1024     # global fallback cap
-# allowVision = false            # block image analysis
-# allowFileSummary = false       # block file summarization
-# blockedSkills = ["surfing", "tasks"]
-#
-# [personality.perkTiers.1]
-# maxHistoryMessages = 16
-# blockedSkills = ["surfing"]
-#
-# Per-model overrides go under the model config:
-# [[providers.models]]
-# name = "gpt-4o"
-# modalities = ["image"]
-# [providers.models.perkOverrides.0]
-# blocked = true                 # perk 0 can't use gpt-4o
-# [providers.models.perkOverrides.1]
-# maxCompletionTokens = 2048
-#
-# Per-agent overrides go under the agent config:
-# [agents.items.perkOverrides.0]
-# maxCompletionTokens = 512
+# ─── Perk Tiers ─────────────────────────────────────────────────────
+# Each tier overrides defaults for that perk level (0-3).
+# Unset fields = unrestricted. Only configure tiers that restrict something.
+# Perk level comes from the authenticated Solar account.
 
+[personality.perkTiers.0]
+maxHistoryMessages = 8        # basic users get 8 messages of context
+maxCompletionTokens = 1024    # global fallback cap (overridden by per-model/per-agent)
+allowVision = false           # no image analysis
+allowFileSummary = false      # no file summarization
+blockedSkills = ["surfing", "tasks"]  # can't browse feed or create tasks
+
+[personality.perkTiers.1]
+maxHistoryMessages = 16
+blockedSkills = ["surfing"]   # can use tasks but not surf
+
+# perk 2 and 3 are unrestricted (no config needed)
+
+# ─── Agents ─────────────────────────────────────────────────────────
 [agents]
 dir = "./agents.d"
 
+# Agent: a general-purpose assistant (REST API only)
 [[agents.items]]
 id = "support"
 name = "Support"
 description = "General support assistant"
 systemPromptFile = "./prompts/support.md"
 model = "openai/gpt-4.1-mini"
+# temperature = 0.7          # override model default
+# topP = 1.0
+maxCompletionTokens = 4096
+# disableThinking = false
 abilities = ["memory", "mood", "relationship"]
 enabled = true
 
+# Per-agent perk overrides: cap output for lower perk levels.
+[agents.items.perkOverrides.0]
+maxCompletionTokens = 512     # basic users get short answers from support
+
+[agents.items.perkOverrides.1]
+maxCompletionTokens = 2048
+
+# Agent: a chat bot connected to Solar Network
 [[agents.items]]
 id = "support-bot"
 name = "Support Bot"
 description = "Bot agent connected to Solar chat"
 systemPrompt = "You are a support bot for Solar Network chat."
 model = "openai/gpt-4.1-mini"
-chatMaxCompletionTokens = 160
+chatMaxCompletionTokens = 160  # cap for chat tool path specifically
 abilities = ["chat", "autonomous"]
 enabled = true
 
 [agents.items.solar-network-integration]
 accountName = "support-bot"
 accessToken = ""
+# publisherName = "Support Bot"  # override display name for post creation
 
 [agents.items.autonomous]
 wakeInterval = "10m"
 wakePrompt = "Check whether any active or DM conversations need a proactive follow-up."
+
+[agents.items.perkOverrides.0]
+maxCompletionTokens = 100    # chat bot gets very short replies for basic users

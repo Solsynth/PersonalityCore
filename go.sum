@@ -354,3 +354,7 @@ gorm.io/gorm v1.30.5 h1:dvEfYwxL+i+xgCNSGGBT1lDjCzfELK8fHZxL3Ee9X0s=
 gorm.io/gorm v1.30.5/go.mod h1:8Z33v652h4//uMA76KjeDH8mJXPm1QNCYrMeatR0DOE=
 src.solsynth.dev/sosys/go v0.2.1-0.20260616170920-c55844b38343 h1:cuvj6zTGtflQ/xXQS05+CXN2bFG436IRGjuejnnWps8=
 src.solsynth.dev/sosys/go v0.2.1-0.20260616170920-c55844b38343/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=
+src.solsynth.dev/sosys/go v0.2.1-0.20260624110613-e1ecd8a38d00 h1:uWKkfVLzhAWL3aZz9RGJ9noLHyYY3vgpPRFs6WdotH4=
+src.solsynth.dev/sosys/go v0.2.1-0.20260624110613-e1ecd8a38d00/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=
+src.solsynth.dev/sosys/go v0.2.1-0.20260624110941-8fabd447ec3a h1:bfrGfkuGi/Sr80hJJXZZ7z+xOLWrBN23uwxhKfQaPeY=
+src.solsynth.dev/sosys/go v0.2.1-0.20260624110941-8fabd447ec3a/go.mod h1:obFYNjrUVgYLSHG30YlXUqFKvC+EejGTTuc7Aix8ugY=

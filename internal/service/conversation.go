@@ -627,6 +627,60 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	}, nil
 }
 
+type CompleteOnceInput struct {
+	AgentID     string
+	AccountID   string
+	Message     string
+	Model       string
+	Temperature *float64
+	TopP        *float64
+	MaxTokens   *int32
+}
+
+type CompleteOnceResult struct {
+	Content string
+	Model   string
+}
+
+func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOnceInput) (*CompleteOnceResult, error) {
+	def, ok := s.registry.Get(input.AgentID)
+	if !ok {
+		return nil, fmt.Errorf("agent %q is unavailable", input.AgentID)
+	}
+
+	messages := make([]*schema.Message, 0, 2)
+	if strings.TrimSpace(def.SystemPrompt) != "" {
+		messages = append(messages, schema.SystemMessage(def.SystemPrompt))
+	}
+	messages = append(messages, schema.UserMessage(input.Message))
+
+	if input.Model != "" {
+		def.Model = input.Model
+	}
+	if input.Temperature != nil {
+		v := float32(*input.Temperature)
+		def.Temperature = &v
+	}
+	if input.TopP != nil {
+		v := float32(*input.TopP)
+		def.TopP = &v
+	}
+	if input.MaxTokens != nil {
+		v := int(*input.MaxTokens)
+		def.MaxCompletionTokens = &v
+	}
+
+	response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: def, Messages: messages})
+	if err != nil {
+		return nil, fmt.Errorf("generation failed: %w", err)
+	}
+
+	return &CompleteOnceResult{
+		Content: response.Content,
+		Model:   def.Model,
+	}, nil
+}
+
 type StreamCallbacks struct {
 	OnChunk    func(string) error
 	OnToolCall func(schema.ToolCall) error
@@ -1259,13 +1313,48 @@ func renderTextOnlyImagePart(part userMessageInputPart) string {
 
 // Image summarization for non-vision models
 
-func extractAttachmentID(imageURL string) string {
-	// expects URLs like <base>/drive/files/<id>
-	idx := strings.LastIndex(imageURL, "/drive/files/")
-	if idx < 0 {
+func extractAttachmentID(imageRef string) string {
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
 		return ""
 	}
-	return strings.TrimSpace(imageURL[idx+len("/drive/files/"):])
+	if !strings.Contains(imageRef, "://") && !strings.Contains(imageRef, "/") {
+		return imageRef
+	}
+
+	for _, marker := range []string{"/drive/files/", "/files/api/files/", "/api/files/"} {
+		idx := strings.LastIndex(imageRef, marker)
+		if idx < 0 {
+			continue
+		}
+		id := imageRef[idx+len(marker):]
+		if slash := strings.IndexByte(id, '/'); slash >= 0 {
+			id = id[:slash]
+		}
+		if query := strings.IndexByte(id, '?'); query >= 0 {
+			id = id[:query]
+		}
+		return strings.TrimSpace(id)
+	}
+	return ""
+}
+
+func (s *ConversationService) resolveImageReference(imageRef string) (resolvedURL string, attachmentID string, mimeType string) {
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
+		return "", "", ""
+	}
+
+	attachmentID = extractAttachmentID(imageRef)
+	if attachmentID == "" {
+		return imageRef, "", ""
+	}
+
+	resolvedURL, detectedMimeType := s.resolveAttachmentURL(attachmentID)
+	if resolvedURL == "" {
+		return imageRef, attachmentID, detectedMimeType
+	}
+	return resolvedURL, attachmentID, detectedMimeType
 }
 
 func (s *ConversationService) resolveFileMimeType(ctx context.Context, attachmentID string) string {
@@ -1329,16 +1418,22 @@ func (s *ConversationService) saveImageSummary(ctx context.Context, attachmentID
 		}).Error
 }
 
-func (s *ConversationService) summarizeImage(ctx context.Context, imageURL string) (string, string, error) {
+func (s *ConversationService) summarizeImage(ctx context.Context, imageRef string) (string, string, error) {
 	visionModel := strings.TrimSpace(s.cfg.Personality.VisionModel)
 	if visionModel == "" {
 		return "", "", fmt.Errorf("no vision model configured")
 	}
 
+	imageURL, attachmentID, mimeType := s.resolveImageReference(imageRef)
+	if imageURL == "" {
+		return "", "", fmt.Errorf("image reference is required")
+	}
+
 	// check MIME type from file server
-	attachmentID := extractAttachmentID(imageURL)
 	if attachmentID != "" {
-		mimeType := s.resolveFileMimeType(ctx, attachmentID)
+		if mimeType == "" {
+			mimeType = s.resolveFileMimeType(ctx, attachmentID)
+		}
 		if mimeType != "" && !strings.HasPrefix(mimeType, "image/") {
 			return "", "", fmt.Errorf("attachment %s is not an image (%s)", attachmentID, mimeType)
 		}

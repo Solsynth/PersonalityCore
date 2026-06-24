@@ -104,6 +104,50 @@ func (s *PersonalityService) RunConversation(ctx context.Context, req *gen.DyRun
 	}, nil
 }
 
+func (s *PersonalityService) Complete(ctx context.Context, req *gen.DyCompletePersonalityRequest) (*gen.DyCompletePersonalityResponse, error) {
+	accountID := strings.TrimSpace(req.GetAccountId())
+	if accountID == "" {
+		return nil, status.Error(codes.InvalidArgument, "account_id is required")
+	}
+	message := strings.TrimSpace(req.GetMessage())
+	if message == "" {
+		return nil, status.Error(codes.InvalidArgument, "message is required")
+	}
+	agentID := strings.TrimSpace(req.GetAgentId())
+	if agentID == "" {
+		return nil, status.Error(codes.InvalidArgument, "agent_id is required")
+	}
+
+	input := service.CompleteOnceInput{
+		AgentID:   agentID,
+		AccountID: accountID,
+		Message:   message,
+	}
+	if req.Model != nil {
+		input.Model = *req.Model
+	}
+	if req.Temperature != nil {
+		input.Temperature = req.Temperature
+	}
+	if req.TopP != nil {
+		input.TopP = req.TopP
+	}
+	if req.MaxTokens != nil {
+		v := *req.MaxTokens
+		input.MaxTokens = &v
+	}
+
+	result, err := s.conversations.CompleteOnce(ctx, input)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	return &gen.DyCompletePersonalityResponse{
+		Content: result.Content,
+		Model:   result.Model,
+	}, nil
+}
+
 func mapError(err error) error {
 	switch err {
 	case service.ErrNotFound:

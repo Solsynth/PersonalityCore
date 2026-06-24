@@ -82,6 +82,64 @@ func TestBuildSolarInboundInputPartsUsesDriveFileURL(t *testing.T) {
 	}
 }
 
+func TestExtractAttachmentIDSupportsKnownReferenceFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "bare attachment id",
+			input: "img-1",
+			want:  "img-1",
+		},
+		{
+			name:  "drive files url",
+			input: "https://solar.example/drive/files/img-2",
+			want:  "img-2",
+		},
+		{
+			name:  "files api url",
+			input: "https://solar.example/files/api/files/img-3",
+			want:  "img-3",
+		},
+		{
+			name:  "info api url",
+			input: "https://solar.example/api/files/img-4/info",
+			want:  "img-4",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractAttachmentID(tc.input); got != tc.want {
+				t.Fatalf("extractAttachmentID(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveImageReferenceNormalizesAttachmentIDToFileURL(t *testing.T) {
+	svc := &ConversationService{
+		cfg: &config.Config{
+			SolarNetwork: config.SolarNetworkConfig{
+				BaseURL: "https://solar.example",
+			},
+		},
+	}
+
+	resolvedURL, attachmentID, mimeType := svc.resolveImageReference("img-1")
+	if resolvedURL != "https://solar.example/files/api/files/img-1" {
+		t.Fatalf("resolvedURL = %q", resolvedURL)
+	}
+	if attachmentID != "img-1" {
+		t.Fatalf("attachmentID = %q", attachmentID)
+	}
+	if mimeType != "" {
+		t.Fatalf("expected empty mimeType, got %q", mimeType)
+	}
+}
+
 func TestResolveImpressionAccountIDFromSolarMetadataUsesSenderAccountID(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewConversationService(db, &config.Config{}, nil, nil)

@@ -30,6 +30,7 @@ const listSelfNotesToolName = "list_self_notes"
 const saveSelfNoteToolName = "save_self_note"
 const deleteSelfNoteToolName = "delete_self_note"
 const sequentialThinkingToolName = "sequentialthinking"
+const endEngagementToolName = "end_engagement"
 const solarOutboundMessageMinGap = 650 * time.Millisecond
 
 type sendChatToolInput struct {
@@ -84,6 +85,10 @@ type deleteSelfNoteToolInput struct {
 	Key string `json:"key"`
 }
 
+type endEngagementToolInput struct {
+	RoomID string `json:"room_id"`
+}
+
 type executedChatToolResult struct {
 	Content           string
 	RoomID            string
@@ -113,6 +118,9 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			if skill, ok := skillRegistry["chat"]; ok {
 				tools = append(tools, skill.Tools(s)...)
 			}
+		}
+		if et := s.endEngagementToolInfo(); et != nil {
+			tools = append(tools, et)
 		}
 	}
 
@@ -911,9 +919,67 @@ func (s *ConversationService) sequentialThinkingToolInfo() *schema.ToolInfo {
 	return info
 }
 
+func (s *ConversationService) endEngagementToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: endEngagementToolName,
+		Desc: "End the bot's active engagement state in a group chat room. Use this when the conversation is naturally concluded and the bot should stop proactively replying until mentioned again.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"room_id": {
+				Type:     schema.String,
+				Desc:     "Solar chat room ID where engagement should end. Required.",
+				Required: true,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) executeEndEngagementToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+	if s.sn == nil {
+		return nil, fmt.Errorf("solar chat bridge is not configured")
+	}
+	var input endEngagementToolInput
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+		return nil, fmt.Errorf("decode %s arguments: %w", endEngagementToolName, err)
+	}
+	input.RoomID = strings.TrimSpace(input.RoomID)
+	if input.RoomID == "" {
+		return nil, fmt.Errorf("%s requires room_id", endEngagementToolName)
+	}
+	var binding database.ExternalChatBinding
+	if err := s.db.WithContext(ctx).
+		Where("agent_id = ? AND remote_room_id = ?", strings.TrimSpace(agentID), input.RoomID).
+		First(&binding).Error; err != nil {
+		return nil, fmt.Errorf("no binding found for agent %q in room %q: %w", agentID, input.RoomID, err)
+	}
+	binding.EngagementState = snRoomEngagementStatePassive
+	binding.EngagedUntil = nil
+	if err := s.db.WithContext(ctx).Save(&binding).Error; err != nil {
+		return nil, fmt.Errorf("failed to update engagement state: %w", err)
+	}
+	logging.Log.Info().
+		Str("agent_id", strings.TrimSpace(agentID)).
+		Str("tool_name", call.Function.Name).
+		Str("tool_call_id", call.ID).
+		Str("room_id", input.RoomID).
+		Msg("ended engagement state for room")
+	payload, err := json.Marshal(map[string]any{
+		"ok":     true,
+		"status": "engagement_ended",
+		"room_id": input.RoomID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{
+		Content:    string(payload),
+		ToolName:   call.Function.Name,
+		ToolCallID: call.ID,
+	}, nil
+}
+
 func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	switch call.Function.Name {
-	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName, sequentialThinkingToolName:
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName, sequentialThinkingToolName, endEngagementToolName:
 	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
 	}
@@ -926,6 +992,8 @@ func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID s
 		return s.executeDeleteSelfNoteToolCall(ctx, agentID, call)
 	case sequentialThinkingToolName:
 		return s.executeSequentialThinkingToolCall(ctx, agentID, call)
+	case endEngagementToolName:
+		return s.executeEndEngagementToolCall(ctx, agentID, call)
 	}
 	if s.sn == nil {
 		return nil, fmt.Errorf("solar chat bridge is not configured")

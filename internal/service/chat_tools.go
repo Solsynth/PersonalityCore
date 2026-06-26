@@ -922,7 +922,7 @@ func (s *ConversationService) sequentialThinkingToolInfo() *schema.ToolInfo {
 func (s *ConversationService) endEngagementToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: endEngagementToolName,
-		Desc: "End the bot's active engagement state in a group chat room. Use this when the conversation is naturally concluded and the bot should stop proactively replying until mentioned again.",
+		Desc: "End the bot's active engagement state in a group chat room. Use this when the conversation is naturally concluded and the bot should stop proactively replying until mentioned again. Also use when users tell the bot to stop talking, go to sleep, shut up, or otherwise express they want the bot to be quiet (e.g. '去睡觉', '闭嘴', '别说了', 'shut up', 'go to sleep', 'be quiet').",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"room_id": {
 				Type:     schema.String,

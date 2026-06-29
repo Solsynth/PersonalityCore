@@ -82,20 +82,20 @@ func New(cfg *config.Config) (*App, error) {
 		},
 		func(ctx context.Context, agentID string, msg solar_network.InboundMessage) error {
 			return conversations.HandleSnInboundMessage(ctx, agentID, service.ExternalInboundMessage{
-				RoomID:              msg.RoomID,
-				RoomType:            msg.RoomType,
-				MessageID:           msg.MessageID,
-				MessageType:         msg.MessageType,
-				Content:             msg.Content,
-				Attachments:         append([]solar_network.ChatAttachment(nil), msg.Attachments...),
-				SenderAccountID:     msg.SenderAccountID,
-				SenderName:          msg.SenderName,
-				SenderNick:          msg.SenderNick,
-				SenderPerkLevel:     msg.SenderPerkLevel,
-				MentionedBot:        msg.MentionedBot,
-				RepliedMessageID:    msg.RepliedMessageID,
+				RoomID:                msg.RoomID,
+				RoomType:              msg.RoomType,
+				MessageID:             msg.MessageID,
+				MessageType:           msg.MessageType,
+				Content:               msg.Content,
+				Attachments:           append([]solar_network.ChatAttachment(nil), msg.Attachments...),
+				SenderAccountID:       msg.SenderAccountID,
+				SenderName:            msg.SenderName,
+				SenderNick:            msg.SenderNick,
+				SenderPerkLevel:       msg.SenderPerkLevel,
+				MentionedBot:          msg.MentionedBot,
+				RepliedMessageID:      msg.RepliedMessageID,
 				RepliedMessageContent: msg.RepliedMessageContent,
-				CreatedAt:           msg.CreatedAt,
+				CreatedAt:             msg.CreatedAt,
 			})
 		},
 	)
@@ -125,6 +125,7 @@ func New(cfg *config.Config) (*App, error) {
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcSrv, healthServer)
 	gen.RegisterDyPersonalityServiceServer(grpcSrv, grpcsvc.New(conversations))
+	gen.RegisterDyEmbeddingServiceServer(grpcSrv, grpcsvc.NewEmbedding(conversations))
 	reflection.Register(grpcSrv)
 
 	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler, surfScheduler: surfScheduler}, nil

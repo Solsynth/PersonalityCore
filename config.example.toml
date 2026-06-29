@@ -71,6 +71,10 @@ name = "gpt-4.1-mini"
 modalities = ["image"]
 maxCompletionTokens = 4096
 
+[[providers.models]]
+name = "text-embedding-3-small"
+type = "embedding"            # embedding models are excluded from completion/chat paths
+
 [providers.models.perkOverrides.0]
 maxCompletionTokens = 1024    # perk 0 users get less output on mini too
 
@@ -106,6 +110,7 @@ maxHistoryMessages = 24       # how many recent messages to include in context
 sseHeartbeat = "15s"          # SSE heartbeat interval
 chatInboundDebounce = "5s"   # debounce window for inbound solar messages
 visionModel = "openai/gpt-4o" # model used to summarize images for non-vision models
+defaultEmbeddingModel = "openai/text-embedding-3-small"
 
 # ─── Surfing ────────────────────────────────────────────────────────
 [personality.surfing]

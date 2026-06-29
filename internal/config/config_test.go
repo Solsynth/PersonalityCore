@@ -326,3 +326,47 @@ timeout = "30s"
 		t.Fatalf("expected solar inbound debounce 5s, got %v", got)
 	}
 }
+
+func TestLoad_DefaultEmbeddingModelAndModelTypeLoad(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[personality]
+defaultEmbeddingModel = "openai/text-embedding-3-small"
+
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "test-key"
+timeout = "30s"
+
+[[providers.models]]
+name = "gpt-4.1-mini"
+
+[[providers.models]]
+name = "text-embedding-3-small"
+type = "embedding"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Personality.DefaultEmbeddingModel; got != "openai/text-embedding-3-small" {
+		t.Fatalf("expected default embedding model to load, got %q", got)
+	}
+	if len(cfg.Providers) != 1 || len(cfg.Providers[0].Models) != 2 {
+		t.Fatalf("unexpected providers payload: %#v", cfg.Providers)
+	}
+	if cfg.Providers[0].Models[0].IsEmbedding() {
+		t.Fatal("expected first model to default to completion")
+	}
+	if !cfg.Providers[0].Models[1].IsEmbedding() {
+		t.Fatal("expected second model to be marked as embedding")
+	}
+}

@@ -627,7 +627,7 @@ Base64 uploads are also supported:
 }
 ```
 
-Example provider config with per-model modalities:
+Example provider config with per-model modalities and embedding model typing:
 
 ```toml
 [[providers]]
@@ -646,6 +646,11 @@ apiKey = "..."
   [[providers.models]]
   name = "gpt-3.5-turbo"
   # no modalities — treated as text-only, images summarized via visionModel
+
+  [[providers.models]]
+  name = "text-embedding-3-small"
+  type = "embedding"
+  # embedding models are reserved for embedding RPCs
 ```
 
 To enable image summarization for non-vision models, set `visionModel` under `[personality]`:
@@ -653,6 +658,7 @@ To enable image summarization for non-vision models, set `visionModel` under `[p
 ```toml
 [personality]
 visionModel = "openai/gpt-4.1-mini"
+defaultEmbeddingModel = "openai/text-embedding-3-small"
 ```
 
 If no `visionModel` is configured, image parts for non-vision models are replaced with a placeholder.
@@ -686,10 +692,21 @@ Generated Go bindings live in:
 - [../Golaunch/proto/personality.pb.go](/Users/littlesheep/Documents/Projects/SolarNetwork/Golaunch/proto/personality.pb.go:1)
 - [../Golaunch/proto/personality_grpc.pb.go](/Users/littlesheep/Documents/Projects/SolarNetwork/Golaunch/proto/personality_grpc.pb.go:1)
 
-Implemented RPCs:
+Implemented personality RPCs:
 - `ListAgents`
 - `GetAgent`
 - `RunConversation`
+- `Complete`
+
+Implemented embedding RPCs:
+- `GenerateEmbedding`
+- `GenerateEmbeddings`
+
+Embedding RPC behavior:
+- single-text and batch generation are both supported
+- set the default model with `personality.defaultEmbeddingModel`
+- override per-call settings with gRPC metadata headers `x-embedding-model` and `x-embedding-dimensions`
+- only provider models marked with `type = "embedding"` are allowed for embedding calls; all others are treated as completion/chat models
 
 `RunConversation` behavior:
 - if `conversation_id` is empty, the service creates a new conversation using `agent_id`

@@ -42,13 +42,13 @@ type userMessageMetadata struct {
 }
 
 type snInboundRequestMetadata struct {
-	Source              string `json:"source"`
-	RoomType            int    `json:"room_type"`
-	MentionedBot        bool   `json:"mentioned_bot"`
-	SenderAccountID     string `json:"sender_account_id"`
-	SenderAccountName   string `json:"sender_account_name"`
-	SenderNick          string `json:"sender_nick"`
-	RepliedMessageID    string `json:"replied_message_id"`
+	Source                string `json:"source"`
+	RoomType              int    `json:"room_type"`
+	MentionedBot          bool   `json:"mentioned_bot"`
+	SenderAccountID       string `json:"sender_account_id"`
+	SenderAccountName     string `json:"sender_account_name"`
+	SenderNick            string `json:"sender_nick"`
+	RepliedMessageID      string `json:"replied_message_id"`
 	RepliedMessageContent string `json:"replied_message_content,omitempty"`
 }
 
@@ -58,8 +58,8 @@ type ConversationService struct {
 	registry     *agent.Registry
 	executor     *agent.Executor
 	humanize     *humanize.Manager
-	sn        SnChatBridge
-	snInbound *snInboundBatcher
+	sn           SnChatBridge
+	snInbound    *snInboundBatcher
 	profileCache sync.Map // ponyttl: simple cache, evict manually if needed
 }
 
@@ -69,8 +69,8 @@ type CreateConversationInput struct {
 }
 
 type AddMessageInput struct {
-	Content        string   `json:"content"`
-	AttachmentIDs  []string `json:"attachment_ids,omitempty"`
+	Content       string   `json:"content"`
+	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 }
 
 type userMessageInputPart struct {
@@ -88,13 +88,13 @@ type RunInput struct {
 }
 
 type AutonomousRunInput struct {
-	ThreadID           string         `json:"thread_id"`
-	RoomID             string         `json:"room_id"`
-	TargetAccountName  string         `json:"target_account_name"`
-	TargetAccountID    string         `json:"target_account_id"`
-	Prompt             string         `json:"prompt"`
-	Trigger            string         `json:"trigger"`
-	RequestMetadata    map[string]any `json:"-"`
+	ThreadID          string         `json:"thread_id"`
+	RoomID            string         `json:"room_id"`
+	TargetAccountName string         `json:"target_account_name"`
+	TargetAccountID   string         `json:"target_account_id"`
+	Prompt            string         `json:"prompt"`
+	Trigger           string         `json:"trigger"`
+	RequestMetadata   map[string]any `json:"-"`
 }
 
 type ListInput struct {
@@ -642,6 +642,17 @@ type CompleteOnceResult struct {
 	Model   string
 }
 
+type GenerateEmbeddingsInput struct {
+	Model      string
+	Texts      []string
+	Dimensions *int
+}
+
+type GenerateEmbeddingsResult struct {
+	Model      string
+	Embeddings [][]float32
+}
+
 func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOnceInput) (*CompleteOnceResult, error) {
 	def, ok := s.registry.Get(input.AgentID)
 	if !ok {
@@ -681,9 +692,35 @@ func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOn
 	}, nil
 }
 
+func (s *ConversationService) GenerateEmbeddings(ctx context.Context, input GenerateEmbeddingsInput) (*GenerateEmbeddingsResult, error) {
+	if s.executor == nil {
+		return nil, fmt.Errorf("embedding executor is unavailable")
+	}
+	defaultModel := ""
+	if s.cfg != nil {
+		defaultModel = s.cfg.Personality.DefaultEmbeddingModel
+	}
+	modelRef, err := s.executor.ResolveEmbeddingModel(input.Model, defaultModel)
+	if err != nil {
+		return nil, err
+	}
+	dimensions := 0
+	if input.Dimensions != nil {
+		dimensions = *input.Dimensions
+	}
+	vectors, err := s.executor.GenerateEmbeddings(ctx, modelRef, input.Texts, dimensions)
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateEmbeddingsResult{
+		Model:      modelRef,
+		Embeddings: vectors,
+	}, nil
+}
+
 type StreamCallbacks struct {
-	OnChunk    func(string) error
-	OnToolCall func(schema.ToolCall) error
+	OnChunk     func(string) error
+	OnToolCall  func(schema.ToolCall) error
 	OnReasoning func(string) error
 }
 
@@ -1128,7 +1165,7 @@ func (s *ConversationService) buildAttachmentImage(attachmentID string) (*schema
 	}
 	image := &schema.MessageInputImage{
 		MessagePartCommon: schema.MessagePartCommon{URL: &resolvedURL},
-		Detail:           schema.ImageURLDetailAuto,
+		Detail:            schema.ImageURLDetailAuto,
 	}
 	if mimeType != "" {
 		image.MIMEType = mimeType

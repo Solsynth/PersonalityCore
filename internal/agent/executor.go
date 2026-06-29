@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	goopenai "github.com/meguminnnnnnnnn/go-openai"
 
 	"src.solsynth.dev/sosys/personality/internal/config"
 )
@@ -75,11 +77,55 @@ func (e *Executor) NewToolCallingModel(ctx context.Context, agent Definition, to
 	return toolModel.WithTools(tools)
 }
 
+func (e *Executor) ResolveEmbeddingModel(explicitModel, defaultModel string) (string, error) {
+	modelRef := strings.TrimSpace(explicitModel)
+	if modelRef == "" {
+		modelRef = strings.TrimSpace(defaultModel)
+	}
+	if modelRef == "" {
+		return "", fmt.Errorf("embedding model is required")
+	}
+	_, _, _, err := e.resolveModelForPurpose(modelRef, true)
+	if err != nil {
+		return "", err
+	}
+	return modelRef, nil
+}
+
+func (e *Executor) GenerateEmbeddings(ctx context.Context, modelRef string, texts []string, dimensions int) ([][]float32, error) {
+	if e == nil {
+		return nil, fmt.Errorf("executor config is missing")
+	}
+	provider, modelName, _, err := e.resolveModelForPurpose(modelRef, true)
+	if err != nil {
+		return nil, err
+	}
+	client, err := e.newOpenAIClient(provider)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.CreateEmbeddings(ctx, goopenai.EmbeddingRequestStrings{
+		Input:      texts,
+		Model:      goopenai.EmbeddingModel(modelName),
+		Dimensions: dimensions,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("embedding generation failed: %w", err)
+	}
+
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		vectors = append(vectors, append([]float32(nil), item.Embedding...))
+	}
+	return vectors, nil
+}
+
 func (e *Executor) newChatModel(ctx context.Context, agent Definition) (model.BaseChatModel, error) {
 	if e == nil {
 		return nil, fmt.Errorf("executor config is missing")
 	}
-	provider, modelName, err := e.resolveModel(agent.Model)
+	provider, modelName, _, err := e.resolveModelForPurpose(agent.Model, false)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +166,6 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 	if agent.MaxCompletionTokens != nil {
 		maxTokens = *agent.MaxCompletionTokens
 	}
-	// Perk override takes highest priority
 	if agent.PerkMaxTokens != nil {
 		maxTokens = *agent.PerkMaxTokens
 	}
@@ -138,31 +183,66 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 	})
 }
 
+func (e *Executor) newOpenAIClient(provider config.ProviderConfig) (*goopenai.Client, error) {
+	if strings.TrimSpace(provider.APIKey) == "" && !provider.ByAzure {
+		return nil, fmt.Errorf("provider %q apiKey is required", provider.ID)
+	}
+
+	var cfg goopenai.ClientConfig
+	if provider.ByAzure {
+		cfg = goopenai.DefaultAzureConfig(provider.APIKey, provider.BaseURL)
+		if strings.TrimSpace(provider.APIVersion) != "" {
+			cfg.APIVersion = provider.APIVersion
+		}
+	} else {
+		cfg = goopenai.DefaultConfig(provider.APIKey)
+		if strings.TrimSpace(provider.BaseURL) != "" {
+			cfg.BaseURL = provider.BaseURL
+		}
+	}
+	cfg.HTTPClient = &http.Client{Timeout: provider.Timeout}
+	return goopenai.NewClientWithConfig(cfg), nil
+}
+
 func (e *Executor) resolveModel(raw string) (config.ProviderConfig, string, error) {
+	provider, modelName, _, err := e.resolveModelForPurpose(raw, false)
+	return provider, modelName, err
+}
+
+func (e *Executor) resolveModelForPurpose(raw string, wantEmbedding bool) (config.ProviderConfig, string, *config.ModelConfig, error) {
 	modelRef := strings.TrimSpace(raw)
 	if modelRef == "" {
-		return config.ProviderConfig{}, "", fmt.Errorf("agent model is required and must use provider/model format")
+		return config.ProviderConfig{}, "", nil, fmt.Errorf("agent model is required and must use provider/model format")
 	}
 
 	parts := strings.SplitN(modelRef, "/", 2)
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return config.ProviderConfig{}, "", fmt.Errorf("invalid model %q, expected provider/model", modelRef)
+		return config.ProviderConfig{}, "", nil, fmt.Errorf("invalid model %q, expected provider/model", modelRef)
 	}
 
 	providerID := strings.TrimSpace(parts[0])
 	modelName := strings.TrimSpace(parts[1])
 	provider, ok := e.providers[providerID]
 	if !ok {
-		return config.ProviderConfig{}, "", fmt.Errorf("unknown provider %q", providerID)
+		return config.ProviderConfig{}, "", nil, fmt.Errorf("unknown provider %q", providerID)
 	}
-	return provider, modelName, nil
+	mc := provider.ResolveModel(modelName)
+	if mc != nil {
+		if wantEmbedding && !mc.IsEmbedding() {
+			return config.ProviderConfig{}, "", nil, fmt.Errorf("model %q is not configured as an embedding model", modelRef)
+		}
+		if !wantEmbedding && mc.IsEmbedding() {
+			return config.ProviderConfig{}, "", nil, fmt.Errorf("model %q is configured as an embedding model", modelRef)
+		}
+	}
+	return provider, modelName, mc, nil
 }
 
 func (e *Executor) SupportsVision(agent Definition) bool {
 	if e == nil {
 		return true
 	}
-	provider, modelName, err := e.resolveModel(agent.Model)
+	provider, modelName, _, err := e.resolveModelForPurpose(agent.Model, false)
 	if err != nil {
 		return false
 	}
@@ -186,7 +266,7 @@ func (e *Executor) SupportsModality(agent Definition, modality string) bool {
 	if e == nil {
 		return false
 	}
-	provider, modelName, err := e.resolveModel(agent.Model)
+	provider, modelName, _, err := e.resolveModelForPurpose(agent.Model, false)
 	if err != nil {
 		return false
 	}
@@ -203,7 +283,7 @@ func (e *Executor) GenerateWithModel(ctx context.Context, modelRef string, messa
 	if e == nil {
 		return nil, fmt.Errorf("executor config is missing")
 	}
-	provider, modelName, err := e.resolveModel(modelRef)
+	provider, modelName, _, err := e.resolveModelForPurpose(modelRef, false)
 	if err != nil {
 		return nil, err
 	}

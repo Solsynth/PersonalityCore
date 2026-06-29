@@ -50,12 +50,13 @@ type AuthConfig struct {
 }
 
 type PersonalityConfig struct {
-	MaxHistoryMessages   int           `mapstructure:"maxHistoryMessages"`
-	SSEHeartbeat         time.Duration `mapstructure:"sseHeartbeat"`
-	ChatInboundDebounce time.Duration `mapstructure:"chatInboundDebounce"`
-	VisionModel          string        `mapstructure:"visionModel"`
-	Surfing              SurfingConfig `mapstructure:"surfing"`
-	PerkTiers            map[int]PerkTierConfig `mapstructure:"perkTiers"`
+	MaxHistoryMessages    int                    `mapstructure:"maxHistoryMessages"`
+	SSEHeartbeat          time.Duration          `mapstructure:"sseHeartbeat"`
+	ChatInboundDebounce   time.Duration          `mapstructure:"chatInboundDebounce"`
+	VisionModel           string                 `mapstructure:"visionModel"`
+	DefaultEmbeddingModel string                 `mapstructure:"defaultEmbeddingModel"`
+	Surfing               SurfingConfig          `mapstructure:"surfing"`
+	PerkTiers             map[int]PerkTierConfig `mapstructure:"perkTiers"`
 }
 
 type SurfingConfig struct {
@@ -145,12 +146,13 @@ type ProviderConfig struct {
 }
 
 type ModelConfig struct {
-	Name               string   `mapstructure:"name"`
-	Modalities         []string `mapstructure:"modalities"`
-	MaxCompletionTokens int      `mapstructure:"maxCompletionTokens"`
-	Temperature        float32  `mapstructure:"temperature"`
-	TopP               float32  `mapstructure:"topP"`
-	PerkOverrides      map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
+	Name                string                    `mapstructure:"name"`
+	Type                string                    `mapstructure:"type"`
+	Modalities          []string                  `mapstructure:"modalities"`
+	MaxCompletionTokens int                       `mapstructure:"maxCompletionTokens"`
+	Temperature         float32                   `mapstructure:"temperature"`
+	TopP                float32                   `mapstructure:"topP"`
+	PerkOverrides       map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
 }
 
 func (m ModelConfig) SupportsModality(modality string) bool {
@@ -160,6 +162,10 @@ func (m ModelConfig) SupportsModality(modality string) bool {
 		}
 	}
 	return false
+}
+
+func (m ModelConfig) IsEmbedding() bool {
+	return strings.EqualFold(strings.TrimSpace(m.Type), "embedding")
 }
 
 func (p ProviderConfig) ResolveModel(modelName string) *ModelConfig {
@@ -231,6 +237,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
 	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
+	v.SetDefault("personality.defaultEmbeddingModel", "")
 	v.SetDefault("personality.surfing.enabled", false)
 	v.SetDefault("personality.surfing.interval", 1*time.Hour)
 	v.SetDefault("sentry.dsn", "")

@@ -135,8 +135,6 @@ type ProviderConfig struct {
 	Type                string        `mapstructure:"type"`
 	APIKey              string        `mapstructure:"apiKey"`
 	BaseURL             string        `mapstructure:"baseUrl"`
-	ByAzure             bool          `mapstructure:"byAzure"`
-	APIVersion          string        `mapstructure:"apiVersion"`
 	SupportsVision      *bool         `mapstructure:"supportsVision"`
 	Timeout             time.Duration `mapstructure:"timeout"`
 	MaxCompletionTokens int           `mapstructure:"maxCompletionTokens"`

@@ -139,7 +139,7 @@ func (e *Executor) newChatModel(ctx context.Context, agent Definition) (model.Ba
 }
 
 func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.ProviderConfig, modelName string, agent Definition) (*einoopenai.ChatModel, error) {
-	if strings.TrimSpace(provider.APIKey) == "" && !provider.ByAzure {
+	if strings.TrimSpace(provider.APIKey) == "" {
 		return nil, fmt.Errorf("provider %q apiKey is required", provider.ID)
 	}
 
@@ -173,8 +173,6 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
 		APIKey:              provider.APIKey,
 		BaseURL:             provider.BaseURL,
-		ByAzure:             provider.ByAzure,
-		APIVersion:          provider.APIVersion,
 		Model:               modelName,
 		Timeout:             provider.Timeout,
 		MaxCompletionTokens: intPtr(maxTokens),
@@ -184,21 +182,13 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 }
 
 func (e *Executor) newOpenAIClient(provider config.ProviderConfig) (*goopenai.Client, error) {
-	if strings.TrimSpace(provider.APIKey) == "" && !provider.ByAzure {
+	if strings.TrimSpace(provider.APIKey) == "" {
 		return nil, fmt.Errorf("provider %q apiKey is required", provider.ID)
 	}
 
-	var cfg goopenai.ClientConfig
-	if provider.ByAzure {
-		cfg = goopenai.DefaultAzureConfig(provider.APIKey, provider.BaseURL)
-		if strings.TrimSpace(provider.APIVersion) != "" {
-			cfg.APIVersion = provider.APIVersion
-		}
-	} else {
-		cfg = goopenai.DefaultConfig(provider.APIKey)
-		if strings.TrimSpace(provider.BaseURL) != "" {
-			cfg.BaseURL = provider.BaseURL
-		}
+	cfg := goopenai.DefaultConfig(provider.APIKey)
+	if strings.TrimSpace(provider.BaseURL) != "" {
+		cfg.BaseURL = provider.BaseURL
 	}
 	cfg.HTTPClient = &http.Client{Timeout: provider.Timeout}
 	return goopenai.NewClientWithConfig(cfg), nil
@@ -251,9 +241,6 @@ func (e *Executor) SupportsVision(agent Definition) bool {
 	}
 	if provider.SupportsVision != nil {
 		return *provider.SupportsVision
-	}
-	if provider.ByAzure {
-		return true
 	}
 	baseURL := strings.ToLower(strings.TrimSpace(provider.BaseURL))
 	if baseURL == "" {

@@ -65,9 +65,9 @@ enabled = true
 	}
 	if err := os.WriteFile(filepath.Join(providerDir, "extra.toml"), []byte(`
 [[providers]]
-id = "azure"
+id = "extra"
 type = "openai"
-apiKey = "azure-key"
+apiKey = "extra-key"
 baseUrl = "https://example.invalid"
 timeout = "45s"
 `), 0o644); err != nil {

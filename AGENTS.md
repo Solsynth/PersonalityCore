@@ -77,11 +77,6 @@ Current supported provider types:
 - `openai`
 - `openai-compatible`
 
-Azure-style OpenAI is supported through provider fields, not a separate provider type:
-- `byAzure = true`
-- `baseUrl`
-- `apiVersion`
-
 If adding a new provider type:
 - implement it in `internal/agent/executor.go`
 - validate provider config at executor creation

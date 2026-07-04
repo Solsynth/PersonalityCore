@@ -91,7 +91,7 @@ Important sections:
 
 Models are referenced by agents in `<provider>/<model>` form, for example:
 - `openai/gpt-4.1-mini`
-- `azure/gpt-4.1`
+- `openrouter/baai/bge-m3`
 
 You can define agents in two ways:
 
@@ -246,24 +246,20 @@ id = "openai"
 type = "openai"
 apiKey = "..."
 baseUrl = ""
-byAzure = false
-apiVersion = ""
 timeout = "90s"
 maxCompletionTokens = 2048
 temperature = 0.7
 topP = 1.0
 ```
 
-2. Split across multiple files in `providersDir`, for example `./models.d/azure.toml`:
+2. Split across multiple files in `providersDir`, for example `./models.d/openrouter.toml`:
 
 ```toml
 [[providers]]
-id = "azure"
-type = "openai"
+id = "openrouter"
+type = "openai-compatible"
 apiKey = "..."
-baseUrl = "https://YOUR-RESOURCE.openai.azure.com"
-byAzure = true
-apiVersion = "2024-06-01"
+baseUrl = "https://openrouter.ai/api/v1"
 timeout = "90s"
 maxCompletionTokens = 2048
 temperature = 0.7
@@ -281,7 +277,7 @@ agents.d/
   writer.toml
 models.d/
   openai.toml
-  azure.toml
+  openrouter.toml
 prompts/
   support.md
   writer.md
@@ -338,7 +334,7 @@ id = "writer"
 name = "Writer"
 description = "Writing assistant"
 systemPromptFile = "../prompts/writer.md"
-model = "azure/gpt-4.1"
+model = "openai/gpt-4.1-mini"
 abilities = []
 enabled = true
 ```
@@ -351,24 +347,20 @@ id = "openai"
 type = "openai"
 apiKey = "YOUR_OPENAI_KEY"
 baseUrl = ""
-byAzure = false
-apiVersion = ""
 timeout = "90s"
 maxCompletionTokens = 2048
 temperature = 0.7
 topP = 1.0
 ```
 
-Example `models.d/azure.toml`:
+Example `models.d/openrouter.toml`:
 
 ```toml
 [[providers]]
-id = "azure"
-type = "openai"
-apiKey = "YOUR_AZURE_OPENAI_KEY"
-baseUrl = "https://YOUR-RESOURCE.openai.azure.com"
-byAzure = true
-apiVersion = "2024-06-01"
+id = "openrouter"
+type = "openai-compatible"
+apiKey = "YOUR_OPENROUTER_KEY"
+baseUrl = "https://openrouter.ai/api/v1"
 timeout = "90s"
 maxCompletionTokens = 2048
 temperature = 0.7

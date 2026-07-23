@@ -10,6 +10,7 @@ require (
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/cloudwego/eino-ext/components/tool/sequentialthinking v0.0.0-20260616080858-ab17b7308bf8
 	github.com/gin-gonic/gin v1.10.1
+	github.com/meguminnnnnnnnn/go-openai v0.1.2
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/viper v1.19.0
@@ -19,7 +20,7 @@ require (
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.4.3
 	gorm.io/gorm v1.30.5
-	src.solsynth.dev/sosys/go v0.2.1-0.20260624110941-8fabd447ec3a
+	src.solsynth.dev/sosys/go v0.2.1-0.20260723135807-a9a0c7e3e06f
 )
 
 require (
@@ -74,7 +75,6 @@ require (
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mattn/go-sqlite3 v1.14.15 // indirect
-	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect

@@ -14,6 +14,10 @@ import (
 )
 
 func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
+	billing := r.Group("/billing")
+	RegisterBillingRoutes(billing, conversations)
+	admin := r.Group("/admin/billing")
+	RegisterBillingAdminRoutes(admin, conversations)
 	r.GET("/agents", func(c *gin.Context) { listAgents(c, conversations) })
 	r.GET("/agents/:id", func(c *gin.Context) { getAgent(c, conversations) })
 	r.POST("/agents/:id/autonomous-runs", func(c *gin.Context) { createAutonomousRun(c, conversations) })

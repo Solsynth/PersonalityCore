@@ -25,6 +25,19 @@ offline = false                # true = every request becomes offlineAccountId
 offlineAccountId = "local-dev"
 autonomousSecret = ""          # shared secret for X-Autonomous-Secret header
 
+# ─── Billing (optional) ─────────────────────────────────────────────
+# Usage is settled once per UTC day. Currency and all amounts use wallet golds.
+[billing]
+enabled = false
+target = ""                    # Wallet gRPC target (host:port)
+useTLS = false
+tlsSkipVerify = false
+payeeAccountId = ""            # Personality merchant account
+currency = "golds"
+defaultHourlyRuns = 30          # 0 = unlimited
+defaultDailyRuns = 200          # 0 = unlimited
+instantBillingWall = "20"      # unpaid golds; 0 = only daily settlement
+
 # ─── Solar Network ──────────────────────────────────────────────────
 [solarNetwork]
 baseUrl = "https://api.dyson.example"
@@ -68,6 +81,11 @@ maxCompletionTokens = 2048    # perk 1 users get capped output on gpt-4o
 name = "gpt-4.1-mini"
 modalities = ["image"]
 maxCompletionTokens = 4096
+
+[providers.models.pricing]
+currency = "golds"            # Wallet currency; e.g. "points"
+input = "0.01"               # golds per 1K input tokens
+output = "0.04"              # golds per 1K output tokens
 
 [[providers.models]]
 name = "text-embedding-3-small"
@@ -148,6 +166,7 @@ model = "openai/gpt-4.1-mini"
 # temperature = 0.7          # override model default
 # topP = 1.0
 maxCompletionTokens = 4096
+billingMultiplier = 1.0         # optional multiplier for this agent's priced model calls
 # disableThinking = false
 abilities = ["memory", "mood", "relationship"]
 enabled = true

@@ -53,14 +53,16 @@ type snInboundRequestMetadata struct {
 }
 
 type ConversationService struct {
-	db           *database.DB
-	cfg          *config.Config
-	registry     *agent.Registry
-	executor     *agent.Executor
-	humanize     *humanize.Manager
-	sn           SnChatBridge
-	snInbound    *snInboundBatcher
-	profileCache sync.Map // ponyttl: simple cache, evict manually if needed
+	db                *database.DB
+	cfg               *config.Config
+	registry          *agent.Registry
+	executor          *agent.Executor
+	humanize          *humanize.Manager
+	sn                SnChatBridge
+	snInbound         *snInboundBatcher
+	billing           *BillingService
+	billingPermission PermissionChecker
+	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed
 }
 
 type CreateConversationInput struct {
@@ -117,6 +119,7 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 		registry: registry,
 		executor: executor,
 		humanize: humanize.NewManager(db),
+		billing:  NewBillingService(db, cfg),
 	}
 	debounceDelay := 2 * time.Second
 	if cfg != nil && cfg.Personality.ChatInboundDebounce > 0 {
@@ -125,6 +128,8 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 	svc.snInbound = newSnInboundBatcher(debounceDelay, svc.handleSnInboundBatch)
 	return svc
 }
+
+func (s *ConversationService) Billing() *BillingService { return s.billing }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
 	return s.registry.List()
@@ -264,9 +269,24 @@ func (s *ConversationService) createRunWithRequest(
 	if thread == nil {
 		return nil, nil, nil, fmt.Errorf("conversation thread is required")
 	}
+	def, ok := s.registry.Get(thread.AgentID)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("agent %q is unavailable", thread.AgentID)
+	}
+	billingUsageID := ""
+	if s.billing != nil {
+		var err error
+		billingUsageID, err = s.billing.AuthorizeRun(ctx, accountID, def)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
 
 	requestMessage, err := s.createMessageWithMetadata(ctx, thread, nil, requestRole, requestContent, nil, requestMetadata)
 	if err != nil {
+		if s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
 		return nil, nil, nil, err
 	}
 
@@ -280,12 +300,16 @@ func (s *ConversationService) createRunWithRequest(
 		Status:           "running",
 		Model:            "",
 		RequestMessageID: requestMessage.ID,
+		BillingUsageID:   billingUsageID,
 		Stream:           stream,
 		Settings:         settings,
 		Usage:            datatypes.JSON([]byte("{}")),
 		StartedAt:        now,
 	}
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
+		if s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
 		return nil, nil, nil, err
 	}
 	logging.Log.Info().
@@ -298,6 +322,15 @@ func (s *ConversationService) createRunWithRequest(
 		Int("prompt_chars", len(requestContent)).
 		Msg("run created")
 	return thread, run, requestMessage, nil
+}
+
+func (s *ConversationService) recordBilling(ctx context.Context, run *database.ConversationRun, def agent.Definition, usage *schema.TokenUsage) {
+	if s.billing == nil || run == nil {
+		return
+	}
+	if err := s.billing.RecordUsage(ctx, run.BillingUsageID, run.ID, def, usage); err != nil {
+		logging.Log.Error().Err(err).Str("account_id", run.AccountID).Str("run_id", run.ID).Msg("billing usage recording failed")
+	}
 }
 
 func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32) ([]*schema.Message, agent.Definition, error) {
@@ -579,6 +612,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Int("message_count", len(modelMessages)).
 		Msg("invoking model")
 	responseContent := ""
+	var billingUsage *schema.TokenUsage
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
@@ -600,6 +634,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 			if err == nil {
 				responseContent = response.Content
+				billingUsage = response.ResponseMeta.Usage
 			}
 		}
 		if err != nil {
@@ -612,6 +647,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	if err != nil {
 		return nil, err
 	}
+	s.recordBilling(ctx, run, agentDef, billingUsage)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, responseContent); err != nil {
 			return nil, err
@@ -654,6 +690,11 @@ type GenerateEmbeddingsResult struct {
 }
 
 func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOnceInput) (*CompleteOnceResult, error) {
+	if s.billing != nil {
+		if err := s.billing.CheckAccess(ctx, input.AccountID); err != nil {
+			return nil, err
+		}
+	}
 	def, ok := s.registry.Get(input.AgentID)
 	if !ok {
 		return nil, fmt.Errorf("agent %q is unavailable", input.AgentID)
@@ -756,6 +797,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Msg("opening model stream")
 	var builder strings.Builder
 	chunkCount := 0
+	var billingUsage *schema.TokenUsage
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
@@ -796,6 +838,9 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			}
 			if chunk == nil {
 				continue
+			}
+			if chunk.ResponseMeta.Usage != nil {
+				billingUsage = chunk.ResponseMeta.Usage
 			}
 			if chunk.Content != "" {
 				chunkCount++
@@ -857,6 +902,9 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			if chunk == nil {
 				continue
 			}
+			if chunk.ResponseMeta.Usage != nil {
+				billingUsage = chunk.ResponseMeta.Usage
+			}
 			emitted := false
 			if chunk.Content != "" {
 				chunkCount++
@@ -901,6 +949,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, err
 	}
+	s.recordBilling(ctx, run, agentDef, billingUsage)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, builder.String()); err != nil {
 			return nil, err

@@ -29,16 +29,33 @@ type OpenAICompletionResult struct {
 }
 
 func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICompletionInput) (*OpenAICompletionResult, error) {
+	if s.billing != nil {
+		if err := s.billing.CheckAccess(ctx, input.AccountID); err != nil {
+			return nil, err
+		}
+	}
 	agentID, modelOverride, err := resolveOpenAIAgentModel(input.AgentID, input.Model)
 	if err != nil {
 		return nil, err
 	}
-	def, ok := s.registry.Get(agentID)
-	if !ok {
-		return nil, fmt.Errorf("agent %q is unavailable", agentID)
-	}
-	if modelOverride != "" {
-		def.Model = modelOverride
+	var def agent.Definition
+	if strings.EqualFold(agentID, "raw") {
+		if modelOverride == "" {
+			return nil, fmt.Errorf("raw requires model raw/provider/model")
+		}
+		// raw is intentionally not a registry agent: it is a transparent model
+		// proxy with neither a system prompt nor server-owned tools.
+		def = agent.Definition{ID: "raw", Name: "raw", Model: modelOverride, Enabled: true}
+		input.IncludeServerTools = false
+	} else {
+		var ok bool
+		def, ok = s.registry.Get(agentID)
+		if !ok {
+			return nil, fmt.Errorf("agent %q is unavailable", agentID)
+		}
+		if modelOverride != "" {
+			def.Model = modelOverride
+		}
 	}
 	if len(input.Messages) == 0 {
 		return nil, fmt.Errorf("messages is required")

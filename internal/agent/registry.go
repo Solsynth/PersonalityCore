@@ -18,6 +18,7 @@ type Definition struct {
 	TopP                    *float32                            `json:"top_p,omitempty"`
 	MaxCompletionTokens     *int                                `json:"max_completion_tokens,omitempty"`
 	ChatMaxCompletionTokens *int                                `json:"-"`
+	BillingMultiplier       *float64                            `json:"billing_multiplier,omitempty"`
 	DisableThinking         *bool                               `json:"disable_thinking,omitempty"`
 	Abilities               []string                            `json:"abilities"`
 	Enabled                 bool                                `json:"enabled"`
@@ -59,6 +60,7 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 			TopP:                    cfg.TopP,
 			MaxCompletionTokens:     cfg.MaxCompletionTokens,
 			ChatMaxCompletionTokens: cfg.ChatMaxCompletionTokens,
+			BillingMultiplier:       cfg.BillingMultiplier,
 			DisableThinking:         cfg.DisableThinking,
 			Abilities:               append([]string(nil), cfg.Abilities...),
 			Enabled:                 cfg.Enabled,

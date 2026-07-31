@@ -45,6 +45,7 @@ type ConversationRun struct {
 	Status            string         `gorm:"size:32;index" json:"status"`
 	Model             string         `gorm:"size:128" json:"model"`
 	RequestMessageID  string         `gorm:"size:26" json:"request_message_id"`
+	BillingUsageID    string         `gorm:"size:26;index" json:"billing_usage_id"`
 	ResponseMessageID *string        `gorm:"size:26" json:"response_message_id"`
 	Stream            bool           `json:"stream"`
 	Error             *string        `gorm:"type:text" json:"error"`
@@ -55,6 +56,47 @@ type ConversationRun struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index:idx_runs_thread_deleted_created,priority:2" json:"deleted_at"`
 	CreatedAt         time.Time      `gorm:"index:idx_runs_thread_deleted_created,priority:3" json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+// BillingAccountPolicy contains the per-account overrides. Nil values inherit
+// the service defaults; zero is a deliberate unlimited override for run limits.
+type BillingAccountPolicy struct {
+	AccountID          string    `gorm:"primaryKey;size:128" json:"account_id"`
+	HourlyRunLimit     *int      `json:"hourly_run_limit"`
+	DailyRunLimit      *int      `json:"daily_run_limit"`
+	InstantBillingWall *string   `gorm:"size:64" json:"instant_billing_wall"`
+	Blacklisted        bool      `gorm:"default:false;index" json:"blacklisted"`
+	BlacklistReason    string    `gorm:"type:text" json:"blacklist_reason"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// BillingUsage is one billable generation. It is retained as the audit ledger
+// and linked to a payment once its UTC-day (or instant) charge succeeds.
+type BillingUsage struct {
+	ID           string    `gorm:"primaryKey;size:26" json:"id"`
+	RunID        string    `gorm:"size:26;uniqueIndex" json:"run_id"`
+	AccountID    string    `gorm:"size:128;index:idx_billing_usage_account_created,priority:1;index:idx_billing_usage_account_payment,priority:1" json:"account_id"`
+	Model        string    `gorm:"size:128" json:"model"`
+	Currency     string    `gorm:"size:32;index:idx_billing_usage_account_payment,priority:2" json:"currency"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+	Amount       string    `gorm:"size:64" json:"amount"`
+	PaymentID    *string   `gorm:"size:26;index:idx_billing_usage_account_payment,priority:3" json:"payment_id"`
+	CreatedAt    time.Time `gorm:"index:idx_billing_usage_account_created,priority:2" json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type BillingPayment struct {
+	ID          string    `gorm:"primaryKey;size:26" json:"id"`
+	AccountID   string    `gorm:"size:128;index" json:"account_id"`
+	Amount      string    `gorm:"size:64" json:"amount"`
+	Currency    string    `gorm:"size:32" json:"currency"`
+	WalletTxID  string    `gorm:"size:128;uniqueIndex" json:"wallet_transaction_id"`
+	PeriodStart time.Time `gorm:"index" json:"period_start"`
+	PeriodEnd   time.Time `gorm:"index" json:"period_end"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type AgentHumanState struct {

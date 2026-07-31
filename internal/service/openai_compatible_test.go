@@ -9,6 +9,7 @@ func TestResolveOpenAIAgentModel(t *testing.T) {
 	}{
 		{name: "agent default model", model: "assistant", wantAgent: "assistant"},
 		{name: "agent selected provider model", model: "assistant/openai/gpt-4.1-mini", wantAgent: "assistant", wantModel: "openai/gpt-4.1-mini"},
+		{name: "raw model proxy", model: "raw/openai/gpt-4.1-mini", wantAgent: "raw", wantModel: "openai/gpt-4.1-mini"},
 		{name: "legacy agent id", agentID: "assistant", model: "openai/gpt-4.1-mini", wantAgent: "assistant", wantModel: "openai/gpt-4.1-mini"},
 		{name: "reject ambiguous model", model: "openai/gpt-4.1-mini", wantErr: true},
 	}

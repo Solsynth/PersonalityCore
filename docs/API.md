@@ -30,6 +30,11 @@ agent, for example `assistant/openai/gpt-4.1-mini`. The legacy Solar extension
 The agent's configured system prompt is always prepended. `messages`, `tools`,
 and tool-result messages follow the OpenAI Chat Completions format.
 
+`raw` is a reserved virtual agent for transparent upstream access. Use
+`raw/provider/model`, for example `raw/openai/gpt-4.1-mini`. It does not load
+an agent configuration, system prompt, or any server-side tools; client-provided
+OpenAI tools are still passed through to the upstream model.
+
 ```json
 {
   "model": "assistant/openai/gpt-4.1-mini",
@@ -196,6 +201,77 @@ GET /api/conversations/:id/messages?take=20&offset=0
 **Header** `X-Total` — total message count.
 
 ---
+
+## Billing
+
+Billing is optional and is enabled by the service operator. Model prices use a
+Wallet currency per 1K input/output tokens. Set the optional `currency` in a
+model's `pricing` section (for example, `"golds"` or `"points"`); omitted
+currency inherits `[billing].currency`. A model with no `pricing` configuration
+is free, but hourly and daily run limits still apply. A blacklisted account
+cannot use any Personality model, including free models.
+
+Usage is settled daily at 00:00 UTC. A spending quota is the maximum unpaid
+gold amount before an immediate Wallet transaction is attempted. Set it to
+`"0"` to use daily settlement only. If an immediate or daily transaction fails,
+the account is blacklisted.
+
+### Get my billing policy
+
+```
+GET /api/billing/me
+```
+
+Returns account-visible limits and the self-managed spending quota. `null`
+limits inherit the configured service default.
+
+**Response** `200 OK`
+
+```json
+{
+  "hourly_run_limit": null,
+  "daily_run_limit": null,
+  "spending_quota": "20",
+  "blacklisted": false
+}
+```
+
+### Set my spending quota
+
+```
+PUT /api/billing/me/spending-quota
+```
+
+Only the authenticated account's spending quota is changed. It cannot change
+the administrator-managed hourly/daily run thresholds or blacklist status.
+
+**Request body**
+
+```json
+{
+  "spending_quota": "20"
+}
+```
+
+`spending_quota` is a non-negative decimal gold amount. Use `"0"` to disable
+immediate settlement for this account and settle only during the daily UTC job.
+
+### Admin account policy
+
+All admin billing endpoints require a Solar superuser or the Padlock permission
+`personality.billing.manage`.
+
+```
+GET /api/admin/billing/accounts/:accountId
+PUT /api/admin/billing/accounts/:accountId
+POST /api/admin/billing/accounts/:accountId/unblacklist
+```
+
+`PUT` accepts `hourly_run_limit`, `daily_run_limit`,
+`instant_billing_wall`, `blacklisted`, and `blacklist_reason`. The first two
+are non-negative integers (`0` is unlimited); the wall is a non-negative gold
+decimal. `POST .../unblacklist` clears a blacklist after the account is
+resolved by an administrator.
 
 ## Runs
 

@@ -544,6 +544,32 @@ List endpoints follow Solar pagination style:
 - request: `take`, `offset`
 - response header: `X-Total`
 
+### Billing
+
+Optional Wallet-backed billing is configured with `[billing]`. Every configured
+model may define a `[providers.models.pricing]` section with `currency`,
+`input`, and `output` per 1K tokens; for example, a model may charge in
+`golds` and another in `points`. A model without that section is free. An agent
+may set `billingMultiplier` to adjust that model price for calls made through
+the agent. Usage limits still count free-model calls, while a blacklisted
+account cannot use any Personality model.
+
+Billing usage is settled at UTC midnight (with startup catch-up). Configure
+`instantBillingWall` to charge an account as soon as its unpaid gold balance
+reaches that amount. A failed Wallet transaction blacklists the account.
+
+Billing administrators must be superusers or hold the Padlock permission
+`personality.billing.manage` and can manage overrides at:
+
+- `GET /api/admin/billing/accounts/:accountId`
+- `PUT /api/admin/billing/accounts/:accountId`
+- `POST /api/admin/billing/accounts/:accountId/unblacklist`
+
+Each user can view their policy at `GET /api/billing/me` and choose their own
+immediate-settlement spending quota with `PUT /api/billing/me/spending-quota`.
+This does not grant access to change administrator-set limits or blacklist
+status.
+
 ### Create a conversation
 
 ```bash

@@ -16,12 +16,27 @@ type Config struct {
 	GRPC         GRPCConfig         `mapstructure:"grpc"`
 	Database     DatabaseConfig     `mapstructure:"database"`
 	Auth         AuthConfig         `mapstructure:"auth"`
+	Billing      BillingConfig      `mapstructure:"billing"`
 	Personality  PersonalityConfig  `mapstructure:"personality"`
 	Sentry       SentryConfig       `mapstructure:"sentry"`
 	SolarNetwork SolarNetworkConfig `mapstructure:"solarNetwork"`
 	Agents       AgentsConfig       `mapstructure:"agents"`
 	ProvidersDir string             `mapstructure:"providersDir"`
 	Providers    []ProviderConfig   `mapstructure:"providers"`
+}
+
+// BillingConfig controls metered Personality usage. Amounts are decimal strings
+// in the configured wallet currency (normally golds) to avoid float rounding.
+type BillingConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`
+	Target             string `mapstructure:"target"`
+	UseTLS             bool   `mapstructure:"useTLS"`
+	TLSSkipVerify      bool   `mapstructure:"tlsSkipVerify"`
+	PayeeAccountID     string `mapstructure:"payeeAccountId"`
+	Currency           string `mapstructure:"currency"`
+	DefaultHourlyRuns  int    `mapstructure:"defaultHourlyRuns"`
+	DefaultDailyRuns   int    `mapstructure:"defaultDailyRuns"`
+	InstantBillingWall string `mapstructure:"instantBillingWall"`
 }
 
 type HTTPConfig struct {
@@ -109,6 +124,7 @@ type AgentConfig struct {
 	TopP                    *float32                     `mapstructure:"topP"`
 	MaxCompletionTokens     *int                         `mapstructure:"maxCompletionTokens"`
 	ChatMaxCompletionTokens *int                         `mapstructure:"chatMaxCompletionTokens"`
+	BillingMultiplier       *float64                     `mapstructure:"billingMultiplier"`
 	DisableThinking         *bool                        `mapstructure:"disableThinking"`
 	Abilities               []string                     `mapstructure:"abilities"`
 	ToolScopes              []string                     `mapstructure:"toolScopes"`
@@ -150,7 +166,17 @@ type ModelConfig struct {
 	MaxCompletionTokens int                       `mapstructure:"maxCompletionTokens"`
 	Temperature         float32                   `mapstructure:"temperature"`
 	TopP                float32                   `mapstructure:"topP"`
+	Pricing             *ModelPricingConfig       `mapstructure:"pricing"`
 	PerkOverrides       map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
+}
+
+// ModelPricingConfig prices one thousand input/output tokens in one Wallet
+// currency. An omitted currency inherits billing.currency.
+// A model without a pricing section is intentionally free.
+type ModelPricingConfig struct {
+	Currency string  `mapstructure:"currency"`
+	Input    *string `mapstructure:"input"`
+	Output   *string `mapstructure:"output"`
 }
 
 func (m ModelConfig) SupportsModality(modality string) bool {
@@ -232,6 +258,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.offline", false)
 	v.SetDefault("auth.offlineAccountId", "local-dev")
 	v.SetDefault("auth.autonomousSecret", "")
+	v.SetDefault("billing.enabled", false)
+	v.SetDefault("billing.target", "")
+	v.SetDefault("billing.useTLS", false)
+	v.SetDefault("billing.tlsSkipVerify", false)
+	v.SetDefault("billing.payeeAccountId", "")
+	v.SetDefault("billing.currency", "golds")
+	v.SetDefault("billing.defaultHourlyRuns", 0)
+	v.SetDefault("billing.defaultDailyRuns", 0)
+	v.SetDefault("billing.instantBillingWall", "0")
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
 	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
@@ -253,6 +288,7 @@ func applyEnvOverrides(v *viper.Viper) {
 	setEnvIfPresent(v, "database.dsn", "DATABASE_DSN")
 	setEnvIfPresent(v, "auth.target", "AUTH_TARGET")
 	setEnvIfPresent(v, "auth.autonomousSecret", "AUTONOMOUS_SECRET")
+	setEnvIfPresent(v, "billing.target", "BILLING_TARGET")
 }
 
 func setEnvIfPresent(v *viper.Viper, key, env string) {

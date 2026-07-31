@@ -26,19 +26,21 @@ import (
 )
 
 type App struct {
-	cfg           *config.Config
-	db            *database.DB
-	conversations *service.ConversationService
-	httpSrv       *http.Server
-	grpcSrv       *grpc.Server
-	grpcLn        net.Listener
-	sn            *solar_network.Manager
-	autonomous    *service.AutonomousWakeScheduler
-	scheduler     *service.TaskScheduler
-	surfScheduler *service.SurfScheduler
-	backgroundCtx context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
+	cfg            *config.Config
+	db             *database.DB
+	conversations  *service.ConversationService
+	httpSrv        *http.Server
+	grpcSrv        *grpc.Server
+	grpcLn         net.Listener
+	sn             *solar_network.Manager
+	autonomous     *service.AutonomousWakeScheduler
+	scheduler      *service.TaskScheduler
+	surfScheduler  *service.SurfScheduler
+	billingConn    *grpc.ClientConn
+	permissionConn *grpc.ClientConn
+	backgroundCtx  context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
 }
 
 func New(cfg *config.Config) (*App, error) {
@@ -63,6 +65,26 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 	conversations := service.NewConversationService(db, cfg, registry, executor)
+	var permissionConn, billingConn *grpc.ClientConn
+	if cfg.Auth.Target != "" {
+		permissionClient, conn, err := service.NewPermissionClient(cfg.Auth)
+		if err != nil {
+			return nil, err
+		}
+		permissionConn = conn
+		conversations.SetPermissionClient(permissionClient)
+	}
+	if cfg.Billing.Enabled {
+		if cfg.Billing.Target == "" || cfg.Billing.PayeeAccountID == "" {
+			return nil, fmt.Errorf("billing target and payeeAccountId are required when billing is enabled")
+		}
+		walletClient, conn, err := service.NewWalletClient(cfg.Billing)
+		if err != nil {
+			return nil, err
+		}
+		billingConn = conn
+		conversations.Billing().SetPaymentClient(service.NewWalletPaymentClient(walletClient))
+	}
 	snManager := solar_network.NewManager(
 		cfg,
 		registry,
@@ -128,7 +150,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyEmbeddingServiceServer(grpcSrv, grpcsvc.NewEmbedding(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler, surfScheduler: surfScheduler}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler, surfScheduler: surfScheduler, billingConn: billingConn, permissionConn: permissionConn}, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
@@ -164,6 +186,10 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.scheduler.Start(a.backgroundCtx)
 	a.surfScheduler.Start(a.backgroundCtx)
+	if a.conversations.Billing() != nil && a.cfg.Billing.Enabled {
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.runBillingSettlement(a.backgroundCtx) }()
+	}
 
 	logging.Log.Info().
 		Str("http", a.cfg.HTTP.Port).
@@ -190,6 +216,12 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if a.sn != nil {
 		_ = a.sn.Stop(ctx)
+	}
+	if a.billingConn != nil {
+		_ = a.billingConn.Close()
+	}
+	if a.permissionConn != nil {
+		_ = a.permissionConn.Close()
 	}
 	a.scheduler.Stop()
 	a.surfScheduler.Stop()

@@ -256,6 +256,17 @@ the administrator-managed hourly/daily run thresholds or blacklist status.
 `spending_quota` is a non-negative decimal gold amount. Use `"0"` to disable
 immediate settlement for this account and settle only during the daily UTC job.
 
+### Settle billing now
+
+```
+POST /api/billing/me/settle
+```
+
+Immediately settles every unpaid usage balance for the authenticated account.
+This endpoint remains available to blacklisted accounts: a successful settlement
+automatically clears their billing blacklist. The daily settlement job skips
+blacklisted accounts, so it never repeatedly retries a known failing payment.
+
 ### Admin account policy
 
 All admin billing endpoints require a Solar superuser or the Padlock permission

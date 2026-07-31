@@ -34,6 +34,11 @@ type BillingService struct {
 	payment PaymentClient
 }
 
+type BillingSettlementResult struct {
+	AccountID string `json:"account_id"`
+	Settled   bool   `json:"settled"`
+}
+
 func NewBillingService(db *database.DB, cfg *config.Config) *BillingService {
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -202,6 +207,49 @@ func (s *BillingService) Blacklist(ctx context.Context, accountID, reason string
 	p.Blacklisted, p.BlacklistReason = true, strings.TrimSpace(reason)
 	_, err = s.UpsertAccountPolicy(ctx, p)
 	return err
+}
+
+func (s *BillingService) clearBlacklist(ctx context.Context, accountID string) error {
+	p, err := s.AccountPolicy(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if !p.Blacklisted && p.BlacklistReason == "" {
+		return nil
+	}
+	p.Blacklisted, p.BlacklistReason = false, ""
+	_, err = s.UpsertAccountPolicy(ctx, p)
+	return err
+}
+
+// SettleAccount immediately charges every outstanding balance for an account.
+// It intentionally remains callable by a blacklisted account so a failed daily
+// charge can be retried. A successful full settlement restores account access.
+func (s *BillingService) SettleAccount(ctx context.Context, accountID string) (*BillingSettlementResult, error) {
+	if !s.enabled() {
+		return nil, fmt.Errorf("billing is not enabled")
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, fmt.Errorf("account_id is required")
+	}
+	type settlementKey struct{ Currency string }
+	var currencies []settlementKey
+	if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).
+		Select("currency").Distinct().
+		Where("account_id = ? AND payment_id IS NULL", accountID).
+		Scan(&currencies).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range currencies {
+		if err := s.chargeAccount(ctx, accountID, item.Currency, "manual Personality billing settlement", time.Time{}, time.Time{}); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.clearBlacklist(ctx, accountID); err != nil {
+		return nil, err
+	}
+	return &BillingSettlementResult{AccountID: accountID, Settled: true}, nil
 }
 
 type pricedUsage struct{ amount, currency string }
@@ -395,6 +443,15 @@ func (s *BillingService) SettleCompletedDays(ctx context.Context) error {
 		return err
 	}
 	for _, account := range accounts {
+		policy, err := s.AccountPolicy(ctx, account.AccountID)
+		if err != nil {
+			return err
+		}
+		if policy.Blacklisted {
+			// A blocked account must explicitly retry via SettleAccount. This
+			// avoids a cron retry loop against a known-failing payer.
+			continue
+		}
 		if err := s.chargeAccount(ctx, account.AccountID, account.Currency, "daily Personality usage", time.Time{}, cutoff); err != nil {
 			return err
 		}

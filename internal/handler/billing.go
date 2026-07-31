@@ -15,6 +15,20 @@ import (
 func RegisterBillingRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
 	r.GET("/me", func(c *gin.Context) { getMyBilling(c, conversations) })
 	r.PUT("/me/spending-quota", func(c *gin.Context) { setMySpendingQuota(c, conversations) })
+	r.POST("/me/settle", func(c *gin.Context) { settleMyBilling(c, conversations) })
+}
+
+func settleMyBilling(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	result, err := conversations.Billing().SettleAccount(c.Request.Context(), accountID)
+	if err != nil {
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func getMyBilling(c *gin.Context, conversations *service.ConversationService) {

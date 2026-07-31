@@ -18,8 +18,12 @@ import (
 type walletPaymentClient struct{ client gen.DyPaymentServiceClient }
 
 func (c walletPaymentClient) CreateTransactionWithAccount(ctx context.Context, payer, payee, currency, amount, remarks string) (string, error) {
+	var payeeAccountID *wrapperspb.StringValue
+	if strings.TrimSpace(payee) != "" {
+		payeeAccountID = wrapperspb.String(strings.TrimSpace(payee))
+	}
 	transaction, err := c.client.CreateTransactionWithAccount(ctx, &gen.DyCreateTransactionWithAccountRequest{
-		PayerAccountId: wrapperspb.String(payer), PayeeAccountId: wrapperspb.String(payee), Currency: currency, Amount: amount,
+		PayerAccountId: wrapperspb.String(payer), PayeeAccountId: payeeAccountID, Currency: currency, Amount: amount,
 		Remarks: wrapperspb.String(remarks), Type: gen.DyTransactionType_DY_TRANSACTION_TYPE_SYSTEM,
 	})
 	if err != nil {

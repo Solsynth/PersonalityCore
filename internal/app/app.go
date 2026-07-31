@@ -75,8 +75,8 @@ func New(cfg *config.Config) (*App, error) {
 		conversations.SetPermissionClient(permissionClient)
 	}
 	if cfg.Billing.Enabled {
-		if cfg.Billing.Target == "" || cfg.Billing.PayeeAccountID == "" {
-			return nil, fmt.Errorf("billing target and payeeAccountId are required when billing is enabled")
+		if cfg.Billing.Target == "" {
+			return nil, fmt.Errorf("billing target is required when billing is enabled")
 		}
 		walletClient, conn, err := service.NewWalletClient(cfg.Billing)
 		if err != nil {

@@ -216,6 +216,10 @@ gold amount before an immediate Wallet transaction is attempted. Set it to
 `"0"` to use daily settlement only. If an immediate or daily transaction fails,
 the account is blacklisted.
 
+`[billing].payeeAccountId` is optional. When unset, Personality sends a null
+`payee_account_id` to Wallet, allowing Wallet to select its default/system
+payee.
+
 ### Get my billing policy
 
 ```

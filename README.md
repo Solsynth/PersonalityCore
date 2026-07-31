@@ -557,6 +557,8 @@ account cannot use any Personality model.
 Billing usage is settled at UTC midnight (with startup catch-up). Configure
 `instantBillingWall` to charge an account as soon as its unpaid gold balance
 reaches that amount. A failed Wallet transaction blacklists the account.
+`billing.payeeAccountId` is optional; when omitted, the Wallet service receives
+a null `payee_account_id` and chooses its own default/system payee.
 
 Billing administrators must be superusers or hold the Padlock permission
 `personality.billing.manage` and can manage overrides at:

@@ -25,6 +25,10 @@ func NewRouter(cfg *config.Config, conversations *service.ConversationService) *
 
 	api := r.Group("/api")
 	handler.RegisterRoutes(api, conversations)
+	// OpenAI SDKs conventionally use this root path. Keep the /api alias below
+	// as well for callers already routed through Solar's API prefix.
+	handler.RegisterOpenAICompatibleRoutes(r, conversations)
+	handler.RegisterOpenAICompatibleRoutes(api, conversations)
 	internal := api.Group("/internal")
 	internal.Use(autonomousSecretMiddleware(cfg))
 	handler.RegisterInternalRoutes(internal, conversations)

@@ -12,6 +12,52 @@ All endpoints require authentication unless noted otherwise. Auth is handled via
 
 ---
 
+## OpenAI-compatible chat completions
+
+```
+POST /v1/chat/completions
+```
+
+`/api/v1/chat/completions` is also available when the service is behind an
+API-prefix-only route. This endpoint is stateless: it does **not** create
+conversation, message, or run records. Supply the complete history again on
+each request, including assistant tool calls and tool results.
+
+`model` selects the agent: use `agent` for its default configured model, or
+`agent/provider/model` to select another provider model available to that
+agent, for example `assistant/openai/gpt-4.1-mini`. The legacy Solar extension
+`agent_id` remains supported; when used, `model` is `provider/model`.
+The agent's configured system prompt is always prepended. `messages`, `tools`,
+and tool-result messages follow the OpenAI Chat Completions format.
+
+```json
+{
+  "model": "assistant/openai/gpt-4.1-mini",
+  "messages": [{"role": "user", "content": "What's the weather?"}],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "description": "Get the local weather",
+      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    }
+  }]
+}
+```
+
+Tools passed in `tools` are client-owned: a returned `tool_calls` response must
+be executed by the client and the resulting `role: "tool"` message submitted
+in the next request. Set `server_tools: true` to also expose the selected
+agent's built-in tools. Built-in tools execute on the server and their results
+are fed back to the model before a response is returned. Client tool names may
+not duplicate server tool names. Server tool side effects (such as creating a
+task) are intentional; only chat history persistence is disabled.
+
+`stream: true` uses OpenAI SSE framing and ends with `data: [DONE]`. The
+current compatibility layer emits one terminal completion chunk per request.
+
+---
+
 ## Agents
 
 ### List agents

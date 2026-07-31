@@ -12,7 +12,7 @@ type Definition struct {
 	ID                      string                              `json:"id"`
 	Name                    string                              `json:"name"`
 	Description             string                              `json:"description"`
-	SystemPrompt            string                              `json:"system_prompt"`
+	SystemPrompt            string                              `json:"system_prompt,omitempty"`
 	Model                   string                              `json:"model"`
 	Temperature             *float32                            `json:"temperature,omitempty"`
 	TopP                    *float32                            `json:"top_p,omitempty"`

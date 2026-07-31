@@ -145,7 +145,13 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 func (s *ConversationService) Billing() *BillingService { return s.billing }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
-	return s.registry.List()
+	items := s.registry.List()
+	result := make([]agent.Definition, len(items))
+	for i, def := range items {
+		def.SystemPrompt = ""
+		result[i] = def
+	}
+	return result
 }
 
 func (s *ConversationService) GetAgent(id string) (agent.Definition, bool) {

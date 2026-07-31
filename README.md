@@ -553,6 +553,8 @@ model may define a `[providers.models.pricing]` section with `currency`,
 may set `billingMultiplier` to adjust that model price for calls made through
 the agent. Usage limits still count free-model calls, while a blacklisted
 account cannot use any Personality model.
+Priced models additionally require a Wallet payment wallet; this lookup is
+cached per account for 10 minutes. Free models do not require one.
 Wallet charges are truncated to two decimal places; an unbillable fractional
 remainder stays outstanding and rolls into the next settlement.
 Set `billing.serviceFeePercentage` to add a global percentage to every priced

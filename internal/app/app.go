@@ -84,6 +84,7 @@ func New(cfg *config.Config) (*App, error) {
 		}
 		billingConn = conn
 		conversations.Billing().SetPaymentClient(service.NewWalletPaymentClient(walletClient))
+		conversations.Billing().SetWalletChecker(service.NewWalletCheckerClient(gen.NewDyWalletServiceClient(conn)))
 	}
 	snManager := solar_network.NewManager(
 		cfg,

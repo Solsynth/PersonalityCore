@@ -16,6 +16,15 @@ import (
 )
 
 type walletPaymentClient struct{ client gen.DyPaymentServiceClient }
+type walletCheckerClient struct{ client gen.DyWalletServiceClient }
+
+func (c walletCheckerClient) CheckWalletExists(ctx context.Context, accountID string) (bool, error) {
+	response, err := c.client.CheckWalletExists(ctx, &gen.DyCheckWalletExistsRequest{AccountId: accountID})
+	if err != nil {
+		return false, err
+	}
+	return response.GetExists(), nil
+}
 
 func (c walletPaymentClient) CreateTransactionWithAccount(ctx context.Context, payer, payee, currency, amount, remarks string) (string, error) {
 	var payeeAccountID *wrapperspb.StringValue
@@ -37,6 +46,12 @@ func NewWalletPaymentClient(client gen.DyPaymentServiceClient) PaymentClient {
 		return nil
 	}
 	return walletPaymentClient{client: client}
+}
+func NewWalletCheckerClient(client gen.DyWalletServiceClient) WalletChecker {
+	if client == nil {
+		return nil
+	}
+	return walletCheckerClient{client: client}
 }
 
 func NewWalletClient(cfg config.BillingConfig) (gen.DyPaymentServiceClient, *grpc.ClientConn, error) {

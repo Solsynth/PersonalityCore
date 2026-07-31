@@ -47,11 +47,11 @@ func getMyBilling(c *gin.Context, conversations *service.ConversationService) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"hourly_run_limit": policy.HourlyRunLimit,
-		"daily_run_limit":  policy.DailyRunLimit,
-		"spending_quota":   policy.InstantBillingWall,
-		"blacklisted":      policy.Blacklisted,
-		"usage":            usage,
+		"hourly_usage_limits": policy.HourlyUsageLimits,
+		"daily_usage_limits":  policy.DailyUsageLimits,
+		"spending_quota":      policy.InstantBillingWall,
+		"blacklisted":         policy.Blacklisted,
+		"usage":               usage,
 	})
 }
 

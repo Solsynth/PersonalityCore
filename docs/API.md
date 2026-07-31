@@ -226,6 +226,10 @@ currency inherits `[billing].currency`. A model with no `pricing` configuration
 is free, but hourly and daily run limits still apply. A blacklisted account
 cannot use any Personality model, including free models.
 
+Before a priced model runs, Personality checks that the account has a Wallet
+payment wallet. The result (including a missing wallet) is cached for 10
+minutes. Free models do not require a payment wallet.
+
 Usage is settled daily at 00:00 UTC. A spending quota is the maximum unpaid
 gold amount before an immediate Wallet transaction is attempted. Set it to
 `"0"` to use daily settlement only. If an immediate or daily transaction fails,
@@ -268,8 +272,8 @@ limits inherit the configured service default.
 }
 ```
 
-`usage.hourly_runs` and `usage.daily_runs` contain the current UTC-period
-usage count and the resolved maximum. A `null` `max` is unlimited.
+`usage.hourly_usage` and `usage.daily_usage` contain current amount usage and
+the resolved maximum for each configured currency. A `null` `max` is unlimited.
 
 ### Set my spending quota
 

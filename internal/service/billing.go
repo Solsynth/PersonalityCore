@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -20,28 +22,34 @@ const PermissionBillingManage = "personality.billing.manage"
 
 var ErrBillingBlacklisted = errors.New("account is blocked from Personality services")
 var ErrBillingQuotaExceeded = errors.New("Personality usage threshold exceeded")
+var ErrPaymentWalletRequired = errors.New("a payment wallet is required for paid models")
 
 // PaymentClient deliberately mirrors only the Wallet RPC needed by billing.
 // It makes accounting testable without a live Wallet service.
 type PaymentClient interface {
 	CreateTransactionWithAccount(context.Context, string, string, string, string, string) (string, error)
 }
-
-type BillingService struct {
-	db      *database.DB
-	cfg     *config.BillingConfig
-	rootCfg *config.Config
-	payment PaymentClient
+type WalletChecker interface {
+	CheckWalletExists(context.Context, string) (bool, error)
 }
 
-type BillingRunUsage struct {
-	Used int64 `json:"used"`
-	Max  *int  `json:"max"`
+type BillingService struct {
+	db            *database.DB
+	cfg           *config.BillingConfig
+	rootCfg       *config.Config
+	payment       PaymentClient
+	walletChecker WalletChecker
+	walletCache   sync.Map
+}
+
+type BillingCurrencyUsage struct {
+	Used string  `json:"used"`
+	Max  *string `json:"max"`
 }
 
 type BillingUsageSummary struct {
-	HourlyRuns BillingRunUsage `json:"hourly_runs"`
-	DailyRuns  BillingRunUsage `json:"daily_runs"`
+	HourlyUsage map[string]BillingCurrencyUsage `json:"hourly_usage"`
+	DailyUsage  map[string]BillingCurrencyUsage `json:"daily_usage"`
 }
 
 type BillingSettlementResult struct {
@@ -56,7 +64,8 @@ func NewBillingService(db *database.DB, cfg *config.Config) *BillingService {
 	return &BillingService{db: db, cfg: &cfg.Billing, rootCfg: cfg}
 }
 
-func (s *BillingService) SetPaymentClient(client PaymentClient) { s.payment = client }
+func (s *BillingService) SetPaymentClient(client PaymentClient)  { s.payment = client }
+func (s *BillingService) SetWalletChecker(checker WalletChecker) { s.walletChecker = checker }
 
 func (s *BillingService) enabled() bool {
 	return s != nil && s.db != nil && s.cfg != nil && s.cfg.Enabled
@@ -79,30 +88,67 @@ func (s *BillingService) AuthorizeRun(ctx context.Context, accountID string, def
 	if !s.enabled() {
 		return "", nil
 	}
-	now := time.Now().UTC()
-	hourly, daily := s.limits(policy)
-	var hourlyCount, dailyCount int64
-	if hourly > 0 {
-		if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, now.Truncate(time.Hour)).Count(&hourlyCount).Error; err != nil {
+	if s.isPaidModel(def) {
+		if err := s.requirePaymentWallet(ctx, accountID); err != nil {
 			return "", err
-		}
-		if hourlyCount >= int64(hourly) {
-			return "", fmt.Errorf("%w: hourly limit is %d", ErrBillingQuotaExceeded, hourly)
 		}
 	}
-	if daily > 0 {
-		if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, utcDay(now)).Count(&dailyCount).Error; err != nil {
-			return "", err
-		}
-		if dailyCount >= int64(daily) {
-			return "", fmt.Errorf("%w: daily limit is %d", ErrBillingQuotaExceeded, daily)
-		}
+	now := time.Now().UTC()
+	currency := s.modelCurrency(def)
+	if err := s.checkUsageLimit(ctx, accountID, currency, now.Truncate(time.Hour), s.usageLimits(policy, true)); err != nil {
+		return "", err
+	}
+	if err := s.checkUsageLimit(ctx, accountID, currency, utcDay(now), s.usageLimits(policy, false)); err != nil {
+		return "", err
 	}
 	usage := &database.BillingUsage{ID: newID(), AccountID: accountID, Model: def.Model, Amount: "0", CreatedAt: now}
 	if err := s.db.WithContext(ctx).Create(usage).Error; err != nil {
 		return "", err
 	}
 	return usage.ID, nil
+}
+
+type walletCacheEntry struct {
+	exists    bool
+	expiresAt time.Time
+}
+
+func (s *BillingService) requirePaymentWallet(ctx context.Context, accountID string) error {
+	if entry, ok := s.walletCache.Load(accountID); ok {
+		cached := entry.(walletCacheEntry)
+		if time.Now().Before(cached.expiresAt) {
+			if !cached.exists {
+				return ErrPaymentWalletRequired
+			}
+			return nil
+		}
+	}
+	if s.walletChecker == nil {
+		return fmt.Errorf("payment wallet checker is unavailable")
+	}
+	exists, err := s.walletChecker.CheckWalletExists(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("check payment wallet: %w", err)
+	}
+	s.walletCache.Store(accountID, walletCacheEntry{exists: exists, expiresAt: time.Now().Add(10 * time.Minute)})
+	if !exists {
+		return ErrPaymentWalletRequired
+	}
+	return nil
+}
+
+func (s *BillingService) isPaidModel(def agent.Definition) bool {
+	parts := strings.SplitN(def.Model, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	for _, provider := range s.rootCfg.Providers {
+		if provider.ID == parts[0] {
+			model := provider.ResolveModel(parts[1])
+			return model != nil && model.Pricing != nil && (model.Pricing.Input != nil || model.Pricing.Output != nil)
+		}
+	}
+	return false
 }
 
 func (s *BillingService) CancelAuthorization(ctx context.Context, usageID string) {
@@ -119,7 +165,7 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 	if err != nil {
 		return err
 	}
-	updates := map[string]any{"run_id": runID, "model": def.Model, "amount": price.amount, "currency": price.currency}
+	updates := map[string]any{"run_id": runID, "model": def.Model, "amount": price.amount, "original_amount": price.amount, "currency": price.currency}
 	if usage != nil {
 		updates["input_tokens"] = usage.PromptTokens
 		updates["output_tokens"] = usage.CompletionTokens
@@ -161,15 +207,76 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 	return nil
 }
 
-func (s *BillingService) limits(policy *database.BillingAccountPolicy) (int, int) {
-	hourly, daily := s.cfg.DefaultHourlyRuns, s.cfg.DefaultDailyRuns
-	if policy.HourlyRunLimit != nil {
-		hourly = *policy.HourlyRunLimit
+func (s *BillingService) modelCurrency(def agent.Definition) string {
+	parts := strings.SplitN(def.Model, "/", 2)
+	if len(parts) == 2 {
+		for _, provider := range s.rootCfg.Providers {
+			if provider.ID == parts[0] {
+				if model := provider.ResolveModel(parts[1]); model != nil && model.Pricing != nil && strings.TrimSpace(model.Pricing.Currency) != "" {
+					return strings.TrimSpace(model.Pricing.Currency)
+				}
+			}
+		}
 	}
-	if policy.DailyRunLimit != nil {
-		daily = *policy.DailyRunLimit
+	return s.defaultCurrency()
+}
+
+func (s *BillingService) usageLimits(policy *database.BillingAccountPolicy, hourly bool) map[string]string {
+	limits := s.cfg.DailyUsageLimits
+	stored := policy.DailyUsageLimits
+	if hourly {
+		limits, stored = s.cfg.HourlyUsageLimits, policy.HourlyUsageLimits
 	}
-	return hourly, daily
+	if len(stored) == 0 {
+		return limits
+	}
+	var override map[string]string
+	if json.Unmarshal(stored, &override) == nil {
+		return override
+	}
+	return limits
+}
+
+func (s *BillingService) checkUsageLimit(ctx context.Context, accountID, currency string, start time.Time, limits map[string]string) error {
+	limit, ok := limits[currency]
+	if !ok || strings.TrimSpace(limit) == "" {
+		return nil
+	}
+	max, err := decimal(limit)
+	if err != nil {
+		return fmt.Errorf("invalid usage limit for %s: %w", currency, err)
+	}
+	if max.Sign() == 0 {
+		return nil
+	}
+	used, err := s.usedAmount(ctx, accountID, currency, start)
+	if err != nil {
+		return err
+	}
+	if used.Cmp(max) >= 0 {
+		return fmt.Errorf("%w: %s usage limit is %s", ErrBillingQuotaExceeded, currency, limit)
+	}
+	return nil
+}
+
+func (s *BillingService) usedAmount(ctx context.Context, accountID, currency string, start time.Time) (*big.Rat, error) {
+	var usages []database.BillingUsage
+	if err := s.db.WithContext(ctx).Where("account_id = ? AND currency = ? AND created_at >= ?", accountID, currency, start).Find(&usages).Error; err != nil {
+		return nil, err
+	}
+	total := new(big.Rat)
+	for _, usage := range usages {
+		amount := usage.OriginalAmount
+		if amount == "" {
+			amount = usage.Amount
+		}
+		value, err := decimal(amount)
+		if err != nil {
+			return nil, err
+		}
+		total.Add(total, value)
+	}
+	return total, nil
 }
 
 func (s *BillingService) AccountPolicy(ctx context.Context, accountID string) (*database.BillingAccountPolicy, error) {
@@ -188,23 +295,33 @@ func (s *BillingService) UsageSummary(ctx context.Context, accountID string) (*B
 	if err != nil {
 		return nil, err
 	}
-	hourlyLimit, dailyLimit := s.limits(policy)
 	now := time.Now().UTC()
-	var hourlyUsed, dailyUsed int64
-	if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, now.Truncate(time.Hour)).Count(&hourlyUsed).Error; err != nil {
+	hourly, err := s.currencyUsageSummary(ctx, accountID, now.Truncate(time.Hour), s.usageLimits(policy, true))
+	if err != nil {
 		return nil, err
 	}
-	if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, utcDay(now)).Count(&dailyUsed).Error; err != nil {
+	daily, err := s.currencyUsageSummary(ctx, accountID, utcDay(now), s.usageLimits(policy, false))
+	if err != nil {
 		return nil, err
 	}
-	return &BillingUsageSummary{HourlyRuns: BillingRunUsage{Used: hourlyUsed, Max: optionalLimit(hourlyLimit)}, DailyRuns: BillingRunUsage{Used: dailyUsed, Max: optionalLimit(dailyLimit)}}, nil
+	return &BillingUsageSummary{HourlyUsage: hourly, DailyUsage: daily}, nil
 }
 
-func optionalLimit(limit int) *int {
-	if limit <= 0 {
-		return nil
+func (s *BillingService) currencyUsageSummary(ctx context.Context, accountID string, start time.Time, limits map[string]string) (map[string]BillingCurrencyUsage, error) {
+	out := map[string]BillingCurrencyUsage{}
+	for currency, maxValue := range limits {
+		used, err := s.usedAmount(ctx, accountID, currency, start)
+		if err != nil {
+			return nil, err
+		}
+		var max *string
+		if maxValue != "0" {
+			v := maxValue
+			max = &v
+		}
+		out[currency] = BillingCurrencyUsage{Used: used.FloatString(8), Max: max}
 	}
-	return &limit
+	return out, nil
 }
 
 func (s *BillingService) CheckAccess(ctx context.Context, accountID string) error {

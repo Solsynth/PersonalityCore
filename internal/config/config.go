@@ -28,16 +28,16 @@ type Config struct {
 // BillingConfig controls metered Personality usage. Amounts are decimal strings
 // in the configured wallet currency (normally golds) to avoid float rounding.
 type BillingConfig struct {
-	Enabled              bool   `mapstructure:"enabled"`
-	Target               string `mapstructure:"target"`
-	UseTLS               bool   `mapstructure:"useTLS"`
-	TLSSkipVerify        bool   `mapstructure:"tlsSkipVerify"`
-	PayeeAccountID       string `mapstructure:"payeeAccountId"`
-	Currency             string `mapstructure:"currency"`
-	ServiceFeePercentage string `mapstructure:"serviceFeePercentage"`
-	DefaultHourlyRuns    int    `mapstructure:"defaultHourlyRuns"`
-	DefaultDailyRuns     int    `mapstructure:"defaultDailyRuns"`
-	InstantBillingWall   string `mapstructure:"instantBillingWall"`
+	Enabled              bool              `mapstructure:"enabled"`
+	Target               string            `mapstructure:"target"`
+	UseTLS               bool              `mapstructure:"useTLS"`
+	TLSSkipVerify        bool              `mapstructure:"tlsSkipVerify"`
+	PayeeAccountID       string            `mapstructure:"payeeAccountId"`
+	Currency             string            `mapstructure:"currency"`
+	ServiceFeePercentage string            `mapstructure:"serviceFeePercentage"`
+	HourlyUsageLimits    map[string]string `mapstructure:"hourlyUsageLimits"`
+	DailyUsageLimits     map[string]string `mapstructure:"dailyUsageLimits"`
+	InstantBillingWall   string            `mapstructure:"instantBillingWall"`
 }
 
 type HTTPConfig struct {
@@ -267,8 +267,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("billing.payeeAccountId", "")
 	v.SetDefault("billing.currency", "golds")
 	v.SetDefault("billing.serviceFeePercentage", "0")
-	v.SetDefault("billing.defaultHourlyRuns", 0)
-	v.SetDefault("billing.defaultDailyRuns", 0)
+	v.SetDefault("billing.hourlyUsageLimits", map[string]string{})
+	v.SetDefault("billing.dailyUsageLimits", map[string]string{})
 	v.SetDefault("billing.instantBillingWall", "0")
 	v.SetDefault("personality.maxHistoryMessages", 24)
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)

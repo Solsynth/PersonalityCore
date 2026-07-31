@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 	sharedauth "src.solsynth.dev/sosys/go/pkg/auth"
 
 	"src.solsynth.dev/sosys/personality/internal/identity"
@@ -53,11 +54,13 @@ func putBillingAccount(c *gin.Context, conversations *service.ConversationServic
 		return
 	}
 	var req struct {
-		HourlyRunLimit     *int    `json:"hourly_run_limit"`
-		DailyRunLimit      *int    `json:"daily_run_limit"`
-		InstantBillingWall *string `json:"instant_billing_wall"`
-		Blacklisted        *bool   `json:"blacklisted"`
-		BlacklistReason    *string `json:"blacklist_reason"`
+		HourlyUsageLimits  datatypes.JSON `json:"hourly_usage_limits"`
+		DailyUsageLimits   datatypes.JSON `json:"daily_usage_limits"`
+		HourlyRunLimit     *int           `json:"hourly_run_limit"`
+		DailyRunLimit      *int           `json:"daily_run_limit"`
+		InstantBillingWall *string        `json:"instant_billing_wall"`
+		Blacklisted        *bool          `json:"blacklisted"`
+		BlacklistReason    *string        `json:"blacklist_reason"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -69,6 +72,12 @@ func putBillingAccount(c *gin.Context, conversations *service.ConversationServic
 		return
 	}
 	policy.HourlyRunLimit, policy.DailyRunLimit, policy.InstantBillingWall = req.HourlyRunLimit, req.DailyRunLimit, req.InstantBillingWall
+	if req.HourlyUsageLimits != nil {
+		policy.HourlyUsageLimits = req.HourlyUsageLimits
+	}
+	if req.DailyUsageLimits != nil {
+		policy.DailyUsageLimits = req.DailyUsageLimits
+	}
 	if req.Blacklisted != nil {
 		policy.Blacklisted = *req.Blacklisted
 	}

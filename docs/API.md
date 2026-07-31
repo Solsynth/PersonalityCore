@@ -205,7 +205,7 @@ GET /api/conversations/:id/messages?take=20&offset=0
 ## Billing
 
 Billing is optional and is enabled by the service operator. Model prices use a
-Wallet currency per 1K input/output tokens. Set the optional `currency` in a
+Wallet currency per 1M input/output tokens. Set the optional `currency` in a
 model's `pricing` section (for example, `"golds"` or `"points"`); omitted
 currency inherits `[billing].currency`. A model with no `pricing` configuration
 is free, but hourly and daily run limits still apply. A blacklisted account
@@ -215,6 +215,10 @@ Usage is settled daily at 00:00 UTC. A spending quota is the maximum unpaid
 gold amount before an immediate Wallet transaction is attempted. Set it to
 `"0"` to use daily settlement only. If an immediate or daily transaction fails,
 the account is blacklisted.
+
+Wallet transactions support two decimal places. Personality truncates a charge
+to two decimals and retains any smaller remainder in the account's unpaid usage
+ledger for a later settlement.
 
 `[billing].payeeAccountId` is optional. When unset, Personality sends a null
 `payee_account_id` to Wallet, allowing Wallet to select its default/system

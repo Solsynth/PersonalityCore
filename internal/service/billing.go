@@ -283,7 +283,7 @@ func (s *BillingService) price(def agent.Definition, usage *schema.TokenUsage) (
 						return pricedUsage{}, err
 					}
 				}
-				total := new(big.Rat).Add(new(big.Rat).Mul(in, big.NewRat(int64(usage.PromptTokens), 1000)), new(big.Rat).Mul(out, big.NewRat(int64(usage.CompletionTokens), 1000)))
+				total := new(big.Rat).Add(new(big.Rat).Mul(in, big.NewRat(int64(usage.PromptTokens), 1_000_000)), new(big.Rat).Mul(out, big.NewRat(int64(usage.CompletionTokens), 1_000_000)))
 				if def.BillingMultiplier != nil {
 					mult := new(big.Rat).SetFloat64(*def.BillingMultiplier)
 					if mult == nil || *def.BillingMultiplier < 0 {
@@ -362,7 +362,7 @@ func (s *BillingService) unpaidAmount(ctx context.Context, accountID, currency s
 		q = q.Where("created_at < ?", before)
 	}
 	var usages []database.BillingUsage
-	if err := q.Find(&usages).Error; err != nil {
+	if err := q.Order("created_at ASC, id ASC").Find(&usages).Error; err != nil {
 		return "", err
 	}
 	total := new(big.Rat)
@@ -404,7 +404,13 @@ func (s *BillingService) chargeAccount(ctx context.Context, accountID, currency,
 	if total.Sign() == 0 {
 		return nil
 	}
-	amount := total.FloatString(8)
+	billable := floorCurrencyAmount(total)
+	if billable.Sign() == 0 {
+		// Wallet only supports two decimal places. Leave the outstanding amount
+		// in the ledger so it is combined with future usage instead of lost.
+		return nil
+	}
+	amount := billable.FloatString(2)
 	txID, err := s.payment.CreateTransactionWithAccount(ctx, accountID, s.cfg.PayeeAccountID, currency, amount, remarks)
 	if err != nil {
 		_ = s.Blacklist(ctx, accountID, "wallet payment failed: "+err.Error())
@@ -415,9 +421,51 @@ func (s *BillingService) chargeAccount(ctx context.Context, accountID, currency,
 		if err := tx.Create(payment).Error; err != nil {
 			return err
 		}
-		return tx.Model(&database.BillingUsage{}).Where("account_id = ? AND currency = ? AND payment_id IS NULL", accountID, currency).Where("id IN ?", usageIDs(usages)).Update("payment_id", payment.ID).Error
+		return applyPaymentAllocation(tx, usages, billable, payment.ID)
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+// floorCurrencyAmount truncates, never rounds, to Wallet's two decimal places.
+func floorCurrencyAmount(amount *big.Rat) *big.Rat {
+	if amount == nil || amount.Sign() <= 0 {
+		return new(big.Rat)
+	}
+	scaled := new(big.Int).Mul(amount.Num(), big.NewInt(100))
+	scaled.Quo(scaled, amount.Denom())
+	return new(big.Rat).SetFrac(scaled, big.NewInt(100))
+}
+
+// applyPaymentAllocation consumes the oldest outstanding usage first. A
+// partially consumed row keeps its fractional remainder unpaid, allowing it to
+// roll into the next settlement cycle.
+func applyPaymentAllocation(tx *gorm.DB, usages []database.BillingUsage, paid *big.Rat, paymentID string) error {
+	remaining := new(big.Rat).Set(paid)
+	for _, usage := range usages {
+		if remaining.Sign() == 0 {
+			break
+		}
+		outstanding, err := decimal(usage.Amount)
+		if err != nil {
+			return err
+		}
+		cmp := outstanding.Cmp(remaining)
+		if cmp <= 0 {
+			if err := tx.Model(&database.BillingUsage{}).Where("id = ?", usage.ID).Update("payment_id", paymentID).Error; err != nil {
+				return err
+			}
+			remaining.Sub(remaining, outstanding)
+			continue
+		}
+		// Keep only the unbillable remainder on this usage row. It is included
+		// in the next charge and therefore never disappears due to rounding.
+		outstanding.Sub(outstanding, remaining)
+		if err := tx.Model(&database.BillingUsage{}).Where("id = ?", usage.ID).Update("amount", outstanding.FloatString(8)).Error; err != nil {
+			return err
+		}
+		remaining.SetInt64(0)
 	}
 	return nil
 }

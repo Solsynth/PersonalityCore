@@ -548,11 +548,13 @@ List endpoints follow Solar pagination style:
 
 Optional Wallet-backed billing is configured with `[billing]`. Every configured
 model may define a `[providers.models.pricing]` section with `currency`,
-`input`, and `output` per 1K tokens; for example, a model may charge in
+`input`, and `output` per 1M tokens; for example, a model may charge in
 `golds` and another in `points`. A model without that section is free. An agent
 may set `billingMultiplier` to adjust that model price for calls made through
 the agent. Usage limits still count free-model calls, while a blacklisted
 account cannot use any Personality model.
+Wallet charges are truncated to two decimal places; an unbillable fractional
+remainder stays outstanding and rolls into the next settlement.
 
 Billing usage is settled at UTC midnight (with startup catch-up). Configure
 `instantBillingWall` to charge an account as soon as its unpaid gold balance

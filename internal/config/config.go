@@ -170,7 +170,7 @@ type ModelConfig struct {
 	PerkOverrides       map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
 }
 
-// ModelPricingConfig prices one thousand input/output tokens in one Wallet
+// ModelPricingConfig prices one million input/output tokens in one Wallet
 // currency. An omitted currency inherits billing.currency.
 // A model without a pricing section is intentionally free.
 type ModelPricingConfig struct {

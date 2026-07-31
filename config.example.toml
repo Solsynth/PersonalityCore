@@ -84,8 +84,8 @@ maxCompletionTokens = 4096
 
 [providers.models.pricing]
 currency = "golds"            # Wallet currency; e.g. "points"
-input = "0.01"               # golds per 1K input tokens
-output = "0.04"              # golds per 1K output tokens
+input = "0.01"               # golds per 1M input tokens
+output = "0.04"              # golds per 1M output tokens
 
 [[providers.models]]
 name = "text-embedding-3-small"

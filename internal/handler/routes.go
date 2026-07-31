@@ -19,6 +19,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 	admin := r.Group("/admin/billing")
 	RegisterBillingAdminRoutes(admin, conversations)
 	r.GET("/agents", func(c *gin.Context) { listAgents(c, conversations) })
+	r.GET("/models", func(c *gin.Context) { listModels(c, conversations) })
 	r.GET("/agents/:id", func(c *gin.Context) { getAgent(c, conversations) })
 	r.POST("/agents/:id/autonomous-runs", func(c *gin.Context) { createAutonomousRun(c, conversations) })
 
@@ -43,6 +44,10 @@ func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.Conversat
 
 func listAgents(c *gin.Context, conversations *service.ConversationService) {
 	c.JSON(http.StatusOK, conversations.ListAgents())
+}
+
+func listModels(c *gin.Context, conversations *service.ConversationService) {
+	c.JSON(http.StatusOK, conversations.ListModels())
 }
 
 func getAgent(c *gin.Context, conversations *service.ConversationService) {

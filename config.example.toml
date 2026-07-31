@@ -127,6 +127,7 @@ sseHeartbeat = "15s"          # SSE heartbeat interval
 chatInboundDebounce = "5s"   # debounce window for inbound solar messages
 visionModel = "openai/gpt-4o" # model used to summarize images for non-vision models
 defaultEmbeddingModel = "openai/text-embedding-3-small"
+onlyAllowListedModels = false # true = reject provider/model references not declared below
 
 # ─── Surfing ────────────────────────────────────────────────────────
 [personality.surfing]

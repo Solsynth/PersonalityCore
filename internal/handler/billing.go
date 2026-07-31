@@ -41,11 +41,17 @@ func getMyBilling(c *gin.Context, conversations *service.ConversationService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	usage, err := conversations.Billing().UsageSummary(c.Request.Context(), accountID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"hourly_run_limit": policy.HourlyRunLimit,
 		"daily_run_limit":  policy.DailyRunLimit,
 		"spending_quota":   policy.InstantBillingWall,
 		"blacklisted":      policy.Blacklisted,
+		"usage":            usage,
 	})
 }
 

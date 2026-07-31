@@ -20,7 +20,8 @@ type RunRequest struct {
 }
 
 type Executor struct {
-	providers map[string]config.ProviderConfig
+	providers             map[string]config.ProviderConfig
+	onlyAllowListedModels bool
 }
 
 func NewExecutor(cfg *config.Config) (*Executor, error) {
@@ -46,7 +47,7 @@ func NewExecutor(cfg *config.Config) (*Executor, error) {
 		return nil, fmt.Errorf("at least one provider is required")
 	}
 
-	return &Executor{providers: providers}, nil
+	return &Executor{providers: providers, onlyAllowListedModels: cfg.Personality.OnlyAllowListedModels}, nil
 }
 
 func (e *Executor) Generate(ctx context.Context, req RunRequest) (*schema.Message, error) {
@@ -217,6 +218,9 @@ func (e *Executor) resolveModelForPurpose(raw string, wantEmbedding bool) (confi
 		return config.ProviderConfig{}, "", nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 	mc := provider.ResolveModel(modelName)
+	if mc == nil && e.onlyAllowListedModels {
+		return config.ProviderConfig{}, "", nil, fmt.Errorf("model %q is not listed in provider %q", modelName, providerID)
+	}
 	if mc != nil {
 		if wantEmbedding && !mc.IsEmbedding() {
 			return config.ProviderConfig{}, "", nil, fmt.Errorf("model %q is not configured as an embedding model", modelRef)

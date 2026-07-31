@@ -34,6 +34,16 @@ type BillingService struct {
 	payment PaymentClient
 }
 
+type BillingRunUsage struct {
+	Used int64 `json:"used"`
+	Max  *int  `json:"max"`
+}
+
+type BillingUsageSummary struct {
+	HourlyRuns BillingRunUsage `json:"hourly_runs"`
+	DailyRuns  BillingRunUsage `json:"daily_runs"`
+}
+
 type BillingSettlementResult struct {
 	AccountID string `json:"account_id"`
 	Settled   bool   `json:"settled"`
@@ -169,6 +179,32 @@ func (s *BillingService) AccountPolicy(ctx context.Context, accountID string) (*
 		return policy, nil
 	}
 	return policy, err
+}
+
+// UsageSummary returns UTC-based current use and the resolved account limits.
+// A nil Max means no limit is configured for that interval.
+func (s *BillingService) UsageSummary(ctx context.Context, accountID string) (*BillingUsageSummary, error) {
+	policy, err := s.AccountPolicy(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	hourlyLimit, dailyLimit := s.limits(policy)
+	now := time.Now().UTC()
+	var hourlyUsed, dailyUsed int64
+	if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, now.Truncate(time.Hour)).Count(&hourlyUsed).Error; err != nil {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).Model(&database.BillingUsage{}).Where("account_id = ? AND created_at >= ?", accountID, utcDay(now)).Count(&dailyUsed).Error; err != nil {
+		return nil, err
+	}
+	return &BillingUsageSummary{HourlyRuns: BillingRunUsage{Used: hourlyUsed, Max: optionalLimit(hourlyLimit)}, DailyRuns: BillingRunUsage{Used: dailyUsed, Max: optionalLimit(dailyLimit)}}, nil
+}
+
+func optionalLimit(limit int) *int {
+	if limit <= 0 {
+		return nil
+	}
+	return &limit
 }
 
 func (s *BillingService) CheckAccess(ctx context.Context, accountID string) error {

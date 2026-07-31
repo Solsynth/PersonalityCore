@@ -65,6 +65,21 @@ current compatibility layer emits one terminal completion chunk per request.
 
 ## Agents
 
+## Models
+
+### List configured models
+
+```
+GET /api/models
+```
+
+Returns every model explicitly configured under `[[providers.models]]`, without
+filtering out models blocked by the caller's perk level. `perk_overrides`
+allows clients to show those restrictions before attempting a request.
+
+When `[personality].onlyAllowListedModels = true`, model execution is limited
+to this list; a valid provider/model reference that is not listed is rejected.
+
 ### List agents
 
 ```
@@ -240,9 +255,16 @@ limits inherit the configured service default.
   "hourly_run_limit": null,
   "daily_run_limit": null,
   "spending_quota": "20",
-  "blacklisted": false
+  "blacklisted": false,
+  "usage": {
+    "hourly_runs": {"used": 4, "max": 30},
+    "daily_runs": {"used": 18, "max": null}
+  }
 }
 ```
+
+`usage.hourly_runs` and `usage.daily_runs` contain the current UTC-period
+usage count and the resolved maximum. A `null` `max` is unlimited.
 
 ### Set my spending quota
 

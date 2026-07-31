@@ -112,6 +112,19 @@ type RunResult struct {
 	ResponseContent string                        `json:"content"`
 }
 
+// ModelInfo intentionally exposes all configured models. Perk restrictions are
+// included as metadata rather than filtering the list, so clients can explain
+// why a model is not currently usable.
+type ModelInfo struct {
+	ID            string                           `json:"id"`
+	Provider      string                           `json:"provider"`
+	Name          string                           `json:"name"`
+	Type          string                           `json:"type,omitempty"`
+	Modalities    []string                         `json:"modalities,omitempty"`
+	Pricing       *config.ModelPricingConfig       `json:"pricing,omitempty"`
+	PerkOverrides map[int]config.ModelPerkOverride `json:"perk_overrides,omitempty"`
+}
+
 func NewConversationService(db *database.DB, cfg *config.Config, registry *agent.Registry, executor *agent.Executor) *ConversationService {
 	svc := &ConversationService{
 		db:       db,
@@ -137,6 +150,19 @@ func (s *ConversationService) ListAgents() []agent.Definition {
 
 func (s *ConversationService) GetAgent(id string) (agent.Definition, bool) {
 	return s.registry.Get(id)
+}
+
+func (s *ConversationService) ListModels() []ModelInfo {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	models := make([]ModelInfo, 0)
+	for _, provider := range s.cfg.Providers {
+		for _, model := range provider.Models {
+			models = append(models, ModelInfo{ID: strings.TrimSpace(provider.ID) + "/" + strings.TrimSpace(model.Name), Provider: provider.ID, Name: model.Name, Type: model.Type, Modalities: append([]string(nil), model.Modalities...), Pricing: model.Pricing, PerkOverrides: model.PerkOverrides})
+		}
+	}
+	return models
 }
 
 func (s *ConversationService) CreateConversation(ctx context.Context, accountID string, input CreateConversationInput) (*database.ConversationThread, error) {

@@ -69,6 +69,19 @@ func TestExecutor_ResolveModelFindsProvider(t *testing.T) {
 	}
 }
 
+func TestExecutor_OnlyAllowsListedModelsWhenConfigured(t *testing.T) {
+	executor, err := NewExecutor(&config.Config{Personality: config.PersonalityConfig{OnlyAllowListedModels: true}, Providers: []config.ProviderConfig{{ID: "openai", Type: "openai", APIKey: "test", Timeout: time.Second, Models: []config.ModelConfig{{Name: "listed"}}}}})
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	if _, _, err := executor.resolveModel("openai/listed"); err != nil {
+		t.Fatalf("listed model rejected: %v", err)
+	}
+	if _, _, err := executor.resolveModel("openai/unlisted"); err == nil {
+		t.Fatal("expected unlisted model to be rejected")
+	}
+}
+
 func TestExecutor_SupportsVisionDefaultsConservativelyForCompatibleBackends(t *testing.T) {
 	executor, err := NewExecutor(&config.Config{
 		Providers: []config.ProviderConfig{

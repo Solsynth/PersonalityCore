@@ -239,6 +239,11 @@ ledger for a later settlement.
 `payee_account_id` to Wallet, allowing Wallet to select its default/system
 payee.
 
+The optional `[billing].serviceFeePercentage` is a non-negative decimal
+percentage added after the model price and agent multiplier. For example,
+`"5"` makes a 10-point model charge cost 10.5 points before Wallet's
+two-decimal truncation.
+
 ### Get my billing policy
 
 ```

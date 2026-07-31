@@ -555,6 +555,8 @@ the agent. Usage limits still count free-model calls, while a blacklisted
 account cannot use any Personality model.
 Wallet charges are truncated to two decimal places; an unbillable fractional
 remainder stays outstanding and rolls into the next settlement.
+Set `billing.serviceFeePercentage` to add a global percentage to every priced
+model call (for example, `"5"` adds a 5% fee).
 
 Billing usage is settled at UTC midnight (with startup catch-up). Configure
 `instantBillingWall` to charge an account as soon as its unpaid gold balance

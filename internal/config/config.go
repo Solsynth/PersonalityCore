@@ -28,15 +28,16 @@ type Config struct {
 // BillingConfig controls metered Personality usage. Amounts are decimal strings
 // in the configured wallet currency (normally golds) to avoid float rounding.
 type BillingConfig struct {
-	Enabled            bool   `mapstructure:"enabled"`
-	Target             string `mapstructure:"target"`
-	UseTLS             bool   `mapstructure:"useTLS"`
-	TLSSkipVerify      bool   `mapstructure:"tlsSkipVerify"`
-	PayeeAccountID     string `mapstructure:"payeeAccountId"`
-	Currency           string `mapstructure:"currency"`
-	DefaultHourlyRuns  int    `mapstructure:"defaultHourlyRuns"`
-	DefaultDailyRuns   int    `mapstructure:"defaultDailyRuns"`
-	InstantBillingWall string `mapstructure:"instantBillingWall"`
+	Enabled              bool   `mapstructure:"enabled"`
+	Target               string `mapstructure:"target"`
+	UseTLS               bool   `mapstructure:"useTLS"`
+	TLSSkipVerify        bool   `mapstructure:"tlsSkipVerify"`
+	PayeeAccountID       string `mapstructure:"payeeAccountId"`
+	Currency             string `mapstructure:"currency"`
+	ServiceFeePercentage string `mapstructure:"serviceFeePercentage"`
+	DefaultHourlyRuns    int    `mapstructure:"defaultHourlyRuns"`
+	DefaultDailyRuns     int    `mapstructure:"defaultDailyRuns"`
+	InstantBillingWall   string `mapstructure:"instantBillingWall"`
 }
 
 type HTTPConfig struct {
@@ -265,6 +266,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("billing.tlsSkipVerify", false)
 	v.SetDefault("billing.payeeAccountId", "")
 	v.SetDefault("billing.currency", "golds")
+	v.SetDefault("billing.serviceFeePercentage", "0")
 	v.SetDefault("billing.defaultHourlyRuns", 0)
 	v.SetDefault("billing.defaultDailyRuns", 0)
 	v.SetDefault("billing.instantBillingWall", "0")

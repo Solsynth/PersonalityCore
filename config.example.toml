@@ -34,6 +34,7 @@ useTLS = false
 tlsSkipVerify = false
 payeeAccountId = ""            # optional; Wallet chooses its default/system payee when unset
 currency = "golds"
+serviceFeePercentage = "0"    # percentage added to every priced model call, e.g. "5" = 5%
 defaultHourlyRuns = 30          # 0 = unlimited
 defaultDailyRuns = 200          # 0 = unlimited
 instantBillingWall = "20"      # unpaid golds; 0 = only daily settlement

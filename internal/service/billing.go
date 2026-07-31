@@ -327,6 +327,16 @@ func (s *BillingService) price(def agent.Definition, usage *schema.TokenUsage) (
 					}
 					total.Mul(total, mult)
 				}
+				feePercent, err := decimal(s.cfg.ServiceFeePercentage)
+				if err != nil {
+					return pricedUsage{}, fmt.Errorf("invalid billing service fee percentage: %w", err)
+				}
+				if feePercent.Sign() > 0 {
+					// A percentage of 5 means the user is charged 105% of the
+					// model/agent price; 0 leaves the price unchanged.
+					factor := new(big.Rat).Add(big.NewRat(1, 1), new(big.Rat).Quo(feePercent, big.NewRat(100, 1)))
+					total.Mul(total, factor)
+				}
 				currency := strings.TrimSpace(m.Pricing.Currency)
 				if currency == "" {
 					currency = s.defaultCurrency()

@@ -91,8 +91,8 @@ type PerkTierConfig struct {
 }
 
 type ModelPerkOverride struct {
-	Blocked             *bool `mapstructure:"blocked"`
-	MaxCompletionTokens *int  `mapstructure:"maxCompletionTokens"`
+	Blocked             *bool `json:"blocked,omitempty" mapstructure:"blocked"`
+	MaxCompletionTokens *int  `json:"max_completion_tokens,omitempty" mapstructure:"maxCompletionTokens"`
 }
 
 type AgentPerkOverride struct {
@@ -176,9 +176,9 @@ type ModelConfig struct {
 // currency. An omitted currency inherits billing.currency.
 // A model without a pricing section is intentionally free.
 type ModelPricingConfig struct {
-	Currency string  `mapstructure:"currency"`
-	Input    *string `mapstructure:"input"`
-	Output   *string `mapstructure:"output"`
+	Currency string  `json:"currency,omitempty" mapstructure:"currency"`
+	Input    *string `json:"input,omitempty" mapstructure:"input"`
+	Output   *string `json:"output,omitempty" mapstructure:"output"`
 }
 
 func (m ModelConfig) SupportsModality(modality string) bool {

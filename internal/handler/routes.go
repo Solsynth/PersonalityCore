@@ -18,6 +18,8 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 	RegisterBillingRoutes(billing, conversations)
 	admin := r.Group("/admin/billing")
 	RegisterBillingAdminRoutes(admin, conversations)
+	credentials := r.Group("/openai/credentials")
+	RegisterOpenAICredentialRoutes(credentials, conversations)
 	r.GET("/agents", func(c *gin.Context) { listAgents(c, conversations) })
 	r.GET("/models", func(c *gin.Context) { listModels(c, conversations) })
 	r.GET("/agents/:id", func(c *gin.Context) { getAgent(c, conversations) })

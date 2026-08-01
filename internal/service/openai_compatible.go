@@ -17,6 +17,7 @@ import (
 type OpenAICompletionInput struct {
 	AgentID            string
 	AccountID          string
+	CredentialID       string
 	Model              string
 	Messages           []*schema.Message
 	ClientTools        []*schema.ToolInfo
@@ -26,6 +27,7 @@ type OpenAICompletionInput struct {
 type OpenAICompletionResult struct {
 	Message *schema.Message
 	Model   string
+	Usage   *schema.TokenUsage
 }
 
 func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICompletionInput) (*OpenAICompletionResult, error) {
@@ -60,6 +62,9 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 	if len(input.Messages) == 0 {
 		return nil, fmt.Errorf("messages is required")
 	}
+	if err := s.AuthorizeOpenAICredential(ctx, input.CredentialID, agentID, def.Model, def); err != nil {
+		return nil, err
+	}
 
 	messages := append([]*schema.Message(nil), input.Messages...)
 	if strings.TrimSpace(def.SystemPrompt) != "" {
@@ -79,7 +84,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 		if err != nil {
 			return nil, fmt.Errorf("generation failed: %w", err)
 		}
-		return &OpenAICompletionResult{Message: response, Model: def.Model}, nil
+		return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
 	}
 
 	toolModel, err := s.executor.NewToolCallingModel(ctx, def, tools)
@@ -93,7 +98,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 			return nil, fmt.Errorf("generation failed: %w", err)
 		}
 		if len(response.ToolCalls) == 0 {
-			return &OpenAICompletionResult{Message: response, Model: def.Model}, nil
+			return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
 		}
 
 		clientCalls := make([]schema.ToolCall, 0, len(response.ToolCalls))
@@ -119,7 +124,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 				}
 			}
 			response.ToolCalls = clientCalls
-			return &OpenAICompletionResult{Message: response, Model: def.Model}, nil
+			return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
 		}
 		messages = append(messages, response)
 		for _, call := range serverCalls {

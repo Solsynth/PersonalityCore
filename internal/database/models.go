@@ -90,6 +90,35 @@ type BillingUsage struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type OpenAIAccessCredential struct {
+	ID            string         `gorm:"primaryKey;size:26" json:"id"`
+	AccountID     string         `gorm:"size:128;index:idx_openai_credentials_account_revoked,priority:1" json:"account_id"`
+	Name          string         `gorm:"size:128" json:"name"`
+	TokenHash     string         `gorm:"size:64;uniqueIndex" json:"-"`
+	TokenPrefix   string         `gorm:"size:24" json:"token_prefix"`
+	AgentIDs      datatypes.JSON `gorm:"type:jsonb" json:"agent_ids"`
+	Providers     datatypes.JSON `gorm:"type:jsonb" json:"providers"`
+	Models        datatypes.JSON `gorm:"type:jsonb" json:"models"`
+	UsageLimit    string         `gorm:"size:64" json:"usage_limit"`
+	UsageUsed     string         `gorm:"size:64" json:"usage_used"`
+	UsageCurrency string         `gorm:"size:32" json:"usage_currency"`
+	Enabled       bool           `gorm:"default:true;index:idx_openai_credentials_account_revoked,priority:2" json:"enabled"`
+	RevokedAt     *time.Time     `json:"revoked_at,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type OpenAICredentialUsage struct {
+	ID           string    `gorm:"primaryKey;size:26" json:"id"`
+	CredentialID string    `gorm:"size:26;index:idx_openai_credential_usage_credential_created,priority:1" json:"credential_id"`
+	AccountID    string    `gorm:"size:128;index" json:"account_id"`
+	Model        string    `gorm:"size:128" json:"model"`
+	Currency     string    `gorm:"size:32" json:"currency"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+	Amount       string    `gorm:"size:64" json:"amount"`
+	CreatedAt    time.Time `gorm:"index:idx_openai_credential_usage_credential_created,priority:2" json:"created_at"`
+}
 type BillingPayment struct {
 	ID          string    `gorm:"primaryKey;size:26" json:"id"`
 	AccountID   string    `gorm:"size:128;index" json:"account_id"`

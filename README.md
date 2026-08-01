@@ -516,6 +516,16 @@ The TUI will:
 ## HTTP API
 
 All endpoints live under `/api`.
+### OpenAI-compatible AI credentials
+
+Account holders can mint limited AI-only credentials without sharing a Solar Network access token:
+
+- `POST /api/openai/credentials` creates a `sat_...` token and returns it exactly once.
+- `GET /api/openai/credentials` lists credential metadata and cumulative usage.
+- `DELETE /api/openai/credentials/:id` permanently revokes a credential.
+
+Creation accepts `name`, optional `agent_ids`, `providers`, and `models` allowlists, plus `usage_limit` and `usage_currency`. An empty allowlist dimension is unrestricted. Models use `provider/model`. Credentials use `Authorization: Bearer sat_...` only with `/v1/chat/completions` or `/api/v1/chat/completions`; server-owned tools are disabled for credential calls. Usage is priced from the configured model pricing, accumulated per credential, and rejected once the limit is exhausted.
+
 
 ### Agents
 

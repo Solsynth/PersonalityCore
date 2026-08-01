@@ -4,11 +4,15 @@ Base URL: `<Solar Network Base URL>/personality`
 
 When using with the gateway, no need to add `/api` prefix, only the `/personality` is enough.
 
-All endpoints require authentication unless noted otherwise. Auth is handled via one of:
+All endpoints require Solar authentication unless noted otherwise. Auth is handled via one of:
 
 - **Solar auth**: Bearer token validated against the configured auth service.
 - **Offline mode**: Every request maps to a single configured mock account (local dev).
 - **Dev header mode**: `X-Account-Id` header (when `allowDevIDs` is enabled).
+
+The OpenAI-compatible completion endpoint additionally accepts an AI-only `sat_...`
+credential. It cannot authenticate any other endpoint and does not grant Solar
+Network account access.
 
 ---
 
@@ -61,6 +65,106 @@ task) are intentional; only chat history persistence is disabled.
 `stream: true` uses OpenAI SSE framing and ends with `data: [DONE]`. The
 current compatibility layer emits one terminal completion chunk per request.
 
+### AI-only credentials
+
+Create and manage AI-only credentials with normal Solar authentication:
+
+```
+POST /api/openai/credentials
+GET /api/openai/credentials
+DELETE /api/openai/credentials/:id
+```
+
+The service returns the raw `sat_...` token only from `POST`; retain it when
+created because it cannot be retrieved later. The database retains only its
+SHA-256 hash. `DELETE` permanently revokes the credential.
+
+#### Create an AI-only credential
+
+```json
+{
+  "name": "Local coding client",
+  "agent_ids": ["assistant"],
+  "providers": ["openai"],
+  "models": ["openai/gpt-4.1-mini"],
+  "usage_limit": "5",
+  "usage_currency": "golds"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Human-readable credential name; maximum 128 characters. |
+| `agent_ids` | string array | no | Allowed enabled agent IDs. Empty or omitted allows every enabled agent and `raw`. |
+| `providers` | string array | no | Allowed configured provider IDs. Empty or omitted allows every provider. |
+| `models` | string array | no | Allowed configured `provider/model` references. Empty or omitted allows every model. |
+| `usage_limit` | string | yes | Non-negative decimal cap in `usage_currency`; `"0"` is unlimited. |
+| `usage_currency` | string | no | Currency for the cap; defaults to the configured billing currency. It must match every selected model's pricing currency. |
+
+All specified agents, providers, and models are validated when the credential is
+created. A model must be explicitly configured under its provider.
+
+**Response** `201 Created`
+
+```json
+{
+  "credential": {
+    "id": "01JF...",
+    "name": "Local coding client",
+    "token_prefix": "sat_a1b2c3d4...",
+    "agent_ids": ["assistant"],
+    "providers": ["openai"],
+    "models": ["openai/gpt-4.1-mini"],
+    "usage_limit": "5.00000000",
+    "usage_used": "0",
+    "usage_currency": "golds",
+    "enabled": true,
+    "created_at": "2026-08-01T00:00:00Z",
+    "updated_at": "2026-08-01T00:00:00Z"
+  },
+  "token": "sat_..."
+}
+```
+
+`GET` returns `{ "data": [credential, ...] }` using the credential metadata
+above, without the raw token or token hash. `DELETE` returns `204 No Content`;
+it returns `404 Not Found` when the credential is not owned by the caller or is
+already revoked.
+
+#### Use an AI-only credential
+
+Send the credential only to a stateless completion endpoint:
+
+```bash
+curl -X POST "$BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer sat_..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"assistant/openai/gpt-4.1-mini","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+AI-only credentials work with `POST /v1/chat/completions` and
+`POST /api/v1/chat/completions` only. They always disable `server_tools`, even
+when the request sets it to `true`; client-provided OpenAI function tools remain
+available. The credential's agent, provider, and model allowlists are checked
+against the resolved completion target.
+
+Usage is calculated from configured per-million-token model pricing after the
+provider responds. An already exhausted credential is rejected before another
+provider request. When a response crosses the cap, that response is recorded
+and the API returns `402 Payment Required`; later requests are rejected before
+generation. An unpriced model records zero usage.
+
+For credential-authenticated completion failures, the endpoint returns the
+OpenAI-compatible error object:
+
+```json
+{
+  "error": {
+    "message": "AI credential usage limit exceeded",
+    "type": "invalid_request_error"
+  }
+}
+```
 ---
 
 ## Agents

@@ -37,6 +37,8 @@ func (d *DB) AutoMigrate() error {
 		&BillingAccountPolicy{},
 		&BillingUsage{},
 		&BillingPayment{},
+		&OpenAIAccessCredential{},
+		&OpenAICredentialUsage{},
 		&AgentHumanState{},
 		&AgentManualMemory{},
 		&AgentSelfNote{},

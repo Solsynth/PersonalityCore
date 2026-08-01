@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 
+	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/identity"
 	"src.solsynth.dev/sosys/personality/internal/service"
 )
@@ -58,7 +59,7 @@ type openAIToolCall struct {
 }
 
 func openAIChatCompletion(c *gin.Context, conversations *service.ConversationService) {
-	accountID, ok := identity.RequireAccountID(c)
+	accountID, credentialID, ok := openAIRequestIdentity(c, conversations)
 	if !ok {
 		return
 	}
@@ -78,26 +79,46 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 		return
 	}
 	result, err := conversations.CompleteOpenAI(c.Request.Context(), service.OpenAICompletionInput{
-		AgentID: request.AgentID, AccountID: accountID, Model: request.Model, Messages: messages,
-		ClientTools: tools, IncludeServerTools: request.ServerTools,
+		AgentID: request.AgentID, AccountID: accountID, CredentialID: credentialID, Model: request.Model, Messages: messages,
+		ClientTools: tools, IncludeServerTools: request.ServerTools && credentialID == "",
 	})
 	if err != nil {
 		openAIError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if credentialID != "" {
+		if err := conversations.RecordOpenAICredentialUsage(c.Request.Context(), credentialID, agent.Definition{Model: result.Model}, result.Usage); err != nil {
+			openAIError(c, http.StatusPaymentRequired, err.Error())
+			return
+		}
+	}
 	response := newOpenAIResponse(result.Model, result.Message)
 	if request.Stream {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
-		// This is a single terminal chunk. Tool execution may require several
-		// internal model calls, so emitting provider chunks would expose server
-		// tool turns that must remain internal.
 		writeOpenAIData(c, newOpenAIChunk(result.Model, result.Message))
 		_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 		return
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func openAIRequestIdentity(c *gin.Context, conversations *service.ConversationService) (string, string, bool) {
+	auth := strings.TrimSpace(c.GetHeader("Authorization"))
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		token := strings.TrimSpace(auth[len("bearer "):])
+		if strings.HasPrefix(token, "sat_") {
+			credential, err := conversations.AuthenticateOpenAICredential(c.Request.Context(), token)
+			if err != nil {
+				openAIError(c, http.StatusUnauthorized, err.Error())
+				return "", "", false
+			}
+			return credential.AccountID, credential.CredentialID, true
+		}
+	}
+	accountID, ok := identity.RequireAccountID(c)
+	return accountID, "", ok
 }
 
 func parseOpenAIMessages(input []openAIMessage) ([]*schema.Message, error) {

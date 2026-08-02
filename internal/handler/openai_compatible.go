@@ -33,11 +33,12 @@ type openAIChatCompletionRequest struct {
 }
 
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    json.RawMessage  `json:"content"`
-	ToolCallID string           `json:"tool_call_id"`
-	Name       string           `json:"name"`
-	ToolCalls  []openAIToolCall `json:"tool_calls"`
+	Role             string           `json:"role"`
+	Content          json.RawMessage  `json:"content"`
+	ReasoningContent string           `json:"reasoning_content"`
+	ToolCallID       string           `json:"tool_call_id"`
+	Name             string           `json:"name"`
+	ToolCalls        []openAIToolCall `json:"tool_calls"`
 }
 
 type openAITool struct {
@@ -144,7 +145,7 @@ func parseOpenAIMessages(input []openAIMessage) ([]*schema.Message, error) {
 		default:
 			return nil, fmt.Errorf("messages[%d].role is unsupported", i)
 		}
-		msg := &schema.Message{Role: role, Content: content}
+		msg := &schema.Message{Role: role, Content: content, ReasoningContent: item.ReasoningContent}
 		if role == schema.Tool {
 			msg.ToolCallID, msg.ToolName = item.ToolCallID, item.Name
 			if msg.ToolCallID == "" {
@@ -291,7 +292,11 @@ func newOpenAIResponse(model string, message *schema.Message) gin.H {
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
-	return gin.H{"id": "chatcmpl-" + ulid.Make().String(), "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []gin.H{{"index": 0, "message": gin.H{"role": "assistant", "content": content, "tool_calls": toolCalls}, "finish_reason": finishReason}}}
+	response := gin.H{"id": "chatcmpl-" + ulid.Make().String(), "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []gin.H{{"index": 0, "message": gin.H{"role": "assistant", "content": content, "tool_calls": toolCalls}, "finish_reason": finishReason}}}
+	if message.ReasoningContent != "" {
+		response["choices"].([]gin.H)[0]["message"].(gin.H)["reasoning_content"] = message.ReasoningContent
+	}
+	return response
 }
 
 func newOpenAIChunk(model string, message *schema.Message) gin.H {
@@ -310,7 +315,11 @@ func newOpenAIChunk(model string, message *schema.Message) gin.H {
 	if len(message.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
-	return gin.H{"id": "chatcmpl-" + ulid.Make().String(), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []gin.H{{"index": 0, "delta": delta, "finish_reason": finishReason}}}
+	chunk := gin.H{"id": "chatcmpl-" + ulid.Make().String(), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []gin.H{{"index": 0, "delta": delta, "finish_reason": finishReason}}}
+	if message.ReasoningContent != "" {
+		chunk["choices"].([]gin.H)[0]["delta"].(gin.H)["reasoning_content"] = message.ReasoningContent
+	}
+	return chunk
 }
 
 func writeOpenAIData(c *gin.Context, value any) {

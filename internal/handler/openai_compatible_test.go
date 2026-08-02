@@ -21,6 +21,42 @@ func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {
 		t.Fatalf("tool history was not preserved: %#v", messages)
 	}
 
+	reasoning, err := parseOpenAIMessages([]openAIMessage{
+		{Role: "assistant", Content: json.RawMessage(`"hi"`), ReasoningContent: "thought it through"},
+	})
+	if err != nil {
+		t.Fatalf("parseOpenAIMessages() with reasoning error = %v", err)
+	}
+	if reasoning[0].ReasoningContent != "thought it through" {
+		t.Fatalf("reasoning content was dropped: %#v", reasoning[0])
+	}
+
+	payload, err := json.Marshal(newOpenAIResponse("deepseek/reasoner", reasoning[0]))
+	if err != nil {
+		t.Fatalf("marshal response error = %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("unmarshal response error = %v", err)
+	}
+	message := response["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["reasoning_content"] != "thought it through" {
+		t.Fatalf("response reasoning_content missing: %#v", message)
+	}
+
+	chunkPayload, err := json.Marshal(newOpenAIChunk("deepseek/reasoner", reasoning[0]))
+	if err != nil {
+		t.Fatalf("marshal chunk error = %v", err)
+	}
+	var chunk map[string]any
+	if err := json.Unmarshal(chunkPayload, &chunk); err != nil {
+		t.Fatalf("unmarshal chunk error = %v", err)
+	}
+	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	if delta["reasoning_content"] != "thought it through" {
+		t.Fatalf("chunk reasoning_content missing: %#v", delta)
+	}
+
 	tool := openAITool{Type: "function"}
 	tool.Function.Name = "weather"
 	tool.Function.Parameters = map[string]any{

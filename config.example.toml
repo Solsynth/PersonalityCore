@@ -17,9 +17,9 @@ dsn = "host=postgres port=5432 user=dyson password=dyson dbname=personality_core
 
 # ─── Auth ────────────────────────────────────────────────────────────
 [auth]
-target = ""                    # Solar auth gRPC target (host:port)
-useTLS = false
-tlsSkipVerify = false          # true for self-signed certs
+target = "stargate:9090"       # Stargate auth gRPC target (DyAuthService + DyPermissionService; took over Padlock's auth surface)
+useTLS = true                  # Stargate serves the fleet self-signed cert
+tlsSkipVerify = true
 allowDevIds = true             # allow X-Account-Id header for dev
 offline = false                # true = every request becomes offlineAccountId
 offlineAccountId = "local-dev"

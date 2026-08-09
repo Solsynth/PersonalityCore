@@ -49,12 +49,63 @@ response `id` as `previous_response_id`:
 conversation handle. `input` may be a string or an array of text messages.
 `instructions` is optional and is included with the current turn.
 
+Client-owned function tools use the flat Responses-style shape:
+
+```json
+{
+  "tools": [{
+    "type": "function",
+    "name": "lookup_weather",
+    "description": "Look up weather.",
+    "parameters": {
+      "type": "object",
+      "properties": {"city": {"type": "string"}},
+      "required": ["city"]
+    }
+  }]
+}
+```
+
+PersonalityCore executes configured server tools itself. If the model requests
+a client tool, the response has `status: "requires_action"` and function-call
+items in `output`:
+
+```json
+{
+  "id": "01JF...",
+  "status": "requires_action",
+  "output": [{
+    "type": "function_call",
+    "call_id": "call_1",
+    "name": "lookup_weather",
+    "arguments": "{\"city\":\"Taipei\"}"
+  }]
+}
+```
+
+The client executes those calls and continues with the same response ID:
+
+```json
+{
+  "previous_response_id": "01JF...",
+  "tool_outputs": [{
+    "call_id": "call_1",
+    "name": "lookup_weather",
+    "output": {"temperature": 22}
+  }]
+}
+```
+
+Server and client tools can be supplied together. Server tool calls execute
+before a client tool call is returned.
+
 **Response**
 
 ```json
 {
   "id": "01JF...",
   "object": "personality.response",
+  "status": "completed",
   "agent_id": "assistant",
   "conversation_id": "01JG...",
   "model": "openai/gpt-4o",

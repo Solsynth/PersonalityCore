@@ -20,11 +20,26 @@ func RegisterResponseRoutes(r *gin.RouterGroup, conversations *service.Conversat
 }
 
 type responseRequest struct {
-	AgentID            string          `json:"agent_id"`
-	ConversationID     string          `json:"conversation_id"`
-	PreviousResponseID string          `json:"previous_response_id"`
-	Instructions       string          `json:"instructions"`
-	Input              json.RawMessage `json:"input"`
+	AgentID            string               `json:"agent_id"`
+	ConversationID     string               `json:"conversation_id"`
+	PreviousResponseID string               `json:"previous_response_id"`
+	Instructions       string               `json:"instructions"`
+	Input              json.RawMessage      `json:"input"`
+	Tools              []responseTool       `json:"tools"`
+	ToolOutputs        []responseToolOutput `json:"tool_outputs"`
+}
+
+type responseTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type responseToolOutput struct {
+	CallID string          `json:"call_id"`
+	Name   string          `json:"name"`
+	Output json.RawMessage `json:"output"`
 }
 
 type responseInputItem struct {
@@ -43,7 +58,23 @@ func createResponse(c *gin.Context, conversations *service.ConversationService) 
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	message, err := parseResponseMessage(request.Instructions, request.Input)
+	var (
+		message string
+		err     error
+	)
+	if len(request.ToolOutputs) == 0 {
+		message, err = parseResponseMessage(request.Instructions, request.Input)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	clientTools, err := parseResponseTools(request.Tools)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	toolOutputs, err := parseResponseToolOutputs(request.ToolOutputs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -54,6 +85,8 @@ func createResponse(c *gin.Context, conversations *service.ConversationService) 
 		ConversationID:     request.ConversationID,
 		PreviousResponseID: request.PreviousResponseID,
 		Message:            message,
+		ClientTools:        clientTools,
+		ToolOutputs:        toolOutputs,
 	})
 	if err != nil {
 		status := http.StatusBadRequest
@@ -63,28 +96,84 @@ func createResponse(c *gin.Context, conversations *service.ConversationService) 
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
-	if result == nil || result.Run == nil || result.Thread == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "generation returned no response"})
-		return
-	}
-
 	content := result.ResponseContent
-	c.JSON(http.StatusOK, gin.H{
-		"id":              result.Run.ID,
-		"object":          "personality.response",
-		"agent_id":        result.Thread.AgentID,
-		"conversation_id": result.Thread.ID,
-		"model":           result.Run.Model,
-		"output_text":     content,
-		"output": []gin.H{{
+	output := make([]gin.H, 0, 1)
+	status := "completed"
+	if len(result.ToolCalls) > 0 {
+		status = "requires_action"
+		for _, call := range result.ToolCalls {
+			output = append(output, gin.H{
+				"type":      "function_call",
+				"call_id":   call.ID,
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			})
+		}
+	} else {
+		output = append(output, gin.H{
 			"type": "message",
 			"role": "assistant",
 			"content": []gin.H{{
 				"type": "output_text",
 				"text": content,
 			}},
-		}},
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":              result.Run.ID,
+		"object":          "personality.response",
+		"status":          status,
+		"agent_id":        result.Thread.AgentID,
+		"conversation_id": result.Thread.ID,
+		"model":           result.Run.Model,
+		"output_text":     content,
+		"output":          output,
 	})
+}
+
+func parseResponseTools(input []responseTool) ([]*schema.ToolInfo, error) {
+	tools := make([]*schema.ToolInfo, 0, len(input))
+	for i, item := range input {
+		if item.Type != "" && item.Type != "function" {
+			return nil, fmt.Errorf("tools[%d].type must be function", i)
+		}
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			return nil, fmt.Errorf("tools[%d].name is required", i)
+		}
+		params, err := openAIParameters(item.Parameters)
+		if err != nil {
+			return nil, fmt.Errorf("tools[%d].parameters: %w", i, err)
+		}
+		tools = append(tools, &schema.ToolInfo{
+			Name:        name,
+			Desc:        item.Description,
+			ParamsOneOf: schema.NewParamsOneOfByParams(params),
+		})
+	}
+	return tools, nil
+}
+
+func parseResponseToolOutputs(input []responseToolOutput) ([]service.ResponseToolOutput, error) {
+	outputs := make([]service.ResponseToolOutput, 0, len(input))
+	for i, item := range input {
+		if strings.TrimSpace(item.CallID) == "" {
+			return nil, fmt.Errorf("tool_outputs[%d].call_id is required", i)
+		}
+		if len(item.Output) == 0 || string(item.Output) == "null" {
+			return nil, fmt.Errorf("tool_outputs[%d].output is required", i)
+		}
+		var text string
+		if err := json.Unmarshal(item.Output, &text); err != nil {
+			text = string(item.Output)
+		}
+		outputs = append(outputs, service.ResponseToolOutput{
+			CallID: strings.TrimSpace(item.CallID),
+			Name:   strings.TrimSpace(item.Name),
+			Output: text,
+		})
+	}
+	return outputs, nil
 }
 
 func parseResponseMessage(instructions string, raw json.RawMessage) (string, error) {

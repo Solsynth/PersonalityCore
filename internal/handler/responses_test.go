@@ -36,3 +36,36 @@ func TestParseResponseInputRejectsEmptyInput(t *testing.T) {
 		t.Fatal("parseResponseInput() accepted blank input")
 	}
 }
+
+func TestParseResponseToolsAndOutputs(t *testing.T) {
+	tools, err := parseResponseTools([]responseTool{{
+		Type:        "function",
+		Name:        "lookup_weather",
+		Description: "Look up weather.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"city": map[string]any{"type": "string"},
+			},
+			"required": []any{"city"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("parseResponseTools() error = %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "lookup_weather" || tools[0].ParamsOneOf == nil {
+		t.Fatalf("unexpected parsed tool: %#v", tools)
+	}
+
+	outputs, err := parseResponseToolOutputs([]responseToolOutput{{
+		CallID: "call_1",
+		Name:   "lookup_weather",
+		Output: json.RawMessage(`{"temperature":22}`),
+	}})
+	if err != nil {
+		t.Fatalf("parseResponseToolOutputs() error = %v", err)
+	}
+	if len(outputs) != 1 || outputs[0].CallID != "call_1" || outputs[0].Output != `{"temperature":22}` {
+		t.Fatalf("unexpected parsed output: %#v", outputs)
+	}
+}

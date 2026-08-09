@@ -206,6 +206,8 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		return s.executeListSkillsToolCall(def, activeSkills, 0), nil
 	case "activate_skill":
 		return s.executeActivateSkillToolCall(call, activeSkills), nil
+	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
+		return s.executeMemoryToolCall(ctx, def, accountID, call)
 	}
 	if isTaskToolName(call.Function.Name) {
 		return s.executeTaskToolCall(ctx, def.ID, accountID, call)

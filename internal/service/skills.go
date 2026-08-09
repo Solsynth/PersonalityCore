@@ -55,6 +55,17 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
+	"memory": {
+		Name:        "memory",
+		Description: "Search and manage durable user memories",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.memorySearchToolInfo(),
+				s.memorySaveToolInfo(),
+				s.memoryForgetToolInfo(),
+			}
+		},
+	},
 	"tasks": {
 		Name:        "tasks",
 		Description: "Create and manage scheduled tasks that run automatically",
@@ -141,16 +152,16 @@ func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, ac
 	skills := s.availableSkills(def, activeSkills, perkLevel)
 	if len(skills) == 0 {
 		return &executedChatToolResult{
-			Content: `{"skills":[],"message":"No additional skills available."}`,
+			Content:  `{"skills":[],"message":"No additional skills available."}`,
 			ToolName: "list_skills",
 		}
 	}
 	var items []string
 	for _, sk := range skills {
-		items = append(items, `{"name":"`+sk.Name+`","description":"`+strings.ReplaceAll(sk.Description, `"`, `\"`) + `"}`)
+		items = append(items, `{"name":"`+sk.Name+`","description":"`+strings.ReplaceAll(sk.Description, `"`, `\"`)+`"}`)
 	}
 	return &executedChatToolResult{
-		Content: `{"skills":[` + strings.Join(items, ",") + `]}`,
+		Content:  `{"skills":[` + strings.Join(items, ",") + `]}`,
 		ToolName: "list_skills",
 	}
 }

@@ -158,6 +158,25 @@ type AgentManualMemory struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+type AgentMemory struct {
+	ID              string     `gorm:"primaryKey;size:26" json:"id"`
+	AccountID       string     `gorm:"size:128;index:idx_agent_memories_scope_status,priority:1;index:idx_agent_memories_lookup,priority:1" json:"account_id"`
+	AgentID         string     `gorm:"size:64;index:idx_agent_memories_scope_status,priority:2;index:idx_agent_memories_lookup,priority:2" json:"agent_id"`
+	Scope           string     `gorm:"size:32;index:idx_agent_memories_scope_status,priority:3" json:"scope"`
+	Category        string     `gorm:"size:64;index:idx_agent_memories_lookup,priority:3" json:"category"`
+	Key             string     `gorm:"size:128;index:idx_agent_memories_lookup,priority:4" json:"key"`
+	Content         string     `gorm:"type:text" json:"content"`
+	Confidence      float32    `json:"confidence"`
+	Confirmed       bool       `json:"confirmed"`
+	SourceMessageID string     `gorm:"size:26;index" json:"source_message_id"`
+	SourceRunID     string     `gorm:"size:26;index" json:"source_run_id"`
+	SupersedesID    string     `gorm:"size:26;index" json:"supersedes_id"`
+	Status          string     `gorm:"size:24;index:idx_agent_memories_scope_status,priority:4" json:"status"`
+	LastObservedAt  *time.Time `json:"last_observed_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
 type AgentSelfNote struct {
 	ID        string         `gorm:"primaryKey;size:26" json:"id"`
 	AgentID   string         `gorm:"size:64;uniqueIndex:idx_agent_self_notes_agent_key,priority:1;index:idx_agent_self_notes_agent_deleted,priority:1" json:"agent_id"`

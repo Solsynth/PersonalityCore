@@ -49,6 +49,27 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 			return nil, err
 		}
 	}
+	memorySummary := strings.TrimSpace(state.MemorySummary)
+	if hasAbility(def, abilityMemory) {
+		structured, listErr := m.ListMemories(ctx, impressionAccountID, def.ID, "", 12)
+		if listErr != nil {
+			return nil, listErr
+		}
+		if len(structured) == 0 {
+			if legacy := decodeMemoryFacts(state.MemoryItems); len(legacy) > 0 {
+				if err := m.upsertExtractedFacts(ctx, impressionAccountID, def.ID, legacy, "", ""); err != nil {
+					return nil, err
+				}
+				structured, listErr = m.ListMemories(ctx, impressionAccountID, def.ID, "", 12)
+				if listErr != nil {
+					return nil, listErr
+				}
+			}
+		}
+		if summary := summarizeStructuredMemories(structured); summary != "" {
+			memorySummary = summary
+		}
+	}
 	crossConversation := ""
 	if hasAbility(def, abilityCrossConversationMemory) {
 		crossConversation, err = m.buildCrossConversationSummary(ctx, impressionAccountID, threadAccountID, def.ID, threadID)
@@ -58,7 +79,7 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 	}
 
 	return &PromptState{
-		MemorySummary:       strings.TrimSpace(state.MemorySummary),
+		MemorySummary:       memorySummary,
 		SavedMemorySummary:  summarizeManualMemories(savedMemories),
 		CrossConversation:   strings.TrimSpace(crossConversation),
 		RelationshipSummary: strings.TrimSpace(state.RelationshipSummary),
@@ -67,7 +88,7 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 	}, nil
 }
 
-func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def agent.Definition, userMessage, assistantMessage string) error {
+func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def agent.Definition, userMessage, assistantMessage string, sourceIDs ...string) error {
 	if m == nil || m.db == nil || !usesHumanState(def) {
 		return nil
 	}
@@ -77,6 +98,13 @@ func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def 
 		return err
 	}
 
+	sourceMessageID, sourceRunID := "", ""
+	if len(sourceIDs) > 0 {
+		sourceMessageID = strings.TrimSpace(sourceIDs[0])
+	}
+	if len(sourceIDs) > 1 {
+		sourceRunID = strings.TrimSpace(sourceIDs[1])
+	}
 	now := time.Now()
 	state.InteractionCount++
 	state.LastUserMessageAt = &now
@@ -84,9 +112,13 @@ func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def 
 
 	memories := decodeMemoryFacts(state.MemoryItems)
 	if hasAbility(def, abilityMemory) {
-		memories = MergeMemoryFacts(memories, ExtractMemoryFacts(userMessage, now))
+		incoming := ExtractMemoryFacts(userMessage, now)
+		memories = MergeMemoryFacts(memories, incoming)
 		state.MemoryItems = encodeMemoryFacts(memories)
 		state.MemorySummary = summarizeMemoryFacts(memories)
+		if err := m.upsertExtractedFacts(ctx, accountID, def.ID, incoming, sourceMessageID, sourceRunID); err != nil {
+			return err
+		}
 	}
 	if hasAbility(def, abilitySavedMemory) {
 		if err := m.saveManualMemories(ctx, accountID, def.ID, ExtractSavedMemoryCandidates(userMessage)); err != nil {

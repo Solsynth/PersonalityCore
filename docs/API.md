@@ -275,6 +275,57 @@ OpenAI-compatible error object:
 
 ## Agents
 
+## User memories
+
+Memories are account-scoped and agent-scoped. Conversation history remains the
+source of truth for a thread; memories are durable, structured, and treated as
+soft facts. Every memory has provenance, confidence, confirmation state, and a
+status. Replacing a fact supersedes the prior record instead of erasing it.
+
+### List memories
+
+```
+GET /api/memories?agent_id=assistant&q=tea&limit=20
+```
+
+Returns active memories owned by the authenticated account and selected agent.
+Search matches the memory key, category, or content.
+
+### Save or update a memory
+
+```
+POST /api/memories
+```
+
+```json
+{
+  "agent_id": "assistant",
+  "category": "preference",
+  "key": "favorite_drink",
+  "content": "The user prefers tea.",
+  "confidence": 1,
+  "confirmed": true
+}
+```
+
+An active memory with the same account, agent, scope, category, and key is
+updated when its content is unchanged. A changed value supersedes the previous
+record.
+
+### Forget a memory
+
+```
+DELETE /api/memories/:id?agent_id=assistant
+```
+
+Deletion is a scoped soft delete. The record is retained for auditability but
+is excluded from prompt retrieval and memory search.
+
+Agents with the `memory` or `humanizer` ability automatically receive the
+`memory_search`, `memory_save`, and `memory_forget` server tools. Server-side
+extraction only promotes deterministic user facts and marks them unconfirmed;
+explicit tool saves are confirmed.
+
 ## Models
 
 ### List configured models

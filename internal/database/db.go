@@ -41,6 +41,7 @@ func (d *DB) AutoMigrate() error {
 		&OpenAICredentialUsage{},
 		&AgentHumanState{},
 		&AgentManualMemory{},
+		&AgentMemory{},
 		&AgentSelfNote{},
 		&ExternalChatBinding{},
 		&FileSummary{},

@@ -116,7 +116,7 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 		return nil, err
 	}
 	if s.humanize != nil {
-		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(thread.AccountID, requestMessage), agentDef, requestMessage.Content, responseContent); err != nil {
+		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(thread.AccountID, requestMessage), agentDef, requestMessage.Content, responseContent, requestMessage.ID, run.ID); err != nil {
 			return nil, err
 		}
 	}

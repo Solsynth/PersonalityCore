@@ -26,6 +26,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 	r.POST("/agents/:id/autonomous-runs", func(c *gin.Context) { createAutonomousRun(c, conversations) })
 
 	RegisterImageSummaryRoutes(r, conversations)
+	RegisterMemoryRoutes(r, conversations)
 
 	conv := r.Group("/conversations")
 	{

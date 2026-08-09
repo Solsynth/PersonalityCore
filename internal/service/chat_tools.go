@@ -132,6 +132,14 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			}
 		}
 	}
+	// auto-load durable user memory tools for humanizer agents
+	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "memory") {
+		if s.isSkillAllowed(perkLevel, "memory") {
+			if skill, ok := skillRegistry["memory"]; ok {
+				tools = append(tools, skill.Tools(s)...)
+			}
+		}
+	}
 
 	// add activated skill tools (filtered by perk)
 	if activeSkills != nil {
@@ -268,7 +276,7 @@ func (s *ConversationService) runWithChatTools(
 					Str("tool_call_id", call.ID).
 					Msg("overriding no_reply because the bot was mentioned")
 				result = &executedChatToolResult{
-					Content: `{"ok":false,"error":"The bot was mentioned. You MUST send a reply using send_chat_message."}`,
+					Content:    `{"ok":false,"error":"The bot was mentioned. You MUST send a reply using send_chat_message."}`,
 					ToolName:   call.Function.Name,
 					ToolCallID: call.ID,
 				}
@@ -963,8 +971,8 @@ func (s *ConversationService) executeEndEngagementToolCall(ctx context.Context, 
 		Str("room_id", input.RoomID).
 		Msg("ended engagement state for room")
 	payload, err := json.Marshal(map[string]any{
-		"ok":     true,
-		"status": "engagement_ended",
+		"ok":      true,
+		"status":  "engagement_ended",
 		"room_id": input.RoomID,
 	})
 	if err != nil {

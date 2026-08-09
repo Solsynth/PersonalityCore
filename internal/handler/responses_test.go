@@ -89,3 +89,32 @@ func TestRegisterResponseRoutesIncludesPetEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestBindPetSessionRequestPreservesPreviousResponseContinuation(t *testing.T) {
+	request := responseRequest{
+		AgentID:            "mochi",
+		PreviousResponseID: "run-1",
+	}
+	if err := bindPetSessionRequest(&request, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if request.ConversationID != "" {
+		t.Fatalf("continuation unexpectedly bound conversation_id %q", request.ConversationID)
+	}
+
+	first := responseRequest{AgentID: "mochi", Input: json.RawMessage(`"hello"`)}
+	if err := bindPetSessionRequest(&first, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if first.ConversationID != "thread-1" {
+		t.Fatalf("first request conversation_id = %q", first.ConversationID)
+	}
+
+	conflicting := responseRequest{
+		ConversationID:     "thread-1",
+		PreviousResponseID: "run-1",
+	}
+	if err := bindPetSessionRequest(&conflicting, "thread-1"); err == nil {
+		t.Fatal("expected conversation and previous response IDs to conflict")
+	}
+}

@@ -82,12 +82,25 @@ func createPetResponse(c *gin.Context, conversations *service.ConversationServic
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if request.ConversationID != "" && request.ConversationID != thread.ID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id does not match the pet session"})
+	if err := bindPetSessionRequest(&request, thread.ID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	request.ConversationID = thread.ID
 	writeResponse(c, conversations, accountID, request)
+}
+
+func bindPetSessionRequest(request *responseRequest, threadID string) error {
+	if strings.TrimSpace(request.PreviousResponseID) != "" {
+		if strings.TrimSpace(request.ConversationID) != "" {
+			return fmt.Errorf("conversation_id and previous_response_id are mutually exclusive")
+		}
+		return nil
+	}
+	if request.ConversationID != "" && request.ConversationID != threadID {
+		return fmt.Errorf("conversation_id does not match the pet session")
+	}
+	request.ConversationID = threadID
+	return nil
 }
 
 func resetPetResponse(c *gin.Context, conversations *service.ConversationService) {

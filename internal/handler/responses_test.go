@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/gin-gonic/gin"
 )
 
 func TestParseResponseInputSupportsTextAndMessageHistory(t *testing.T) {
@@ -67,5 +68,24 @@ func TestParseResponseToolsAndOutputs(t *testing.T) {
 	}
 	if len(outputs) != 1 || outputs[0].CallID != "call_1" || outputs[0].Output != `{"temperature":22}` {
 		t.Fatalf("unexpected parsed output: %#v", outputs)
+	}
+}
+
+func TestRegisterResponseRoutesIncludesPetEndpoints(t *testing.T) {
+	router := gin.New()
+	RegisterResponseRoutes(router.Group("/api"), nil)
+
+	paths := make(map[string]bool)
+	for _, route := range router.Routes() {
+		paths[route.Method+" "+route.Path] = true
+	}
+	for _, path := range []string{
+		"POST /api/responses",
+		"POST /api/pet/responses",
+		"POST /api/pet/reset",
+	} {
+		if !paths[path] {
+			t.Fatalf("missing route %s", path)
+		}
 	}
 }

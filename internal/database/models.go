@@ -11,6 +11,7 @@ type ConversationThread struct {
 	ID             string         `gorm:"primaryKey;size:26" json:"id"`
 	AccountID      string         `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
 	AgentID        string         `gorm:"size:64;index" json:"agent_id"`
+	Kind           string         `gorm:"size:32;index" json:"-"`
 	Title          string         `gorm:"size:255" json:"title"`
 	PerkLevel      int32          `gorm:"default:0" json:"perk_level"`
 	ContextSummary string         `gorm:"type:text" json:"context_summary"`
@@ -20,6 +21,15 @@ type ConversationThread struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+type PetSession struct {
+	ID        string    `gorm:"primaryKey;size:26" json:"id"`
+	AccountID string    `gorm:"size:128;uniqueIndex:idx_pet_sessions_account_agent,priority:1" json:"account_id"`
+	AgentID   string    `gorm:"size:64;uniqueIndex:idx_pet_sessions_account_agent,priority:2" json:"agent_id"`
+	ThreadID  string    `gorm:"size:26;uniqueIndex" json:"thread_id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type ConversationMessage struct {

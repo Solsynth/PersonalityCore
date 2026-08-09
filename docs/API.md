@@ -122,6 +122,33 @@ before a client tool call is returned.
 
 ---
 
+## Pet responses
+
+```
+POST /api/pet/responses
+POST /api/pet/reset?agent_id=mochi
+```
+
+Pet responses use the native Responses request and response shape, but the
+server resolves one hidden conversation per authenticated account and
+pet-capable agent. The client must send `agent_id` and may continue with the
+returned response `id` as `previous_response_id`; it does not need to store a
+conversation ID.
+
+Pet agents are marked in their configuration with the general-purpose ability
+list:
+
+```toml
+abilities = ["pet", "memory", "mood", "relationship"]
+```
+
+Pet threads are excluded from normal conversation listings. Reset returns
+`204 No Content` and causes the next pet response to start a new hidden
+conversation.
+
+
+---
+
 ## OpenAI-compatible chat completions
 
 ```

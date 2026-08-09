@@ -33,6 +33,7 @@ func (d *DB) AutoMigrate() error {
 	return d.DB.AutoMigrate(
 		&ConversationThread{},
 		&ConversationMessage{},
+		&PetSession{},
 		&ConversationRun{},
 		&BillingAccountPolicy{},
 		&BillingUsage{},

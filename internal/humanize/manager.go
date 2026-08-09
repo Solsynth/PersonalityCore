@@ -366,6 +366,7 @@ func decodeMemoryFacts(raw datatypes.JSON) []MemoryFact {
 
 func usesHumanState(def agent.Definition) bool {
 	return hasAbility(def, abilityHumanizer) ||
+		hasAbility(def, abilityPet) ||
 		hasAbility(def, abilityMemory) ||
 		hasAbility(def, abilitySavedMemory) ||
 		hasAbility(def, abilityCrossConversationMemory) ||
@@ -375,6 +376,7 @@ func usesHumanState(def agent.Definition) bool {
 
 const (
 	abilityHumanizer               = "humanizer"
+	abilityPet                     = "pet"
 	abilityMemory                  = "memory"
 	abilitySavedMemory             = "saved_memory"
 	abilityCrossConversationMemory = "cross_conversation_memory"

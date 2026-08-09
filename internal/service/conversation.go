@@ -189,7 +189,8 @@ func (s *ConversationService) CreateConversation(ctx context.Context, accountID 
 
 func (s *ConversationService) ListConversations(ctx context.Context, accountID string, input ListInput) ([]database.ConversationThread, int64, error) {
 	var total int64
-	query := s.db.WithContext(ctx).Model(&database.ConversationThread{}).Where("account_id = ?", accountID)
+	query := s.db.WithContext(ctx).Model(&database.ConversationThread{}).
+		Where("account_id = ? AND (kind IS NULL OR kind <> ?)", accountID, petThreadKind)
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -384,6 +385,9 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	limit := s.cfg.Personality.MaxHistoryMessages
 	if limit < 1 {
 		limit = 24
+	}
+	if agent.HasAbility(def, "pet") {
+		limit = min(limit, 12)
 	}
 	perkLimits := s.resolvePerkLimits(perkLevel)
 	if perkLimits.MaxHistoryMessages > 0 {
@@ -1665,7 +1669,11 @@ func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context,
 		newSummary = s.buildRawSnippetSummary(records, prevSummary)
 	}
 
-	thread.ContextSummary = trimCompactedSummary(newSummary, 5000)
+	summaryLimit := 5000
+	if def, ok := s.registry.Get(thread.AgentID); ok && agent.HasAbility(def, "pet") {
+		summaryLimit = 3000
+	}
+	thread.ContextSummary = trimCompactedSummary(newSummary, summaryLimit)
 	thread.SummarySeq = cutoffSeq
 	now := time.Now()
 	thread.SummaryAt = &now

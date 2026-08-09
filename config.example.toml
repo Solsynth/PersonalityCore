@@ -174,12 +174,24 @@ billingMultiplier = 1.0         # optional multiplier for this agent's priced mo
 abilities = ["memory", "mood", "relationship"]
 enabled = true
 
+
 # Per-agent perk overrides: cap output for lower perk levels.
 [agents.items.perkOverrides.0]
 maxCompletionTokens = 512     # basic users get short answers from support
 
 [agents.items.perkOverrides.1]
 maxCompletionTokens = 2048
+
+# Pet agents use the same general-purpose ability list plus "pet". This
+# enables the hidden canonical pet session and pet-specific context policy.
+[[agents.items]]
+id = "mochi"
+name = "Mochi"
+description = "A warm desktop companion"
+systemPromptFile = "./prompts/mochi.md"
+model = "openai/gpt-4.1-mini"
+abilities = ["pet", "memory", "mood", "relationship"]
+enabled = true
 
 # Agent: a chat bot connected to Solar Network
 [[agents.items]]

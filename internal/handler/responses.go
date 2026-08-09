@@ -17,6 +17,8 @@ import (
 // contract. It intentionally does not use the OpenAI compatibility surface.
 func RegisterResponseRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
 	r.POST("/responses", func(c *gin.Context) { createResponse(c, conversations) })
+	r.POST("/pet/responses", func(c *gin.Context) { createPetResponse(c, conversations) })
+	r.POST("/pet/reset", func(c *gin.Context) { resetPetResponse(c, conversations) })
 }
 
 type responseRequest struct {
@@ -52,12 +54,60 @@ func createResponse(c *gin.Context, conversations *service.ConversationService) 
 	if !ok {
 		return
 	}
-
 	var request responseRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	writeResponse(c, conversations, accountID, request)
+}
+
+func createPetResponse(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	var request responseRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	agentID := strings.TrimSpace(request.AgentID)
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	thread, err := conversations.GetOrCreatePetThread(c.Request.Context(), accountID, agentID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if request.ConversationID != "" && request.ConversationID != thread.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id does not match the pet session"})
+		return
+	}
+	request.ConversationID = thread.ID
+	writeResponse(c, conversations, accountID, request)
+}
+
+func resetPetResponse(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	agentID := strings.TrimSpace(c.Query("agent_id"))
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	if err := conversations.ResetPetThread(c.Request.Context(), accountID, agentID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func writeResponse(c *gin.Context, conversations *service.ConversationService, accountID string, request responseRequest) {
 	var (
 		message string
 		err     error

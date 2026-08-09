@@ -38,6 +38,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.GET("/:id/runs", func(c *gin.Context) { listRuns(c, conversations) })
 		conv.GET("/:id/runs/:runId", func(c *gin.Context) { getRun(c, conversations) })
 	}
+	RegisterResponseRoutes(r, conversations)
 }
 
 func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {

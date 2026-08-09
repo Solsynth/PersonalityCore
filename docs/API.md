@@ -16,6 +16,61 @@ Network account access.
 
 ---
 
+## Native stateful responses
+
+```
+POST /api/responses
+```
+
+This is the native PersonalityCore generation endpoint. It is independent of
+the OpenAI compatibility endpoint and persists each turn as a conversation run.
+The gateway form is `POST /responses`.
+
+**Request body**
+
+```json
+{
+  "agent_id": "assistant",
+  "input": "Hello"
+}
+```
+
+The first request creates a conversation. Continue it by sending the returned
+response `id` as `previous_response_id`:
+
+```json
+{
+  "previous_response_id": "01JF...",
+  "input": "What did I just say?"
+}
+```
+
+`conversation_id` may be supplied instead when the caller stores the
+conversation handle. `input` may be a string or an array of text messages.
+`instructions` is optional and is included with the current turn.
+
+**Response**
+
+```json
+{
+  "id": "01JF...",
+  "object": "personality.response",
+  "agent_id": "assistant",
+  "conversation_id": "01JG...",
+  "model": "openai/gpt-4o",
+  "output_text": "You said hello.",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "You said hello."}]
+    }
+  ]
+}
+```
+
+---
+
 ## OpenAI-compatible chat completions
 
 ```

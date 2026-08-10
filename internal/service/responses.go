@@ -134,6 +134,8 @@ func (s *ConversationService) ExecuteResponse(ctx context.Context, accountID str
 		Messages:           modelMessages,
 		ClientTools:        input.ClientTools,
 		IncludeServerTools: true,
+		BillingUsageID:     run.BillingUsageID,
+		BillingRunID:       run.ID,
 	})
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)

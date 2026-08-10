@@ -22,12 +22,17 @@ type OpenAICompletionInput struct {
 	Messages           []*schema.Message
 	ClientTools        []*schema.ToolInfo
 	IncludeServerTools bool
+	// BillingUsageID and BillingRunID are set by callers that already reserved
+	// a billing ledger row, such as the Responses API.
+	BillingUsageID string
+	BillingRunID   string
 }
 
 type OpenAICompletionResult struct {
-	Message *schema.Message
-	Model   string
-	Usage   *schema.TokenUsage
+	Message    *schema.Message
+	Model      string
+	Definition agent.Definition
+	Usage      *schema.TokenUsage
 }
 
 func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICompletionInput) (*OpenAICompletionResult, error) {
@@ -66,6 +71,34 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 		return nil, err
 	}
 
+	billingUsageID := strings.TrimSpace(input.BillingUsageID)
+	ownsBilling := billingUsageID == ""
+	billingRunID := strings.TrimSpace(input.BillingRunID)
+	if billingRunID == "" {
+		billingRunID = newID()
+	}
+	if ownsBilling && s.billing != nil {
+		billingUsageID, err = s.billing.AuthorizeRun(ctx, input.AccountID, def)
+		if err != nil {
+			return nil, err
+		}
+	}
+	generationCompleted := false
+	defer func() {
+		if ownsBilling && !generationCompleted && s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
+	}()
+	finish := func(response *schema.Message) (*OpenAICompletionResult, error) {
+		generationCompleted = true
+		if ownsBilling && s.billing != nil {
+			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, response.ResponseMeta.Usage); err != nil {
+				return nil, err
+			}
+		}
+		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: response.ResponseMeta.Usage}, nil
+	}
+
 	messages := append([]*schema.Message(nil), input.Messages...)
 	if strings.TrimSpace(def.SystemPrompt) != "" {
 		messages = append([]*schema.Message{schema.SystemMessage(def.SystemPrompt)}, messages...)
@@ -84,7 +117,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 		if err != nil {
 			return nil, fmt.Errorf("generation failed: %w", err)
 		}
-		return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
+		return finish(response)
 	}
 
 	toolModel, err := s.executor.NewToolCallingModel(ctx, def, tools)
@@ -98,7 +131,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 			return nil, fmt.Errorf("generation failed: %w", err)
 		}
 		if len(response.ToolCalls) == 0 {
-			return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
+			return finish(response)
 		}
 
 		clientCalls := make([]schema.ToolCall, 0, len(response.ToolCalls))
@@ -124,7 +157,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 				}
 			}
 			response.ToolCalls = clientCalls
-			return &OpenAICompletionResult{Message: response, Model: def.Model, Usage: response.ResponseMeta.Usage}, nil
+			return finish(response)
 		}
 		messages = append(messages, response)
 		for _, call := range serverCalls {

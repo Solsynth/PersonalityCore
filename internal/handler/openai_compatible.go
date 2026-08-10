@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
 	"src.solsynth.dev/sosys/personality/internal/identity"
 	"src.solsynth.dev/sosys/personality/internal/service"
 )
@@ -88,7 +87,7 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 		return
 	}
 	if credentialID != "" {
-		if err := conversations.RecordOpenAICredentialUsage(c.Request.Context(), credentialID, agent.Definition{Model: result.Model}, result.Usage); err != nil {
+		if err := conversations.RecordOpenAICredentialUsage(c.Request.Context(), credentialID, result.Definition, result.Usage); err != nil {
 			openAIError(c, http.StatusPaymentRequired, err.Error())
 			return
 		}

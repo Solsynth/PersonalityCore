@@ -16,6 +16,10 @@ func RegisterBillingAdminRoutes(r *gin.RouterGroup, conversations *service.Conve
 	r.GET("/accounts/:accountId", func(c *gin.Context) { getBillingAccount(c, conversations) })
 	r.PUT("/accounts/:accountId", func(c *gin.Context) { putBillingAccount(c, conversations) })
 	r.POST("/accounts/:accountId/unblacklist", func(c *gin.Context) { unblacklistBillingAccount(c, conversations) })
+	r.GET("/accounts/:accountId/usage", func(c *gin.Context) { getBillingAccountUsage(c, conversations) })
+	r.POST("/accounts/:accountId/settle", func(c *gin.Context) { settleBillingAccount(c, conversations) })
+	r.GET("/accounts/:accountId/openai-credentials", func(c *gin.Context) { listBillingAccountCredentials(c, conversations) })
+	r.DELETE("/accounts/:accountId/openai-credentials/:credentialId", func(c *gin.Context) { revokeBillingAccountCredential(c, conversations) })
 }
 
 func requireBillingAdmin(c *gin.Context, conversations *service.ConversationService) bool {
@@ -108,4 +112,56 @@ func unblacklistBillingAccount(c *gin.Context, conversations *service.Conversati
 		return
 	}
 	c.JSON(http.StatusOK, policy)
+}
+
+func getBillingAccountUsage(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	usage, err := conversations.Billing().UsageSummary(c.Request.Context(), c.Param("accountId"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, usage)
+}
+
+func settleBillingAccount(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	result, err := conversations.Billing().SettleAccount(c.Request.Context(), c.Param("accountId"))
+	if err != nil {
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func listBillingAccountCredentials(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	items, err := conversations.ListOpenAICredentials(c.Request.Context(), c.Param("accountId"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items})
+}
+
+func revokeBillingAccountCredential(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	err := conversations.RevokeOpenAICredential(c.Request.Context(), c.Param("accountId"), c.Param("credentialId"))
+	if errors.Is(err, service.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

@@ -577,11 +577,16 @@ reaches that amount. A failed Wallet transaction blacklists the account.
 a null `payee_account_id` and chooses its own default/system payee.
 
 Billing administrators must be superusers or hold the Padlock permission
-`personality.billing.manage` and can manage overrides at:
+`personality.billing.manage` and can manage account policy, usage, settlement,
+and AI credentials at:
 
 - `GET /api/admin/billing/accounts/:accountId`
 - `PUT /api/admin/billing/accounts/:accountId`
 - `POST /api/admin/billing/accounts/:accountId/unblacklist`
+- `GET /api/admin/billing/accounts/:accountId/usage`
+- `POST /api/admin/billing/accounts/:accountId/settle`
+- `GET /api/admin/billing/accounts/:accountId/openai-credentials`
+- `DELETE /api/admin/billing/accounts/:accountId/openai-credentials/:credentialId`
 
 Each user can view their policy at `GET /api/billing/me` and choose their own
 immediate-settlement spending quota with `PUT /api/billing/me/spending-quota`.

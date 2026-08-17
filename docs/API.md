@@ -603,6 +603,10 @@ All admin billing endpoints require a Solar superuser or the Padlock permission
 GET /api/admin/billing/accounts/:accountId
 PUT /api/admin/billing/accounts/:accountId
 POST /api/admin/billing/accounts/:accountId/unblacklist
+GET /api/admin/billing/accounts/:accountId/usage
+POST /api/admin/billing/accounts/:accountId/settle
+GET /api/admin/billing/accounts/:accountId/openai-credentials
+DELETE /api/admin/billing/accounts/:accountId/openai-credentials/:credentialId
 ```
 
 `PUT` accepts `hourly_run_limit`, `daily_run_limit`,
@@ -610,6 +614,12 @@ POST /api/admin/billing/accounts/:accountId/unblacklist
 are non-negative integers (`0` is unlimited); the wall is a non-negative gold
 decimal. `POST .../unblacklist` clears a blacklist after the account is
 resolved by an administrator.
+
+`GET .../usage` returns the account's current hourly and daily currency usage.
+`POST .../settle` immediately settles the account's unpaid balances and returns
+`402 Payment Required` if Wallet settlement fails. The credential endpoints let
+administrators inspect safe credential metadata and revoke a credential owned by
+the selected account; raw `sat_...` tokens are never returned.
 
 ## Runs
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -83,7 +84,7 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 		ClientTools: tools, IncludeServerTools: request.ServerTools && credentialID == "",
 	})
 	if err != nil {
-		openAIError(c, http.StatusBadRequest, err.Error())
+		openAIError(c, openAICompletionErrorStatus(err), err.Error())
 		return
 	}
 	if credentialID != "" {
@@ -329,6 +330,17 @@ func writeOpenAIData(c *gin.Context, value any) {
 
 func openAIError(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{"error": gin.H{"message": message, "type": "invalid_request_error"}})
+}
+
+func openAICompletionErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, service.ErrBillingBlacklisted),
+		errors.Is(err, service.ErrBillingQuotaExceeded),
+		errors.Is(err, service.ErrPaymentWalletRequired):
+		return http.StatusPaymentRequired
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func firstNonEmpty(values ...string) string {

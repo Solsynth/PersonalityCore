@@ -2,7 +2,11 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"testing"
+
+	"src.solsynth.dev/sosys/personality/internal/service"
 )
 
 func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {
@@ -72,5 +76,25 @@ func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {
 	}
 	if len(tools) != 1 || tools[0].Name != "weather" || tools[0].ParamsOneOf == nil {
 		t.Fatalf("tool schema was not converted: %#v", tools)
+	}
+}
+
+func TestOpenAICompletionErrorStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "blacklisted", err: service.ErrBillingBlacklisted, want: http.StatusPaymentRequired},
+		{name: "quota", err: fmt.Errorf("wrapped: %w", service.ErrBillingQuotaExceeded), want: http.StatusPaymentRequired},
+		{name: "wallet", err: service.ErrPaymentWalletRequired, want: http.StatusPaymentRequired},
+		{name: "invalid request", err: fmt.Errorf("bad request"), want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := openAICompletionErrorStatus(test.err); got != test.want {
+				t.Fatalf("openAICompletionErrorStatus() = %d, want %d", got, test.want)
+			}
+		})
 	}
 }

@@ -165,7 +165,7 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 	if err != nil {
 		return err
 	}
-	updates := map[string]any{"run_id": runID, "model": def.Model, "amount": price.amount, "original_amount": price.amount, "currency": price.currency}
+	updates := map[string]any{"run_id": nullIfEmpty(runID), "model": def.Model, "amount": price.amount, "original_amount": price.amount, "currency": price.currency}
 	if usage != nil {
 		updates["input_tokens"] = usage.PromptTokens
 		updates["output_tokens"] = usage.CompletionTokens
@@ -205,6 +205,15 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 		return err
 	}
 	return nil
+}
+
+// nullIfEmpty returns a *string for non-empty values so the unique run_id
+// index permits multiple unassigned (NULL) reservations; empty stays NULL.
+func nullIfEmpty(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 func (s *BillingService) modelCurrency(def agent.Definition) string {

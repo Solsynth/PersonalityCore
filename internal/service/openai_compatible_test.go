@@ -119,7 +119,7 @@ func TestCompleteOpenAIRecordsBillingUsage(t *testing.T) {
 	if usage.Amount != "0.00008000" {
 		t.Fatalf("billing amount = %q, want 0.00008000", usage.Amount)
 	}
-	if usage.RunID == "" {
+	if usage.RunID == nil || *usage.RunID == "" {
 		t.Fatal("billing usage run ID is empty")
 	}
 }

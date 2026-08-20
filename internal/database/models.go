@@ -87,7 +87,7 @@ type BillingAccountPolicy struct {
 // and linked to a payment once its UTC-day (or instant) charge succeeds.
 type BillingUsage struct {
 	ID             string    `gorm:"primaryKey;size:26" json:"id"`
-	RunID          string    `gorm:"size:26;uniqueIndex" json:"run_id"`
+	RunID          *string   `gorm:"size:26;uniqueIndex" json:"run_id"`
 	AccountID      string    `gorm:"size:128;index:idx_billing_usage_account_created,priority:1;index:idx_billing_usage_account_payment,priority:1" json:"account_id"`
 	Model          string    `gorm:"size:128" json:"model"`
 	Currency       string    `gorm:"size:32;index:idx_billing_usage_account_payment,priority:2" json:"currency"`

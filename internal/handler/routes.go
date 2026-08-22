@@ -160,13 +160,19 @@ func createRun(c *gin.Context, conversations *service.ConversationService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	input.AccountName, input.AccountNick = identity.GetAccountProfile(c)
 
 	if input.Stream {
 		streamRun(c, conversations, accountID, input)
 		return
 	}
 
-	result, err := conversations.ExecuteRun(c.Request.Context(), accountID, c.Param("id"), input)
+	runCtx := service.WithCallerIdentity(c.Request.Context(), service.CallerIdentity{
+		AccountID: accountID,
+		Name:      input.AccountName,
+		Nick:      input.AccountNick,
+	})
+	result, err := conversations.ExecuteRun(runCtx, accountID, c.Param("id"), input)
 	if err != nil {
 		renderServiceError(c, err)
 		return
@@ -226,7 +232,12 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 	go heartbeat(c, 15*time.Second, done)
 	defer close(done)
 
-	result, err := conversations.StreamRun(c.Request.Context(), accountID, c.Param("id"), input, service.StreamCallbacks{
+	ctx := service.WithCallerIdentity(c.Request.Context(), service.CallerIdentity{
+		AccountID: accountID,
+		Name:      input.AccountName,
+		Nick:      input.AccountNick,
+	})
+	result, err := conversations.StreamRun(ctx, accountID, c.Param("id"), input, service.StreamCallbacks{
 		OnChunk: func(chunk string) error {
 			writeSSE(c, "message.delta", gin.H{"delta": chunk})
 			return nil

@@ -203,7 +203,7 @@ func TestBuildModelMessagesPrefixesSolarUserHistoryWithUsername(t *testing.T) {
 		t.Fatalf("create user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -331,7 +331,7 @@ func TestBuildModelMessagesRehydratesToolHistory(t *testing.T) {
 		t.Fatalf("create tool result message: %v", err)
 	}
 
-	messages, def, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, def, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -406,7 +406,7 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 		t.Fatalf("create multimodal user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -484,7 +484,7 @@ func TestBuildModelMessagesFallsBackToTextForTextOnlyProviderHistory(t *testing.
 		t.Fatalf("create multimodal user message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -555,7 +555,7 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 		t.Fatalf("create message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -585,6 +585,72 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 	last := messages[len(messages)-1]
 	if last.Role != schema.System || !strings.Contains(last.Content, "Current date and time:") {
 		t.Fatalf("expected final current time system message, got %#v", last)
+	}
+}
+
+func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+		Abilities:    []string{"pet"},
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 4},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-pet-1",
+		AccountID: "acct-1",
+		AgentID:   "mochi",
+		Title:     "Pet chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := db.Create(&database.ConversationMessage{
+		ID:        "msg-1",
+		ThreadID:  thread.ID,
+		AccountID: thread.AccountID,
+		Role:      "user",
+		Content:   "Do you know me?",
+		Sequence:  1,
+	}).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	// Pet agents have no Solar Network chat connection (no `chat` ability),
+	// so caller identity must come from the authenticated request context.
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "alice", "Alice")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	found := false
+	for _, msg := range messages {
+		if msg.Role == schema.System && strings.Contains(msg.Content, `The user you are talking to is named "Alice".`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected caller identity overlay for pet agent")
+	}
+
+	messages, _, err = svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, "The user you are talking to is named") {
+			t.Fatalf("unexpected identity overlay without caller identity: %q", msg.Content)
+		}
 	}
 }
 
@@ -635,7 +701,7 @@ func TestBuildModelMessagesCompactsOlderThreadContext(t *testing.T) {
 		}
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -733,7 +799,7 @@ func TestBuildModelMessagesSkipsToolMessageWithoutToolCallID(t *testing.T) {
 		t.Fatalf("create fallback tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -781,7 +847,7 @@ func TestBuildModelMessagesSkipsOrphanedToolMessageWithUnknownToolCallID(t *test
 		t.Fatalf("create orphaned tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -835,7 +901,7 @@ func TestBuildModelMessagesDropsAssistantToolCallsWithoutToolResponses(t *testin
 		t.Fatalf("create assistant tool message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}
@@ -880,7 +946,7 @@ func TestBuildModelMessagesSkipsEmptyAssistantMessage(t *testing.T) {
 		t.Fatalf("create empty assistant message: %v", err)
 	}
 
-	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0)
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
 	if err != nil {
 		t.Fatalf("BuildModelMessages() error = %v", err)
 	}

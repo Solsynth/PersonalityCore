@@ -82,7 +82,7 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 		Str("trigger", trigger).
 		Msg("starting autonomous generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, thread.AccountID, thread.ID, thread.PerkLevel)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, thread.AccountID, thread.ID, thread.PerkLevel, "", "")
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err

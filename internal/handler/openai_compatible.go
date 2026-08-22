@@ -79,9 +79,22 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 		openAIError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := conversations.CompleteOpenAI(c.Request.Context(), service.OpenAICompletionInput{
+	// Third-party credential tokens (sat_) represent a different caller than
+	// the authenticated request, so their identity is not propagated.
+	ctx := c.Request.Context()
+	var accountName, accountNick string
+	if credentialID == "" {
+		accountName, accountNick = identity.GetAccountProfile(c)
+		ctx = service.WithCallerIdentity(ctx, service.CallerIdentity{
+			AccountID: accountID,
+			Name:      accountName,
+			Nick:      accountNick,
+		})
+	}
+	result, err := conversations.CompleteOpenAI(ctx, service.OpenAICompletionInput{
 		AgentID: request.AgentID, AccountID: accountID, CredentialID: credentialID, Model: request.Model, Messages: messages,
 		ClientTools: tools, IncludeServerTools: request.ServerTools && credentialID == "",
+		AccountName: accountName, AccountNick: accountNick,
 	})
 	if err != nil {
 		openAIError(c, openAICompletionErrorStatus(err), err.Error())

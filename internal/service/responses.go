@@ -21,6 +21,10 @@ type ResponseInput struct {
 	Message            string
 	ClientTools        []*schema.ToolInfo
 	ToolOutputs        []ResponseToolOutput
+	// AccountName and AccountNick carry the authenticated caller's identity
+	// from the request context so the model can address the user.
+	AccountName string
+	AccountNick string
 }
 
 type ResponseToolOutput struct {
@@ -123,7 +127,7 @@ func (s *ConversationService) ExecuteResponse(ctx context.Context, accountID str
 		}
 	}
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err

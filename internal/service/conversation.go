@@ -87,6 +87,10 @@ type RunInput struct {
 	InputParts      []userMessageInputPart `json:"input_parts"`
 	Stream          bool                   `json:"stream"`
 	RequestMetadata map[string]any         `json:"-"`
+	// AccountName and AccountNick carry the authenticated caller's identity
+	// from the request context; they are never accepted from the body.
+	AccountName string `json:"-"`
+	AccountNick string `json:"-"`
 }
 
 type AutonomousRunInput struct {
@@ -366,7 +370,7 @@ func (s *ConversationService) recordBilling(ctx context.Context, run *database.C
 	}
 }
 
-func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32) ([]*schema.Message, agent.Definition, error) {
+func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32, accountName, accountNick string) ([]*schema.Message, agent.Definition, error) {
 	thread, err := s.GetConversation(ctx, accountID, threadID)
 	if err != nil {
 		return nil, agent.Definition{}, err
@@ -454,7 +458,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	// Inject authenticated user identity for REST API callers
 	// (skipped for synthetic solar:agent:room accounts used by chat path)
 	if !strings.HasPrefix(thread.AccountID, "solar:") {
-		if overlay := s.buildUserIdentityOverlay(ctx, def.ID, thread.AccountID); strings.TrimSpace(overlay) != "" {
+		if overlay := s.buildUserIdentityOverlay(ctx, def.ID, thread.AccountID, accountName, accountNick); strings.TrimSpace(overlay) != "" {
 			messages = append(messages, schema.SystemMessage(overlay))
 		}
 	}
@@ -628,7 +632,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Str("agent_id", thread.AgentID).
 		Msg("starting non-streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
@@ -812,7 +816,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Str("agent_id", thread.AgentID).
 		Msg("starting streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel)
+	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
@@ -1376,6 +1380,20 @@ func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content st
 
 func renderCurrentDateTimeContext(now time.Time) string {
 	return "Current date and time: " + now.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+}
+
+// renderUserIdentityOverlay tells the model who the authenticated caller is.
+// It is the fallback used whenever the Solar Network passport lookup is
+// unavailable (pet agents, offline mode, lookup failures).
+func renderUserIdentityOverlay(name, nick string) string {
+	display := strings.TrimSpace(nick)
+	if display == "" {
+		display = strings.TrimSpace(name)
+	}
+	if display == "" {
+		return ""
+	}
+	return fmt.Sprintf("The user you are talking to is named %q.", display)
 }
 
 func renderCharacterConsistencyOverlay() string {

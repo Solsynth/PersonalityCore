@@ -16,6 +16,7 @@ import (
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/humanize"
 	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/personality/internal/solar_network"
 )
 
 const sendChatToolName = "send_chat_message"
@@ -23,6 +24,7 @@ const sendChatBatchToolName = "send_chat_message_batch"
 const noReplyToolName = "no_reply"
 const getChatMessageToolName = "get_chat_message"
 const getUserProfileToolName = "get_user_profile"
+const getCurrentUserProfileToolName = "get_current_user_profile"
 const listUserPostsToolName = "list_user_posts"
 const getPostToolName = "get_post"
 const listPostRepliesToolName = "list_post_replies"
@@ -111,6 +113,7 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 	if st := s.sequentialThinkingToolInfo(); st != nil {
 		tools = append(tools, st)
 	}
+	tools = append(tools, s.getCurrentUserProfileToolInfo())
 
 	// auto-load chat skill for chat agents
 	if agent.HasAbility(def, "chat") {
@@ -289,6 +292,11 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
+			} else if call.Function.Name == getCurrentUserProfileToolName {
+				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
+				if err != nil {
+					return "", err
+				}
 			} else if isTaskToolName(call.Function.Name) {
 				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
 				if err != nil {
@@ -391,6 +399,11 @@ func (s *ConversationService) runWithGeneralTools(
 				result = s.executeActivateSkillToolCall(call, activeSkills)
 				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				if err != nil {
+					return "", err
+				}
+			} else if call.Function.Name == getCurrentUserProfileToolName {
+				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
 				if err != nil {
 					return "", err
 				}
@@ -802,6 +815,14 @@ func (s *ConversationService) getUserProfileToolInfo() *schema.ToolInfo {
 				Desc: "Solar account ID to look up.",
 			},
 		}),
+	}
+}
+
+func (s *ConversationService) getCurrentUserProfileToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: getCurrentUserProfileToolName,
+		Desc: "Fetch the full profile of the user you are currently talking to: account, profile fields, and local time. Takes no arguments; the user is resolved automatically from the conversation. Use this when you need to know who you are talking to or recall their details.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
 
@@ -1228,6 +1249,86 @@ func (s *ConversationService) executeGetUserProfileToolCall(ctx context.Context,
 		}
 		payload["profile"] = profile
 	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeGetCurrentUserProfileToolCall(
+	ctx context.Context,
+	agentID string,
+	thread *database.ConversationThread,
+	call schema.ToolCall,
+) (*executedChatToolResult, error) {
+	// Resolve the person the agent is currently talking to.
+	// SN room (solar:-prefixed account): the remote account on the room binding.
+	// REST conversation: the authenticated thread account.
+	// Stateless openai-compatible path: thread is nil, caller identity is used.
+	resolveName, resolveID := "", ""
+	if thread != nil {
+		if strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:") {
+			binding, err := s.getSnRoomBinding(ctx, agentID, thread.ID)
+			if err != nil {
+				return nil, err
+			}
+			if binding != nil {
+				resolveID = strings.TrimSpace(binding.RemoteAccountID)
+				resolveName = strings.TrimSpace(binding.RemoteAccount)
+			}
+		} else {
+			resolveID = strings.TrimSpace(thread.AccountID)
+		}
+	}
+
+	payload := map[string]any{}
+	var account *solar_network.Account
+	if s.sn != nil && (resolveID != "" || resolveName != "") {
+		var err error
+		account, err = s.sn.GetAccount(ctx, agentID, resolveName, resolveID)
+		if err != nil {
+			logging.Log.Debug().
+				Err(err).
+				Str("agent_id", agentID).
+				Str("account_id", resolveID).
+				Str("account_name", resolveName).
+				Msg("current user profile lookup failed, falling back to caller identity")
+			account = nil
+		}
+	}
+	if account != nil {
+		payload["account"] = account
+		if name := strings.TrimSpace(account.Name); name != "" {
+			profile, err := s.sn.GetAccountProfile(ctx, agentID, name)
+			if err != nil {
+				return nil, err
+			}
+			payload["profile"] = profile
+			if localTime := snUserLocalTime(profile); localTime != "" {
+				payload["local_time"] = localTime
+			}
+		}
+	} else if id, ok := CallerIdentityFrom(ctx); ok {
+		payload["account"] = map[string]any{
+			"id":   id.AccountID,
+			"name": id.Name,
+			"nick": id.Nick,
+		}
+		payload["profile_unavailable"] = true
+	}
+
+	if payload["account"] == nil {
+		raw, err := json.Marshal(map[string]any{
+			"ok":    false,
+			"error": "cannot resolve the user you are currently talking to in this conversation",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+	}
+
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

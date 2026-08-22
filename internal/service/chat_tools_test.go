@@ -8,6 +8,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"src.solsynth.dev/sosys/personality/internal/agent"
+	"src.solsynth.dev/sosys/personality/internal/config"
 	"src.solsynth.dev/sosys/personality/internal/database"
 	"src.solsynth.dev/sosys/personality/internal/humanize"
 	"src.solsynth.dev/sosys/personality/internal/solar_network"
@@ -365,5 +367,89 @@ func TestSolarOutboundStreamSenderSendsCompletedLines(t *testing.T) {
 	}
 	if bridge.lastBody != "how are you?" {
 		t.Fatalf("expected buffered second line to send, got %q", bridge.lastBody)
+	}
+}
+
+func currentUserProfileCall() schema.ToolCall {
+	return schema.ToolCall{
+		ID: "call-1",
+		Function: schema.FunctionCall{
+			Name:      getCurrentUserProfileToolName,
+			Arguments: `{}`,
+		},
+	}
+}
+
+func newTestConversationService(t *testing.T) *ConversationService {
+	t.Helper()
+	registry, err := agent.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	return NewConversationService(openTestDB(t), &config.Config{}, registry, nil)
+}
+
+func TestGetCurrentUserProfileToolFallsBackToCallerIdentity(t *testing.T) {
+	svc := newTestConversationService(t)
+	ctx := WithCallerIdentity(context.Background(), CallerIdentity{AccountID: "acct-9", Name: "alice", Nick: "Alice"})
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "acct-9", AgentID: "mochi"}
+
+	result, err := svc.executeGetCurrentUserProfileToolCall(ctx, "mochi", thread, currentUserProfileCall())
+	if err != nil {
+		t.Fatalf("executeGetCurrentUserProfileToolCall() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	account, ok := payload["account"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected account object, got %#v", payload["account"])
+	}
+	if account["id"] != "acct-9" || account["name"] != "alice" || account["nick"] != "Alice" {
+		t.Fatalf("unexpected account: %#v", account)
+	}
+	if payload["profile_unavailable"] != true {
+		t.Fatalf("expected profile_unavailable, got %#v", payload)
+	}
+}
+
+func TestGetCurrentUserProfileToolResolvesViaBridge(t *testing.T) {
+	svc := newTestConversationService(t)
+	svc.SetSnChatBridge(&stubSolarBridge{
+		account: &solar_network.Account{ID: "acct-9", Name: "alice", Nick: "Alice"},
+		profile: solar_network.AccountProfile{"time_zone": "Asia/Shanghai", "region": "CN"},
+	})
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "acct-9", AgentID: "mochi"}
+
+	result, err := svc.executeGetCurrentUserProfileToolCall(context.Background(), "mochi", thread, currentUserProfileCall())
+	if err != nil {
+		t.Fatalf("executeGetCurrentUserProfileToolCall() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if _, ok := payload["profile"].(map[string]any); !ok {
+		t.Fatalf("expected profile object, got %#v", payload["profile"])
+	}
+	if payload["profile_unavailable"] != nil {
+		t.Fatalf("expected full profile without profile_unavailable, got %#v", payload)
+	}
+	if !strings.Contains(result.Content, "Current time for the sender") {
+		t.Fatalf("expected local time in result, got %s", result.Content)
+	}
+}
+
+func TestGetCurrentUserProfileToolNoUser(t *testing.T) {
+	svc := newTestConversationService(t)
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "solar:agent:room", AgentID: "bot"}
+
+	result, err := svc.executeGetCurrentUserProfileToolCall(context.Background(), "bot", thread, currentUserProfileCall())
+	if err != nil {
+		t.Fatalf("executeGetCurrentUserProfileToolCall() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"ok":false`) {
+		t.Fatalf("expected soft failure result, got %s", result.Content)
 	}
 }

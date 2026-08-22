@@ -22,6 +22,10 @@ type OpenAICompletionInput struct {
 	Messages           []*schema.Message
 	ClientTools        []*schema.ToolInfo
 	IncludeServerTools bool
+	// AccountName and AccountNick carry the authenticated caller's identity
+	// from the request context so the model can address the user.
+	AccountName string
+	AccountNick string
 	// BillingUsageID and BillingRunID are set by callers that already reserved
 	// a billing ledger row, such as the Responses API.
 	BillingUsageID string
@@ -102,6 +106,9 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 	messages := append([]*schema.Message(nil), input.Messages...)
 	if strings.TrimSpace(def.SystemPrompt) != "" {
 		messages = append([]*schema.Message{schema.SystemMessage(def.SystemPrompt)}, messages...)
+	}
+	if overlay := renderUserIdentityOverlay(input.AccountName, input.AccountNick); overlay != "" {
+		messages = append(messages, schema.SystemMessage(overlay))
 	}
 	activeSkills := map[string]bool{}
 	serverTools := []*schema.ToolInfo(nil)
@@ -241,6 +248,9 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		return s.executeActivateSkillToolCall(call, activeSkills), nil
 	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
 		return s.executeMemoryToolCall(ctx, def, accountID, call)
+	}
+	if call.Function.Name == getCurrentUserProfileToolName {
+		return s.executeGetCurrentUserProfileToolCall(ctx, def.ID, nil, call)
 	}
 	if isTaskToolName(call.Function.Name) {
 		return s.executeTaskToolCall(ctx, def.ID, accountID, call)

@@ -143,13 +143,21 @@ func writeResponse(c *gin.Context, conversations *service.ConversationService, a
 		return
 	}
 
-	result, err := conversations.ExecuteResponse(c.Request.Context(), accountID, service.ResponseInput{
+	accountName, accountNick := identity.GetAccountProfile(c)
+	ctx := service.WithCallerIdentity(c.Request.Context(), service.CallerIdentity{
+		AccountID: accountID,
+		Name:      accountName,
+		Nick:      accountNick,
+	})
+	result, err := conversations.ExecuteResponse(ctx, accountID, service.ResponseInput{
 		AgentID:            request.AgentID,
 		ConversationID:     request.ConversationID,
 		PreviousResponseID: request.PreviousResponseID,
 		Message:            message,
 		ClientTools:        clientTools,
 		ToolOutputs:        toolOutputs,
+		AccountName:        accountName,
+		AccountNick:        accountNick,
 	})
 	if err != nil {
 		status := http.StatusBadRequest

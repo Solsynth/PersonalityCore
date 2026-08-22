@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,78 @@ type openAICompatibleTestPaymentClient struct{}
 
 func (openAICompatibleTestPaymentClient) CreateTransactionWithAccount(context.Context, string, string, string, string, string) (string, error) {
 	return "payment-1", nil
+}
+
+func TestCompleteOpenAIIncludesCallerIdentity(t *testing.T) {
+	var gotMessages []map[string]string
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected completion path %q", r.URL.Path)
+		}
+		var request struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		for _, msg := range request.Messages {
+			gotMessages = append(gotMessages, map[string]string{"role": msg.Role, "content": msg.Content})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"hi Alice"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{ID: "assistant", Name: "Assistant", Model: "openai/model", Enabled: true}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error: %v", err)
+	}
+	svc := NewConversationService(openTestDB(t), cfg, registry, executor)
+
+	_, err = svc.CompleteOpenAI(t.Context(), OpenAICompletionInput{
+		AccountID:   "account-1",
+		Model:       "assistant",
+		Messages:    []*schema.Message{schema.UserMessage("hi")},
+		AccountName: "alice",
+		AccountNick: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("CompleteOpenAI() error: %v", err)
+	}
+
+	var systemContents []string
+	for _, msg := range gotMessages {
+		if msg["role"] == "system" {
+			systemContents = append(systemContents, msg["content"])
+		}
+	}
+	found := false
+	for _, content := range systemContents {
+		if strings.Contains(content, `The user you are talking to is named "Alice".`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected caller identity overlay in system messages, got %v", systemContents)
+	}
 }
 
 func TestCompleteOpenAIRecordsBillingUsage(t *testing.T) {

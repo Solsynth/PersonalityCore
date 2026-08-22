@@ -513,35 +513,37 @@ func snRoomBehaviorPrompt(roomType *int) string {
 
 // buildUserIdentityOverlay builds a system message for authenticated REST API users
 // so the agent knows who it's talking to.
-func (s *ConversationService) buildUserIdentityOverlay(ctx context.Context, agentID, accountID string) string {
-	if s.sn == nil || strings.TrimSpace(accountID) == "" {
-		return ""
-	}
+func (s *ConversationService) buildUserIdentityOverlay(ctx context.Context, agentID, accountID, fallbackName, fallbackNick string) string {
+	// Solar lookup is an enrichment (profile, local time), not a hard
+	// dependency: pet and non-chat agents have no SN connection, so fall
+	// back to the caller identity carried from the authenticated request.
+	if s.sn != nil && strings.TrimSpace(accountID) != "" {
+		account, err := s.sn.GetAccount(ctx, agentID, "", accountID)
+		if err == nil && account != nil {
+			var parts []string
+			name := strings.TrimSpace(account.Nick)
+			if name == "" {
+				name = strings.TrimSpace(account.Name)
+			}
+			if name != "" {
+				parts = append(parts, fmt.Sprintf("The user you are talking to is named %q.", name))
+			}
 
-	account, err := s.sn.GetAccount(ctx, agentID, "", accountID)
-	if err != nil || account == nil {
-		return ""
-	}
+			// Try to get profile for timezone and extra info
+			if accountName := strings.TrimSpace(account.Name); accountName != "" {
+				if profile, err := s.getCachedSnUserProfile(ctx, agentID, accountName); err == nil && profile != nil {
+					if localTime := snUserLocalTime(profile); localTime != "" {
+						parts = append(parts, localTime)
+					}
+				}
+			}
 
-	var parts []string
-	name := strings.TrimSpace(account.Nick)
-	if name == "" {
-		name = strings.TrimSpace(account.Name)
-		}
-	if name != "" {
-		parts = append(parts, fmt.Sprintf("The user you are talking to is named %q.", name))
-	}
-
-	// Try to get profile for timezone and extra info
-	if accountName := strings.TrimSpace(account.Name); accountName != "" {
-		if profile, err := s.getCachedSnUserProfile(ctx, agentID, accountName); err == nil && profile != nil {
-			if localTime := snUserLocalTime(profile); localTime != "" {
-				parts = append(parts, localTime)
+			if len(parts) > 0 {
+				return strings.Join(parts, "\n")
 			}
 		}
 	}
-
-	return strings.Join(parts, "\n")
+	return renderUserIdentityOverlay(fallbackName, fallbackNick)
 }
 
 func snUserProfilePrompt(profile solar_network.AccountProfile) string {

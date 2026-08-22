@@ -70,11 +70,17 @@ func authMiddleware(cfg *config.Config) gin.HandlerFunc {
 					identity.SetAccountID(c, accountID)
 				}
 				identity.SetPerkLevel(c, identity.ExtractPerkLevelFromAuth(c))
+				if result.Account != nil {
+					identity.SetAccountProfile(c, result.Account.GetName(), result.Account.GetNick())
+				}
 			}
 		}
 
 		if accountID, ok := identity.ExtractAccountIDFromAuth(c); ok {
 			identity.SetAccountID(c, accountID)
+			if result, _, ok := sharedauth.GetAuth(c); ok && result != nil && result.Account != nil {
+				identity.SetAccountProfile(c, result.Account.GetName(), result.Account.GetNick())
+			}
 		}
 
 		if _, exists := c.Get("account_id"); !exists && cfg.Auth.AllowDevIDs {

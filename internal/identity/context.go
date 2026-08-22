@@ -10,6 +10,8 @@ import (
 
 const accountIDKey = "account_id"
 const perkLevelKey = "perk_level"
+const accountNameKey = "account_name"
+const accountNickKey = "account_nick"
 
 func RequireAccountID(c *gin.Context) (string, bool) {
 	value, ok := c.Get(accountIDKey)
@@ -27,6 +29,23 @@ func RequireAccountID(c *gin.Context) (string, bool) {
 
 func SetAccountID(c *gin.Context, accountID string) {
 	c.Set(accountIDKey, strings.TrimSpace(accountID))
+}
+
+// SetAccountProfile records the authenticated account's display identity so
+// handlers can pass it into prompt assembly without an extra lookup.
+func SetAccountProfile(c *gin.Context, name, nick string) {
+	c.Set(accountNameKey, strings.TrimSpace(name))
+	c.Set(accountNickKey, strings.TrimSpace(nick))
+}
+
+// GetAccountProfile returns the authenticated account's name and nick, or
+// empty strings when auth did not provide them.
+func GetAccountProfile(c *gin.Context) (string, string) {
+	name, _ := c.Get(accountNameKey)
+	nick, _ := c.Get(accountNickKey)
+	nameStr, _ := name.(string)
+	nickStr, _ := nick.(string)
+	return strings.TrimSpace(nameStr), strings.TrimSpace(nickStr)
 }
 
 func SetPerkLevel(c *gin.Context, level int32) {

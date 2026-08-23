@@ -1260,6 +1260,137 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+func TestStreamRunExecutesStreamedMemoryToolCall(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected completion path %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requestBodies) == 1 {
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-mem", "type": "function",
+							"function": map[string]any{"name": "memory_search", "arguments": `{"query":"tea"}`},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
+				}},
+			}))
+			return
+		}
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "No stored tea preference."}, "finish_reason": nil,
+			}},
+		}))
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+		}))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:        "server-maid",
+		Name:      "Server Maid",
+		Model:     "openai/model",
+		Abilities: []string{"memory"},
+		Enabled:   true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-mem-1",
+		AccountID: "acct-1",
+		AgentID:   "server-maid",
+		Title:     "Memory chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	var toolCalls []schema.ToolCall
+	var toolResults []string
+	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+		Message: "do I like tea?",
+	}, StreamCallbacks{
+		OnToolCall:   func(call schema.ToolCall) error { toolCalls = append(toolCalls, call); return nil },
+		OnToolResult: func(call schema.ToolCall, result string) error { toolResults = append(toolResults, result); return nil },
+	})
+	if err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+
+	if result.ResponseContent != "No stored tea preference." {
+		t.Fatalf("response content = %q", result.ResponseContent)
+	}
+	if len(toolCalls) != 1 || toolCalls[0].Function.Name != "memory_search" {
+		t.Fatalf("unexpected tool call deltas: %#v", toolCalls)
+	}
+	if len(toolResults) != 1 || !strings.Contains(toolResults[0], `"memories"`) {
+		t.Fatalf("expected memory search result, got %#v", toolResults)
+	}
+
+	raw, err := json.Marshal(requestBodies[1]["messages"])
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var secondMessages []map[string]any
+	if err := json.Unmarshal(raw, &secondMessages); err != nil {
+		t.Fatalf("unmarshal messages: %v", err)
+	}
+	foundTool := false
+	for _, msg := range secondMessages {
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call-mem" {
+			foundTool = true
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected memory tool result message in second request, got %#v", secondMessages)
+	}
+}
+
 // sseStreamData wraps a payload as a single SSE data event.
 func sseStreamData(payload map[string]any) string {
 	raw, err := json.Marshal(payload)

@@ -15,6 +15,15 @@ const memorySearchToolName = "memory_search"
 const memorySaveToolName = "memory_save"
 const memoryForgetToolName = "memory_forget"
 
+func isMemoryToolName(name string) bool {
+	switch name {
+	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ConversationService) memorySearchToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: memorySearchToolName,

@@ -254,6 +254,15 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 			writeSSE(c, "reasoning.delta", gin.H{"delta": reasoning})
 			return nil
 		},
+		OnToolResult: func(call schema.ToolCall, result string) error {
+			writeSSE(c, "tool_call.completed", gin.H{
+				"id":        call.ID,
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+				"result":    result,
+			})
+			return nil
+		},
 	})
 	if err != nil {
 		writeSSE(c, "run.failed", gin.H{"error": err.Error()})

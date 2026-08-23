@@ -800,9 +800,10 @@ func (s *ConversationService) GenerateEmbeddings(ctx context.Context, input Gene
 }
 
 type StreamCallbacks struct {
-	OnChunk     func(string) error
-	OnToolCall  func(schema.ToolCall) error
-	OnReasoning func(string) error
+	OnChunk      func(string) error
+	OnToolCall   func(schema.ToolCall) error
+	OnReasoning  func(string) error
+	OnToolResult func(schema.ToolCall, string) error
 }
 
 func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID string, input RunInput, callbacks StreamCallbacks) (*RunResult, error) {
@@ -923,64 +924,77 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			builder.Reset()
 		}
 	} else {
-		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
-		if err != nil {
-			_ = s.FailRun(ctx, run, err)
-			return nil, err
-		}
-		defer stream.Close()
+		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
+		if len(tools) > 0 {
+			streamed, usage, toolErr := s.streamWithGeneralTools(
+				ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks,
+			)
+			if toolErr != nil {
+				_ = s.FailRun(ctx, run, toolErr)
+				return nil, toolErr
+			}
+			builder.WriteString(streamed)
+			billingUsage = usage
+		} else {
+			stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
+			if err != nil {
+				_ = s.FailRun(ctx, run, err)
+				return nil, err
+			}
+			defer stream.Close()
 
-		for {
-			chunk, recvErr := stream.Recv()
-			if recvErr != nil {
-				if recvErr == io.EOF {
-					break
+			for {
+				chunk, recvErr := stream.Recv()
+				if recvErr != nil {
+					if recvErr == io.EOF {
+						break
+					}
+					_ = s.FailRun(ctx, run, recvErr)
+					return nil, recvErr
 				}
-				_ = s.FailRun(ctx, run, recvErr)
-				return nil, recvErr
-			}
-			if chunk == nil {
-				continue
-			}
-			if chunk.ResponseMeta.Usage != nil {
-				billingUsage = chunk.ResponseMeta.Usage
-			}
-			emitted := false
-			if chunk.Content != "" {
-				chunkCount++
-				builder.WriteString(chunk.Content)
-				if callbacks.OnChunk != nil {
-					if err := callbacks.OnChunk(chunk.Content); err != nil {
+				if chunk == nil {
+					continue
+				}
+				if chunk.ResponseMeta.Usage != nil {
+					billingUsage = chunk.ResponseMeta.Usage
+				}
+				emitted := false
+				if chunk.Content != "" {
+					chunkCount++
+					builder.WriteString(chunk.Content)
+					if callbacks.OnChunk != nil {
+						if err := callbacks.OnChunk(chunk.Content); err != nil {
+							_ = s.FailRun(ctx, run, err)
+							return nil, err
+						}
+					}
+					emitted = true
+				}
+				if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
+					if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
 						_ = s.FailRun(ctx, run, err)
 						return nil, err
 					}
+					emitted = true
 				}
-				emitted = true
-			}
-			if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
-				if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
-					_ = s.FailRun(ctx, run, err)
-					return nil, err
-				}
-				emitted = true
-			}
-			if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
-				for _, call := range chunk.ToolCalls {
-					if err := callbacks.OnToolCall(call); err != nil {
-						_ = s.FailRun(ctx, run, err)
-						return nil, err
+				if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
+					for _, call := range chunk.ToolCalls {
+						if err := callbacks.OnToolCall(call); err != nil {
+							_ = s.FailRun(ctx, run, err)
+							return nil, err
+						}
 					}
+					emitted = true
 				}
-				emitted = true
-			}
-			if emitted {
-				logging.Log.Debug().
-					Str("conversation_id", threadID).
-					Str("run_id", run.ID).
-					Int("content_len", len(chunk.Content)).
-					Int("reasoning_len", len(chunk.ReasoningContent)).
-					Int("tool_calls", len(chunk.ToolCalls)).
-					Msg("stream chunk emitted")
+				if emitted {
+					logging.Log.Debug().
+						Str("conversation_id", threadID).
+						Str("run_id", run.ID).
+						Int("content_len", len(chunk.Content)).
+						Int("reasoning_len", len(chunk.ReasoningContent)).
+						Int("tool_calls", len(chunk.ToolCalls)).
+						Msg("stream chunk emitted")
+				}
 			}
 		}
 	}

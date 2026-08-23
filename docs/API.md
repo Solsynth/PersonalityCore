@@ -809,7 +809,20 @@ Emitted as the model produces reasoning/thinking content. Only sent if the model
 }
 ```
 
-Emitted when the model requests a tool call. Each event is a complete tool call object (the model's tool call arguments are assembled before being emitted). Multiple `tool_call.delta` events may be sent per run if the agent uses chat tools.
+Emitted when the model requests a tool call. Arguments may arrive in fragments across stream chunks and are merged before execution. Multiple `tool_call.delta` events may be sent per run if the agent uses chat tools.
+
+### `tool_call.completed`
+
+```json
+{
+  "id": "call_abc123",
+  "name": "get_user_profile",
+  "arguments": "{\"account_name\":\"alice\"}",
+  "result": "{\"id\":\"u-42\",\"name\":\"alice\"}"
+}
+```
+
+Emitted after the server executes a streamed tool call. `result` is the tool's output text. Follows the matching `tool_call.delta` for the same `id`.
 
 ### `message.delta`
 
@@ -1022,6 +1035,9 @@ while (true) {
           break;
         case 'tool_call.delta':
           showToolCall(data.name, data.arguments);
+          break;
+        case 'tool_call.completed':
+          showToolResult(data.name, data.result);
           break;
         case 'message.completed':
           finalizeMessage(data.content, data.message_id);

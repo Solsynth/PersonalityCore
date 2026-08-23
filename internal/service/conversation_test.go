@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1255,4 +1258,202 @@ func openTestDB(t *testing.T) *database.DB {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+// sseStreamData wraps a payload as a single SSE data event.
+func sseStreamData(payload map[string]any) string {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return "data: " + string(raw) + "\n\n"
+}
+
+func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected completion path %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requestBodies) == 1 {
+			// First round: reasoning plus a tool call whose arguments arrive
+			// split across chunks (index/id/name only on the first chunk).
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role":              "assistant",
+						"reasoning_content": "let me check notes",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-1", "type": "function",
+							"function": map[string]any{"name": "list_self_notes", "arguments": "{"},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []any{map[string]any{
+							"index":    0,
+							"function": map[string]any{"arguments": "}"},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
+				}},
+				"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+			}))
+			return
+		}
+		// Second round: the model replies after receiving the tool result.
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Found it."}, "finish_reason": nil,
+			}},
+		}))
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+		}))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "michan",
+		Name:         "Michan",
+		Model:        "openai/model",
+		Abilities:    []string{"self_notes"},
+		Enabled:      true,
+		SystemPrompt: "You are Michan.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-tool-1",
+		AccountID: "acct-1",
+		AgentID:   "michan",
+		Title:     "Tool chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	var reasoning, contents []string
+	var toolCalls []schema.ToolCall
+	var toolResults []string
+	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+		Message: "check my notes",
+	}, StreamCallbacks{
+		OnChunk:      func(delta string) error { contents = append(contents, delta); return nil },
+		OnReasoning:  func(delta string) error { reasoning = append(reasoning, delta); return nil },
+		OnToolCall:   func(call schema.ToolCall) error { toolCalls = append(toolCalls, call); return nil },
+		OnToolResult: func(call schema.ToolCall, result string) error { toolResults = append(toolResults, result); return nil },
+	})
+	if err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+
+	if result.ResponseContent != "Found it." {
+		t.Fatalf("response content = %q, want %q", result.ResponseContent, "Found it.")
+	}
+	if !strings.Contains(strings.Join(reasoning, ""), "let me check notes") {
+		t.Fatalf("expected streamed reasoning, got %q", reasoning)
+	}
+	if !strings.Contains(strings.Join(contents, ""), "Found it.") {
+		t.Fatalf("expected streamed content chunks, got %q", contents)
+	}
+	if len(toolCalls) != 1 || toolCalls[0].ID != "call-1" || toolCalls[0].Function.Name != "list_self_notes" {
+		t.Fatalf("unexpected tool call deltas: %#v", toolCalls)
+	}
+	if len(toolResults) != 1 || !strings.Contains(toolResults[0], `"agent_id"`) {
+		t.Fatalf("unexpected tool results: %#v", toolResults)
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("expected 2 model requests, got %d", len(requestBodies))
+	}
+	first, ok := requestBodies[0]["tools"].([]any)
+	if !ok || len(first) == 0 {
+		t.Fatalf("expected tools attached to the streamed model request, got %#v", requestBodies[0]["tools"])
+	}
+	if requestBodies[0]["tool_choice"] != "required" {
+		t.Fatalf("expected forced tool choice, got %#v", requestBodies[0]["tool_choice"])
+	}
+
+	raw, err := json.Marshal(requestBodies[1]["messages"])
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var secondMessages []map[string]any
+	if err := json.Unmarshal(raw, &secondMessages); err != nil {
+		t.Fatalf("unmarshal messages: %v", err)
+	}
+	foundTool := false
+	for _, msg := range secondMessages {
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call-1" {
+			foundTool = true
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected tool result message in second request, got %#v", secondMessages)
+	}
+
+	// Persisted transcript includes the assistant tool-call message and the tool result.
+	var persisted []database.ConversationMessage
+	if err := db.Where("thread_id = ?", thread.ID).Order("sequence ASC").Find(&persisted).Error; err != nil {
+		t.Fatalf("load persisted messages: %v", err)
+	}
+	gotToolCall := false
+	gotToolResult := false
+	for _, msg := range persisted {
+		if msg.Role == "assistant" && strings.Contains(string(msg.Metadata), `"tool_calls"`) {
+			gotToolCall = true
+		}
+		if msg.Role == "tool" && strings.Contains(string(msg.Metadata), `"tool_name"`) && strings.Contains(msg.Content, `"agent_id"`) {
+			gotToolResult = true
+		}
+	}
+	if !gotToolCall || !gotToolResult {
+		t.Fatalf("expected persisted assistant tool-call and tool messages, got %#v", persisted)
+	}
 }

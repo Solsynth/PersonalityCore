@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -435,6 +436,252 @@ func (s *ConversationService) runWithGeneralTools(
 	return "", fmt.Errorf("tool loop exceeded maximum iterations")
 }
 
+type streamedToolRound struct {
+	content   string
+	reasoning string
+	usage     *schema.TokenUsage
+	calls     []schema.ToolCall
+}
+
+// streamToolRound streams one model invocation and merges chunked tool call
+// deltas into complete calls. OpenAI-compatible providers fragment tool calls
+// across stream chunks (index, id, and name on the first chunk, argument
+// fragments afterwards), so the merge must happen here before execution.
+func (s *ConversationService) streamToolRound(
+	ctx context.Context,
+	toolModel model.ToolCallingChatModel,
+	messages []*schema.Message,
+	genOpts []model.Option,
+	callbacks StreamCallbacks,
+) (*streamedToolRound, error) {
+	stream, err := toolModel.Stream(ctx, messages, genOpts...)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	round := &streamedToolRound{}
+	var content, reasoning strings.Builder
+	merged := map[int]*schema.ToolCall{}
+	var order []int
+
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr != nil {
+			if recvErr == io.EOF {
+				break
+			}
+			return nil, recvErr
+		}
+		if chunk == nil {
+			continue
+		}
+		if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+			round.usage = chunk.ResponseMeta.Usage
+		}
+		if chunk.Content != "" {
+			content.WriteString(chunk.Content)
+			if callbacks.OnChunk != nil {
+				if err := callbacks.OnChunk(chunk.Content); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
+			reasoning.WriteString(chunk.ReasoningContent)
+			if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
+				return nil, err
+			}
+		}
+		for _, call := range chunk.ToolCalls {
+			index := 0
+			if call.Index != nil {
+				index = *call.Index
+			}
+			existing, seen := merged[index]
+			if !seen {
+				cp := call
+				merged[index] = &cp
+				order = append(order, index)
+				if callbacks.OnToolCall != nil {
+					if err := callbacks.OnToolCall(call); err != nil {
+						return nil, err
+					}
+				}
+				continue
+			}
+			if existing.ID == "" {
+				existing.ID = call.ID
+			}
+			if existing.Type == "" {
+				existing.Type = call.Type
+			}
+			if existing.Function.Name == "" {
+				existing.Function.Name = call.Function.Name
+			}
+			existing.Function.Arguments += call.Function.Arguments
+		}
+	}
+
+	round.content = strings.TrimSpace(content.String())
+	round.reasoning = strings.TrimSpace(reasoning.String())
+	for _, index := range order {
+		round.calls = append(round.calls, *merged[index])
+	}
+	return round, nil
+}
+
+// streamWithGeneralTools is the streaming counterpart of
+// [ConversationService.runWithGeneralTools]: it attaches the agent's tools,
+// streams each round, executes requested tool calls (persisting assistant and
+// tool messages), and re-invokes the model with the results until it replies
+// without tool calls. It mirrors the non-streaming path so streaming and
+// non-streaming runs behave identically for tool-capable agents.
+func (s *ConversationService) streamWithGeneralTools(
+	ctx context.Context,
+	accountID, threadID string,
+	runID string,
+	modelMessages []*schema.Message,
+	agentDef agent.Definition,
+	tools []*schema.ToolInfo,
+	perkLevel int32,
+	callbacks StreamCallbacks,
+) (string, *schema.TokenUsage, error) {
+	activeSkills := map[string]bool{}
+	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
+	if err != nil {
+		return "", nil, err
+	}
+
+	thread, err := s.GetConversation(ctx, accountID, threadID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	messages := append([]*schema.Message(nil), modelMessages...)
+	var usage *schema.TokenUsage
+	for step := 0; step < 6; step++ {
+		var round *streamedToolRound
+		var roundErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
+			if attempt > 0 {
+				genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
+			}
+			round, roundErr = s.streamToolRound(ctx, toolModel, messages, genOpts, callbacks)
+			if roundErr == nil {
+				break
+			}
+			if attempt == 0 && (strings.Contains(roundErr.Error(), "thinking mode") || strings.Contains(roundErr.Error(), "tool_choice")) {
+				logging.Log.Debug().
+					Str("agent_id", agentDef.ID).
+					Str("conversation_id", threadID).
+					Str("run_id", runID).
+					Msg("retrying streamed tool round with thinking disabled due to tool_choice limitation")
+				continue
+			}
+			break
+		}
+		if roundErr != nil {
+			return "", nil, roundErr
+		}
+		if round.usage != nil {
+			usage = round.usage
+		}
+		if len(round.calls) == 0 {
+			return round.content, usage, nil
+		}
+
+		logging.Log.Info().
+			Str("agent_id", agentDef.ID).
+			Str("conversation_id", threadID).
+			Str("run_id", runID).
+			Int("tool_loop_step", step+1).
+			Int("tool_call_count", len(round.calls)).
+			Msg("streamed model requested tool calls")
+
+		assistantMetadata := map[string]any{"tool_calls": round.calls}
+		if round.reasoning != "" {
+			assistantMetadata["reasoning_content"] = round.reasoning
+		}
+		if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "assistant", round.content, stringPtr(agentDef.Model), assistantMetadata); err != nil {
+			return "", nil, err
+		}
+		messages = append(messages, &schema.Message{
+			Role:             schema.Assistant,
+			Content:          round.content,
+			ToolCalls:        round.calls,
+			ReasoningContent: round.reasoning,
+		})
+
+		for _, call := range round.calls {
+			logging.Log.Debug().
+				Str("agent_id", agentDef.ID).
+				Str("conversation_id", threadID).
+				Str("run_id", runID).
+				Str("tool_name", call.Function.Name).
+				Str("tool_call_id", call.ID).
+				Str("tool_arguments", call.Function.Arguments).
+				Msg("executing streamed tool call")
+			var result *executedChatToolResult
+			if call.Function.Name == "list_skills" {
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
+			} else if call.Function.Name == "activate_skill" {
+				result = s.executeActivateSkillToolCall(call, activeSkills)
+				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
+				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if call.Function.Name == getCurrentUserProfileToolName {
+				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if isTaskToolName(call.Function.Name) {
+				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if isSurfingToolName(call.Function.Name) {
+				result, err = s.executeSurfingToolCall(ctx, agentDef.ID, accountID, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else {
+				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
+				if err != nil {
+					return "", nil, err
+				}
+			}
+			if err := s.ensureSolarRoomBinding(ctx, thread, agentDef.ID, result.RoomID, result.TargetAccountName, time.Now()); err != nil {
+				return "", nil, err
+			}
+			if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", result.Content, nil, map[string]any{
+				"tool_call_id": result.ToolCallID,
+				"tool_name":    result.ToolName,
+			}); err != nil {
+				return "", nil, err
+			}
+			logging.Log.Debug().
+				Str("agent_id", agentDef.ID).
+				Str("conversation_id", threadID).
+				Str("run_id", runID).
+				Str("tool_name", call.Function.Name).
+				Str("tool_call_id", call.ID).
+				Str("tool_result", result.Content).
+				Msg("streamed tool call completed")
+			if callbacks.OnToolResult != nil {
+				if err := callbacks.OnToolResult(call, result.Content); err != nil {
+					return "", nil, err
+				}
+			}
+			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
+		}
+	}
+	return "", nil, fmt.Errorf("streamed tool loop exceeded maximum iterations")
+}
+
 func isSolarOutboundChatToolName(name string) bool {
 	switch strings.TrimSpace(name) {
 	case sendChatToolName, sendChatBatchToolName:
@@ -820,8 +1067,8 @@ func (s *ConversationService) getUserProfileToolInfo() *schema.ToolInfo {
 
 func (s *ConversationService) getCurrentUserProfileToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
-		Name: getCurrentUserProfileToolName,
-		Desc: "Fetch the full profile of the user you are currently talking to: account, profile fields, and local time. Takes no arguments; the user is resolved automatically from the conversation. Use this when you need to know who you are talking to or recall their details.",
+		Name:        getCurrentUserProfileToolName,
+		Desc:        "Fetch the full profile of the user you are currently talking to: account, profile fields, and local time. Takes no arguments; the user is resolved automatically from the conversation. Use this when you need to know who you are talking to or recall their details.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }

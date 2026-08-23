@@ -176,7 +176,13 @@ func (s *ConversationService) ExecuteResponse(ctx context.Context, accountID str
 		return &ResponseResult{Thread: thread, Run: run, ResponseMessage: responseMessage, ResponseContent: result.Message.Content, ToolCalls: result.Message.ToolCalls, Model: result.Model}, nil
 	}
 
-	responseMessage, err := s.CompleteRun(ctx, run, result.Message.Content)
+	var completeMeta map[string]any
+	if strings.TrimSpace(result.Message.ReasoningContent) != "" {
+		completeMeta = map[string]any{
+			"reasoning_content": strings.TrimSpace(result.Message.ReasoningContent),
+		}
+	}
+	responseMessage, err := s.CompleteRun(ctx, run, result.Message.Content, completeMeta)
 	if err != nil {
 		return nil, err
 	}

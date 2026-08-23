@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"gorm.io/datatypes"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -724,6 +725,86 @@ func TestBuildModelMessagesCompactsOlderThreadContext(t *testing.T) {
 	}
 	if !foundSummary {
 		t.Fatal("expected compacted thread context system message")
+	}
+}
+
+func TestCompactConversationSummarizesAndAdvancesSeq(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "michan",
+		Name:         "Michan",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Michan.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 3},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-compact-endpoint",
+		AccountID: "acct-1",
+		AgentID:   "michan",
+		Title:     "Long chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	baseTime := time.Date(2026, 6, 13, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	for i := range 6 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		meta := datatypes.JSON([]byte("{}"))
+		if i == 1 {
+			mb, err := json.Marshal(map[string]any{
+				"tool_calls": []schema.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "memory_search",
+						Arguments: `{"query":"tea"}`,
+					},
+				}},
+				"reasoning_content": "checking memories",
+			})
+			if err != nil {
+				t.Fatalf("marshal metadata: %v", err)
+			}
+			meta = mb
+		}
+		at := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := db.Create(&database.ConversationMessage{
+			ID:        fmt.Sprintf("msg-%d", i+1),
+			ThreadID:  thread.ID,
+			AccountID: thread.AccountID,
+			Role:      role,
+			Content:   fmt.Sprintf("message %d", i+1),
+			Sequence:  int64(i + 1),
+			Metadata:  meta,
+			CreatedAt: at,
+			UpdatedAt: at,
+		}).Error; err != nil {
+			t.Fatalf("create message %d: %v", i+1, err)
+		}
+	}
+
+	refreshed, err := svc.CompactConversation(context.Background(), "acct-1", thread.ID)
+	if err != nil {
+		t.Fatalf("CompactConversation() error = %v", err)
+	}
+	if refreshed.SummarySeq == 0 || strings.TrimSpace(refreshed.ContextSummary) == "" {
+		t.Fatalf("expected compacted thread summary, got seq=%d summary=%q", refreshed.SummarySeq, refreshed.ContextSummary)
+	}
+	if !strings.Contains(refreshed.ContextSummary, "tools:") {
+		t.Fatalf("expected summary to capture tool activity, got %q", refreshed.ContextSummary)
+	}
+	if !strings.Contains(refreshed.ContextSummary, "reasoning:") {
+		t.Fatalf("expected summary to capture reasoning, got %q", refreshed.ContextSummary)
 	}
 }
 
@@ -1459,7 +1540,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		// Second round: the model replies after receiving the tool result.
 		flush(sseStreamData(map[string]any{
 			"choices": []any{map[string]any{
-				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Found it."}, "finish_reason": nil,
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Found it.", "reasoning_content": "wrap up"}, "finish_reason": nil,
 			}},
 		}))
 		flush(sseStreamData(map[string]any{
@@ -1576,6 +1657,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 	}
 	gotToolCall := false
 	gotToolResult := false
+	gotFinalReasoning := false
 	for _, msg := range persisted {
 		if msg.Role == "assistant" && strings.Contains(string(msg.Metadata), `"tool_calls"`) {
 			gotToolCall = true
@@ -1583,8 +1665,14 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		if msg.Role == "tool" && strings.Contains(string(msg.Metadata), `"tool_name"`) && strings.Contains(msg.Content, `"agent_id"`) {
 			gotToolResult = true
 		}
+		if msg.Role == "assistant" && strings.Contains(string(msg.Metadata), `"reasoning_content":"wrap up"`) {
+			gotFinalReasoning = true
+		}
 	}
 	if !gotToolCall || !gotToolResult {
 		t.Fatalf("expected persisted assistant tool-call and tool messages, got %#v", persisted)
+	}
+	if !gotFinalReasoning {
+		t.Fatalf("expected final assistant message to persist reasoning_content, got %#v", persisted)
 	}
 }

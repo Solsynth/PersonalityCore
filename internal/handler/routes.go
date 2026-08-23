@@ -38,6 +38,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.POST("/:id/runs", func(c *gin.Context) { createRun(c, conversations) })
 		conv.GET("/:id/runs", func(c *gin.Context) { listRuns(c, conversations) })
 		conv.GET("/:id/runs/:runId", func(c *gin.Context) { getRun(c, conversations) })
+		conv.POST("/:id/compact", func(c *gin.Context) { compactConversation(c, conversations) })
 	}
 	RegisterResponseRoutes(r, conversations)
 }
@@ -271,6 +272,19 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 
 	writeSSE(c, "message.completed", gin.H{"content": result.ResponseContent, "message_id": result.ResponseMessage.ID})
 	writeSSE(c, "run.completed", gin.H{"run_id": result.Run.ID, "message_id": result.ResponseMessage.ID})
+}
+
+func compactConversation(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	thread, err := conversations.CompactConversation(c.Request.Context(), accountID, c.Param("id"))
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, thread)
 }
 
 func listRuns(c *gin.Context, conversations *service.ConversationService) {

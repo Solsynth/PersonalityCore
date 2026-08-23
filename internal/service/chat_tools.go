@@ -556,6 +556,7 @@ func (s *ConversationService) streamWithGeneralTools(
 	tools []*schema.ToolInfo,
 	perkLevel int32,
 	callbacks StreamCallbacks,
+	finalReasoning *strings.Builder,
 ) (string, *schema.TokenUsage, error) {
 	activeSkills := map[string]bool{}
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
@@ -599,6 +600,9 @@ func (s *ConversationService) streamWithGeneralTools(
 			usage = round.usage
 		}
 		if len(round.calls) == 0 {
+			if finalReasoning != nil && round.reasoning != "" {
+				finalReasoning.WriteString(round.reasoning)
+			}
 			return round.content, usage, nil
 		}
 

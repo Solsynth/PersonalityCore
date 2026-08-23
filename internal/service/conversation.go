@@ -580,13 +580,13 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	return messages, def, nil
 }
 
-func (s *ConversationService) CompleteRun(ctx context.Context, run *database.ConversationRun, assistantContent string) (*database.ConversationMessage, error) {
+func (s *ConversationService) CompleteRun(ctx context.Context, run *database.ConversationRun, assistantContent string, metadata map[string]any) (*database.ConversationMessage, error) {
 	thread, err := s.GetConversation(ctx, run.AccountID, run.ThreadID)
 	if err != nil {
 		return nil, err
 	}
 
-	responseMessage, err := s.createMessage(ctx, thread, &run.ID, "assistant", strings.TrimSpace(assistantContent), stringPtr(run.Model))
+	responseMessage, err := s.createMessageWithMetadata(ctx, thread, &run.ID, "assistant", strings.TrimSpace(assistantContent), stringPtr(run.Model), metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -652,6 +652,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Int("message_count", len(modelMessages)).
 		Msg("invoking model")
 	responseContent := ""
+	var reasoningContent strings.Builder
 	var billingUsage *schema.TokenUsage
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
@@ -675,6 +676,9 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			if err == nil {
 				responseContent = response.Content
 				billingUsage = response.ResponseMeta.Usage
+				if strings.TrimSpace(response.ReasoningContent) != "" {
+					reasoningContent.WriteString(response.ReasoningContent)
+				}
 			}
 		}
 		if err != nil {
@@ -683,7 +687,11 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		}
 	}
 
-	responseMessage, err := s.CompleteRun(ctx, run, responseContent)
+	var completeMeta map[string]any
+	if reasoning := strings.TrimSpace(reasoningContent.String()); reasoning != "" {
+		completeMeta = map[string]any{"reasoning_content": reasoning}
+	}
+	responseMessage, err := s.CompleteRun(ctx, run, responseContent, completeMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -837,6 +845,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Int("message_count", len(modelMessages)).
 		Msg("opening model stream")
 	var builder strings.Builder
+	var reasoningContent strings.Builder
 	chunkCount := 0
 	var billingUsage *schema.TokenUsage
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
@@ -899,10 +908,13 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 					}
 				}
 			}
-			if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
-				if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
-					_ = s.FailRun(ctx, run, err)
-					return nil, err
+			if chunk.ReasoningContent != "" {
+				reasoningContent.WriteString(chunk.ReasoningContent)
+				if callbacks.OnReasoning != nil {
+					if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
+						_ = s.FailRun(ctx, run, err)
+						return nil, err
+					}
 				}
 			}
 			if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
@@ -927,7 +939,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
 		if len(tools) > 0 {
 			streamed, usage, toolErr := s.streamWithGeneralTools(
-				ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks,
+				ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks, &reasoningContent,
 			)
 			if toolErr != nil {
 				_ = s.FailRun(ctx, run, toolErr)
@@ -970,10 +982,13 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 					}
 					emitted = true
 				}
-				if callbacks.OnReasoning != nil && chunk.ReasoningContent != "" {
-					if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
-						_ = s.FailRun(ctx, run, err)
-						return nil, err
+				if chunk.ReasoningContent != "" {
+					reasoningContent.WriteString(chunk.ReasoningContent)
+					if callbacks.OnReasoning != nil {
+						if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
+							_ = s.FailRun(ctx, run, err)
+							return nil, err
+						}
 					}
 					emitted = true
 				}
@@ -999,7 +1014,11 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		}
 	}
 
-	responseMessage, err := s.CompleteRun(ctx, run, builder.String())
+	var completeMeta map[string]any
+	if reasoning := strings.TrimSpace(reasoningContent.String()); reasoning != "" {
+		completeMeta = map[string]any{"reasoning_content": reasoning}
+	}
+	responseMessage, err := s.CompleteRun(ctx, run, builder.String(), completeMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -1648,6 +1667,32 @@ func (s *ConversationService) renderImagePartWithSummary(ctx context.Context, pa
 	return "[Image: " + summary + "]"
 }
 
+func (s *ConversationService) historyLimitForThread(thread *database.ConversationThread) int {
+	limit := 24
+	if s != nil && s.cfg != nil && s.cfg.Personality.MaxHistoryMessages > 0 {
+		limit = s.cfg.Personality.MaxHistoryMessages
+	}
+	if perkLimits := s.resolvePerkLimits(thread.PerkLevel); perkLimits.MaxHistoryMessages > 0 {
+		limit = min(limit, perkLimits.MaxHistoryMessages)
+	}
+	return limit
+}
+
+// CompactConversation forces context compaction for a conversation: older
+// turns (everything older than the retention window) are summarized into the
+// thread's ContextSummary and excluded from the model context on continuation,
+// so raw thinking/tool-call traces stop being re-fed while remaining stored.
+func (s *ConversationService) CompactConversation(ctx context.Context, accountID, threadID string) (*database.ConversationThread, error) {
+	thread, err := s.GetConversation(ctx, accountID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureThreadContextCompaction(ctx, thread, s.historyLimitForThread(thread)); err != nil {
+		return nil, err
+	}
+	return s.GetConversation(ctx, accountID, threadID)
+}
+
 func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context, thread *database.ConversationThread, historyLimit int) error {
 	if s == nil || s.db == nil || thread == nil {
 		return nil
@@ -1808,7 +1853,25 @@ func compactConversationRecord(record database.ConversationMessage) string {
 	default:
 		role = "message"
 	}
-	return "- " + role + " at " + record.CreatedAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST") + ": " + compactTextForSummary(record.Content, 160)
+	label := "- " + role + " at " + record.CreatedAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST") + ": " + compactTextForSummary(record.Content, 160)
+	var assistantMeta assistantMessageMetadata
+	if role == "assistant" && decodeMessageMetadata(record.Metadata, &assistantMeta) == nil {
+		if len(assistantMeta.ToolCalls) > 0 {
+			names := make([]string, 0, len(assistantMeta.ToolCalls))
+			for _, call := range assistantMeta.ToolCalls {
+				names = append(names, call.Function.Name)
+			}
+			label += " [tools: " + strings.Join(names, ",") + "]"
+		}
+		if strings.TrimSpace(assistantMeta.ReasoningContent) != "" {
+			label += " [reasoning: " + compactTextForSummary(assistantMeta.ReasoningContent, 80) + "]"
+		}
+	}
+	var toolMeta toolMessageMetadata
+	if role == "tool" && decodeMessageMetadata(record.Metadata, &toolMeta) == nil && strings.TrimSpace(toolMeta.ToolName) != "" {
+		label += " [tool: " + toolMeta.ToolName + "]"
+	}
+	return label
 }
 
 func compactTextForSummary(content string, limit int) string {

@@ -494,14 +494,23 @@ POST /api/conversations/:id/messages
 }
 ```
 
-### List messages
+### Compact conversation
 
 ```
-GET /api/conversations/:id/messages?take=20&offset=0
+POST /api/conversations/:id/compact
 ```
 
-**Response** `200 OK` — array of message objects ordered by `sequence ASC`.
-**Header** `X-Total` — total message count.
+Summarizes turns older than the retention window (configurable via
+`[personality].maxHistoryMessages`, default 24) into the conversation's
+`context_summary` and advances `summary_seq`, so those turns are no longer fed
+to the model on continuation. The summary captures tool calls and reasoning, so
+key activity survives compaction; the underlying messages (including their
+`reasoning_content` and `tool_calls` metadata) remain stored and recoverable.
+
+**Response** `200 OK` — updated conversation object with `context_summary`,
+`summary_seq`, and `summary_at`.
+
+---
 
 ---
 
@@ -841,7 +850,10 @@ Emitted for each text content chunk. Accumulate to build the full response.
 }
 ```
 
-Emitted when the full assistant message is assembled and persisted.
+Emitted when the full assistant message is assembled and persisted. The
+persisted message carries any streamed `reasoning_content` in its `metadata`,
+and any tool calls it made alongside matching `role: "tool"` messages, so the
+conversation can be continued from history.
 
 ### `run.completed`
 

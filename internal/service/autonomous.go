@@ -111,7 +111,7 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 		responseContent = response.Content
 	}
 
-	responseMessage, err := s.CompleteRun(ctx, run, responseContent)
+	responseMessage, err := s.CompleteRun(ctx, run, responseContent, nil)
 	if err != nil {
 		return nil, err
 	}

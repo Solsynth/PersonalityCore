@@ -20,9 +20,20 @@ type Config struct {
 	Personality  PersonalityConfig  `mapstructure:"personality"`
 	Sentry       SentryConfig       `mapstructure:"sentry"`
 	SolarNetwork SolarNetworkConfig `mapstructure:"solarNetwork"`
+	OAuth        OAuthConfig        `mapstructure:"oauth"`
 	Agents       AgentsConfig       `mapstructure:"agents"`
 	ProvidersDir string             `mapstructure:"providersDir"`
 	Providers    []ProviderConfig   `mapstructure:"providers"`
+}
+
+// OAuthConfig controls user-scoped OAuth sessions. When enabled, personality
+// obtains and refreshes per-(agent, account) user tokens via Stargate's OIDC
+// device flow so user-scoped tools can act as the conversation user.
+type OAuthConfig struct {
+	Enabled      bool     `mapstructure:"enabled"`
+	ClientID     string   `mapstructure:"clientId"`
+	ClientSecret string   `mapstructure:"clientSecret"` // empty => public client
+	Scopes       []string `mapstructure:"scopes"`
 }
 
 // BillingConfig controls metered Personality usage. Amounts are decimal strings
@@ -242,6 +253,9 @@ func Load(configPath string) (*Config, error) {
 	if err := validateSolarNetworkConfig(&cfg); err != nil {
 		return nil, err
 	}
+	if err := validateOAuthConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -282,6 +296,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sentry.environment", "")
 	v.SetDefault("sentry.release", "")
 	v.SetDefault("solarNetwork.baseUrl", "")
+	v.SetDefault("oauth.enabled", false)
+	v.SetDefault("oauth.clientId", "")
+	v.SetDefault("oauth.clientSecret", "")
+	v.SetDefault("oauth.scopes", []string{"*"})
 	v.SetDefault("agents.dir", "")
 	v.SetDefault("agents.items", []AgentConfig{})
 	v.SetDefault("providersDir", "")
@@ -411,6 +429,19 @@ func validateSolarNetworkConfig(cfg *Config) error {
 		return fmt.Errorf("solarNetwork.baseUrl is required when an enabled agent has chat ability")
 	}
 
+	return nil
+}
+
+func validateOAuthConfig(cfg *Config) error {
+	if !cfg.OAuth.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.OAuth.ClientID) == "" {
+		return fmt.Errorf("oauth.clientId is required when oauth is enabled")
+	}
+	if strings.TrimSpace(cfg.SolarNetwork.BaseURL) == "" {
+		return fmt.Errorf("solarNetwork.baseUrl is required when oauth is enabled")
+	}
 	return nil
 }
 

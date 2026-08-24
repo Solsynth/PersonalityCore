@@ -70,6 +70,11 @@ func (s *ConversationService) SetSnChatBridge(bridge SnChatBridge) {
 	s.sn = bridge
 }
 
+// SetOAuthService attaches the OAuth service for user-scoped tool execution.
+func (s *ConversationService) SetOAuthService(svc *OAuthService) {
+	s.oauth = svc
+}
+
 func (s *ConversationService) ListTrackedSnRooms(ctx context.Context, agentID string) ([]SnRoomState, error) {
 	var bindings []database.ExternalChatBinding
 	if err := s.db.WithContext(ctx).

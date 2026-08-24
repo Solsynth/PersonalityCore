@@ -258,5 +258,8 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 	if isSurfingToolName(call.Function.Name) {
 		return s.executeSurfingToolCall(ctx, def.ID, accountID, call)
 	}
+	if isUserScopedToolName(call.Function.Name) {
+		return s.executeUserScopedToolCall(ctx, def.ID, call)
+	}
 	return s.executeChatToolCall(ctx, def.ID, call)
 }

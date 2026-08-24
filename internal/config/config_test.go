@@ -370,3 +370,113 @@ type = "embedding"
 		t.Fatal("expected second model to be marked as embedding")
 	}
 }
+
+func TestLoad_OAuthDefaultsScopes(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[solarNetwork]
+baseUrl = "https://solar.example"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.OAuth.Enabled {
+		t.Fatal("expected oauth disabled by default")
+	}
+	want := []string{"*"}
+	if len(cfg.OAuth.Scopes) != len(want) {
+		t.Fatalf("expected default scopes %v, got %v", want, cfg.OAuth.Scopes)
+	}
+	for i := range want {
+		if cfg.OAuth.Scopes[i] != want[i] {
+			t.Fatalf("expected default scopes %v, got %v", want, cfg.OAuth.Scopes)
+		}
+	}
+}
+
+func TestLoad_OAuthBlockParses(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[solarNetwork]
+baseUrl = "https://solar.example"
+
+[oauth]
+enabled = true
+clientId = "personality"
+clientSecret = "secret"
+scopes = ["openid", "profile", "files"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.OAuth.Enabled {
+		t.Fatal("expected oauth enabled")
+	}
+	if cfg.OAuth.ClientID != "personality" {
+		t.Fatalf("expected clientId to load, got %q", cfg.OAuth.ClientID)
+	}
+	if cfg.OAuth.ClientSecret != "secret" {
+		t.Fatalf("expected clientSecret to load, got %q", cfg.OAuth.ClientSecret)
+	}
+	if len(cfg.OAuth.Scopes) != 3 || cfg.OAuth.Scopes[2] != "files" {
+		t.Fatalf("unexpected scopes %v", cfg.OAuth.Scopes)
+	}
+}
+
+func TestLoad_OAuthEnabledRequiresClientID(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[solarNetwork]
+baseUrl = "https://solar.example"
+
+[oauth]
+enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(mainFile)
+	if err == nil {
+		t.Fatal("expected oauth validation error when enabled without clientId")
+	}
+}
+
+func TestLoad_OAuthEnabledRequiresBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[oauth]
+enabled = true
+clientId = "personality"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(mainFile)
+	if err == nil {
+		t.Fatal("expected oauth validation error when enabled without solarNetwork.baseUrl")
+	}
+}

@@ -136,11 +136,24 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			}
 		}
 	}
-	// auto-load durable user memory tools for humanizer agents
-	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "memory") {
-		if s.isSkillAllowed(perkLevel, "memory") {
-			if skill, ok := skillRegistry["memory"]; ok {
-				tools = append(tools, skill.Tools(s)...)
+	// auto-load user-scoped skills gated on OAuth + ability
+	if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
+		userSkillAbilities := map[string]string{
+			"files":         "files",
+			"wallet":        "wallet",
+			"notifications": "notifications",
+			"web_reader":    "web_reader",
+			"relationships": "relationships",
+			"search":        "search",
+			"stickers":      "stickers",
+			"surveys":       "surveys",
+			"leveling":      "leveling",
+		}
+		for ability, skillName := range userSkillAbilities {
+			if agent.HasAbility(def, ability) && s.isSkillAllowed(perkLevel, skillName) {
+				if skill, ok := skillRegistry[skillName]; ok {
+					tools = append(tools, skill.Tools(s)...)
+				}
 			}
 		}
 	}
@@ -313,6 +326,11 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
+			} else if isUserScopedToolName(call.Function.Name) {
+				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -425,6 +443,11 @@ func (s *ConversationService) runWithGeneralTools(
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				if err != nil {
+					return "", err
+				}
+			} else if isUserScopedToolName(call.Function.Name) {
+				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err
 				}
@@ -664,6 +687,11 @@ func (s *ConversationService) streamWithGeneralTools(
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if isUserScopedToolName(call.Function.Name) {
+				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", nil, err
 				}

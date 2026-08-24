@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,6 +27,16 @@ func NewClient(baseURL, accessToken string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+// NewClientWithHTTP creates a Client with a caller-supplied HTTP client.
+// This is used for user-scoped tools where a shared HTTP client is preferred.
+func NewClientWithHTTP(baseURL, accessToken string, hc *http.Client) *Client {
+	return &Client{
+		baseURL:     strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		accessToken: strings.TrimSpace(accessToken),
+		httpClient:  hc,
 	}
 }
 
@@ -353,4 +364,317 @@ func parseTotalHeader(headers http.Header) int {
 		return 0
 	}
 	return total
+}
+
+func (c *Client) doMultipart(ctx context.Context, method, path string, fields map[string]string, fileField, filename string, content []byte, out any) error {
+	_, err := c.doMultipartWithHeaders(ctx, method, path, fields, fileField, filename, content, out)
+	return err
+}
+
+func (c *Client) doMultipartWithHeaders(ctx context.Context, method, path string, fields map[string]string, fileField, filename string, content []byte, out any) (http.Header, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add file part
+	part, err := writer.CreateFormFile(fileField, filename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(content); err != nil {
+		return nil, err
+	}
+
+	// Add form fields
+	for key, val := range fields {
+		if err := writer.WriteField(key, val); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	requestURL := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
+	if c.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("solar %s %s failed with status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	if out == nil || len(bytes.TrimSpace(payload)) == 0 {
+		return resp.Header, nil
+	}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return nil, fmt.Errorf("decode solar %s %s response: %w", method, path, err)
+	}
+	return resp.Header, nil
+}
+
+// ── Drive (DysonFS) ─────────────────────────────────────────────────────
+
+func (c *Client) ListMyFiles(ctx context.Context, q url.Values) ([]map[string]any, int, error) {
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/drive/files/me", q, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) GetFile(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	path := "/drive/files/" + url.PathEscape(strings.TrimSpace(id)) + "/info"
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateFolder(ctx context.Context, name, parentID string) (map[string]any, error) {
+	body := map[string]any{"name": strings.TrimSpace(name)}
+	if strings.TrimSpace(parentID) != "" {
+		body["parent_id"] = strings.TrimSpace(parentID)
+	}
+	var out map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/drive/files/folders", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UploadTextFile(ctx context.Context, name, parentID string, content []byte) (map[string]any, error) {
+	fields := map[string]string{"name": strings.TrimSpace(name)}
+	if strings.TrimSpace(parentID) != "" {
+		fields["parent_id"] = strings.TrimSpace(parentID)
+	}
+	var out map[string]any
+	if err := c.doMultipart(ctx, http.MethodPost, "/drive/files/upload/direct", fields, "file", strings.TrimSpace(name), content, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RecycleFile(ctx context.Context, id string) error {
+	path := "/drive/files/" + url.PathEscape(strings.TrimSpace(id)) + "/recycle"
+	return c.doJSON(ctx, http.MethodPost, path, nil, nil, nil)
+}
+
+func (c *Client) RestoreFile(ctx context.Context, id string) error {
+	path := "/drive/files/" + url.PathEscape(strings.TrimSpace(id)) + "/restore"
+	return c.doJSON(ctx, http.MethodPost, path, nil, nil, nil)
+}
+
+func (c *Client) ListRecycleBin(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("recycled", "true")
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/drive/files/me", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) GetStorageQuota(ctx context.Context) (map[string]any, error) {
+	quota := map[string]any{}
+	if err := c.doJSON(ctx, http.MethodGet, "/drive/billing/quota", nil, nil, &quota); err != nil {
+		return nil, err
+	}
+	usage := map[string]any{}
+	if err := c.doJSON(ctx, http.MethodGet, "/drive/billing/usage", nil, nil, &usage); err != nil {
+		return nil, err
+	}
+	for k, v := range usage {
+		quota[k] = v
+	}
+	return quota, nil
+}
+
+// ── Wallet ───────────────────────────────────────────────────────────────
+
+func (c *Client) ListWallets(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/wallet/wallets/all", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListOrders(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/wallet/orders/mine", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+// ── Ring / Metoer (notifications) ────────────────────────────────────────
+
+func (c *Client) ListNotifications(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/ring/notifications", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) UnreadNotificationCount(ctx context.Context) (int, error) {
+	var out struct {
+		Count int `json:"count"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/ring/notifications/count", nil, nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Count, nil
+}
+
+func (c *Client) MarkAllNotificationsRead(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/ring/notifications/all/read", nil, nil, nil)
+}
+
+// ── Sphere ───────────────────────────────────────────────────────────────
+
+func (c *Client) ReadWebpage(ctx context.Context, rawURL string) (map[string]any, error) {
+	query := url.Values{}
+	query.Set("url", strings.TrimSpace(rawURL))
+	var out map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/sphere/api/scrap/link", query, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListStickers(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/api/stickers", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) ListSurveys(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/api/surveys/me", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+// ── Passport ─────────────────────────────────────────────────────────────
+
+func (c *Client) GetMyLeveling(ctx context.Context) ([]map[string]any, int, error) {
+	query := url.Values{}
+	query.Set("take", "20")
+	query.Set("offset", "0")
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/passport/accounts/me/leveling", query, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+// ── Stargate ─────────────────────────────────────────────────────────────
+
+func (c *Client) ListRelationships(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/stargate/relationships", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) FollowAccount(ctx context.Context, accountID string) error {
+	path := "/stargate/relationships/" + url.PathEscape(strings.TrimSpace(accountID)) + "/friends"
+	return c.doJSON(ctx, http.MethodPost, path, nil, map[string]any{}, nil)
+}
+
+func (c *Client) UnfollowAccount(ctx context.Context, accountID string) error {
+	path := "/stargate/relationships/" + url.PathEscape(strings.TrimSpace(accountID))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+func (c *Client) SearchAccounts(ctx context.Context, q string, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := url.Values{}
+	query.Set("query", strings.TrimSpace(q))
+	query.Set("take", fmt.Sprintf("%d", take))
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/stargate/accounts/search", query, nil, &out); err != nil {
+		return nil, 0, err
+	}
+	return out, len(out), nil
 }

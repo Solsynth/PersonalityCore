@@ -36,6 +36,7 @@ type App struct {
 	autonomous     *service.AutonomousWakeScheduler
 	scheduler      *service.TaskScheduler
 	surfScheduler  *service.SurfScheduler
+	oauth          *service.OAuthService
 	billingConn    *grpc.ClientConn
 	permissionConn *grpc.ClientConn
 	backgroundCtx  context.Context
@@ -122,7 +123,11 @@ func New(cfg *config.Config) (*App, error) {
 			})
 		},
 	)
-	conversations.SetSnChatBridge(snManager)
+	var oauth *service.OAuthService
+	if cfg.OAuth.Enabled {
+		oauth = service.NewOAuthService(db, cfg)
+		conversations.SetOAuthService(oauth)
+	}
 	scheduler := service.NewTaskScheduler(db, conversations, 0)
 	surfScheduler := service.NewSurfScheduler(db, conversations, registry, &cfg.Personality.Surfing)
 	autonomous := service.NewAutonomousWakeScheduler(conversations, registry)
@@ -151,7 +156,7 @@ func New(cfg *config.Config) (*App, error) {
 	gen.RegisterDyEmbeddingServiceServer(grpcSrv, grpcsvc.NewEmbedding(conversations))
 	reflection.Register(grpcSrv)
 
-	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler, surfScheduler: surfScheduler, billingConn: billingConn, permissionConn: permissionConn}, nil
+	return &App{cfg: cfg, db: db, conversations: conversations, httpSrv: httpSrv, grpcSrv: grpcSrv, sn: snManager, autonomous: autonomous, scheduler: scheduler, surfScheduler: surfScheduler, oauth: oauth, billingConn: billingConn, permissionConn: permissionConn}, nil
 }
 
 func (a *App) Start(ctx context.Context) error {
@@ -162,10 +167,8 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.grpcLn = ln
 
-	if a.sn != nil {
-		if err := a.sn.Start(context.Background()); err != nil {
-			return err
-		}
+	if a.oauth != nil {
+		a.oauth.Start(ctx)
 	}
 
 	go func() {
@@ -224,8 +227,10 @@ func (a *App) Stop(ctx context.Context) error {
 	if a.permissionConn != nil {
 		_ = a.permissionConn.Close()
 	}
-	a.scheduler.Stop()
-	a.surfScheduler.Stop()
+	if a.oauth != nil {
+		a.oauth.Stop()
+	}
+	a.wg.Wait()
 	a.wg.Wait()
 	return nil
 }

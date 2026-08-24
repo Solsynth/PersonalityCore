@@ -62,6 +62,8 @@ type ConversationService struct {
 	snInbound         *snInboundBatcher
 	billing           *BillingService
 	billingPermission PermissionChecker
+	oauth             *OAuthService
+	netHTTP           *http.Client
 	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed
 }
 
@@ -137,6 +139,7 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 		executor: executor,
 		humanize: humanize.NewManager(db),
 		billing:  NewBillingService(db, cfg),
+		netHTTP:  &http.Client{Timeout: 30 * time.Second},
 	}
 	debounceDelay := 2 * time.Second
 	if cfg != nil && cfg.Personality.ChatInboundDebounce > 0 {

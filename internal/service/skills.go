@@ -78,20 +78,96 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
-	"surfing": {
-		Name:        "surfing",
-		Description: "Browse, search, create, reply to, and repost posts on Solar Network",
+	"files": {
+		Name:        "files",
+		Description: "Browse, upload, and manage files in Solar Drive",
 		Tools: func(s *ConversationService) []*schema.ToolInfo {
 			return []*schema.ToolInfo{
-				s.listFeedToolInfo(),
-				s.searchPostsToolInfo(),
-				s.createPostToolInfo(),
-				s.replyToPostToolInfo(),
-				s.repostPostToolInfo(),
-				s.reactToPostToolInfo(),
-				s.getPostSurfingToolInfo(),
-				s.getPostRepliesSurfingToolInfo(),
-				s.listMyPostsToolInfo(),
+				s.listFilesToolInfo(),
+				s.getFileInfoToolInfo(),
+				s.createFolderToolInfo(),
+				s.uploadTextFileToolInfo(),
+				s.recycleFileToolInfo(),
+				s.restoreFileToolInfo(),
+				s.listRecycleBinToolInfo(),
+				s.getStorageQuotaToolInfo(),
+			}
+		},
+	},
+	"wallet": {
+		Name:        "wallet",
+		Description: "View Solar wallets and orders",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listWalletsToolInfo(),
+				s.listOrdersToolInfo(),
+			}
+		},
+	},
+	"notifications": {
+		Name:        "notifications",
+		Description: "View and manage Solar notifications",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listNotificationsToolInfo(),
+				s.getUnreadNotificationCountToolInfo(),
+				s.markAllNotificationsReadToolInfo(),
+			}
+		},
+	},
+	"web_reader": {
+		Name:        "web_reader",
+		Description: "Read and extract content from web pages",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.readWebpageToolInfo(),
+			}
+		},
+	},
+	"relationships": {
+		Name:        "relationships",
+		Description: "View and manage Solar relationships (follow, unfollow, friends)",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listRelationshipsToolInfo(),
+				s.followAccountToolInfo(),
+				s.unfollowAccountToolInfo(),
+			}
+		},
+	},
+	"search": {
+		Name:        "search",
+		Description: "Search for Solar Network accounts",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.searchAccountsToolInfo(),
+			}
+		},
+	},
+	"stickers": {
+		Name:        "stickers",
+		Description: "Browse Solar sticker packs",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listStickersToolInfo(),
+			}
+		},
+	},
+	"surveys": {
+		Name:        "surveys",
+		Description: "View Solar surveys",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.listSurveysToolInfo(),
+			}
+		},
+	},
+	"leveling": {
+		Name:        "leveling",
+		Description: "View Solar leveling and experience history",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.getMyLevelingToolInfo(),
 			}
 		},
 	},

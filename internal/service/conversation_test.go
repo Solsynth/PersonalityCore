@@ -1676,3 +1676,18 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		t.Fatalf("expected final assistant message to persist reasoning_content, got %#v", persisted)
 	}
 }
+
+func TestRenderUserIdentityOverlayIncludesHandle(t *testing.T) {
+	if got, want := renderUserIdentityOverlay("alice", "Alice Chen"), `The user you are talking to is named "Alice Chen". Their username is @alice.`; got != want {
+		t.Fatalf("overlay = %q, want %q", got, want)
+	}
+	if got, want := renderUserIdentityOverlay("alice", "alice"), `The user you are talking to is named "alice".`; got != want {
+		t.Fatalf("identical handle and nick: overlay = %q, want %q", got, want)
+	}
+	if got, want := renderUserIdentityOverlay("alice", ""), `The user you are talking to is named "alice".`; got != want {
+		t.Fatalf("nickless overlay = %q, want %q", got, want)
+	}
+	if got := renderUserIdentityOverlay("", ""); got != "" {
+		t.Fatalf("empty identity overlay = %q, want empty", got)
+	}
+}

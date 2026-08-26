@@ -526,17 +526,18 @@ func (s *ConversationService) buildUserIdentityOverlay(ctx context.Context, agen
 		account, err := s.sn.GetAccount(ctx, agentID, "", accountID)
 		if err == nil && account != nil {
 			var parts []string
-			name := strings.TrimSpace(account.Nick)
-			if name == "" {
-				name = strings.TrimSpace(account.Name)
-			}
-			if name != "" {
-				parts = append(parts, fmt.Sprintf("The user you are talking to is named %q.", name))
+			overlay := renderUserIdentityOverlay(account.Name, account.Nick)
+			if overlay != "" {
+				parts = append(parts, overlay)
 			}
 
-			// Try to get profile for timezone and extra info
+			// Enrich with profile fields (bio, gender, location, ...) and
+			// the user's local time.
 			if accountName := strings.TrimSpace(account.Name); accountName != "" {
 				if profile, err := s.getCachedSnUserProfile(ctx, agentID, accountName); err == nil && profile != nil {
+					if prompt := snUserProfilePrompt(profile); prompt != "" {
+						parts = append(parts, prompt)
+					}
 					if localTime := snUserLocalTime(profile); localTime != "" {
 						parts = append(parts, localTime)
 					}

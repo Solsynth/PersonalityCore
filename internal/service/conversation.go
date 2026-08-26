@@ -1423,11 +1423,16 @@ func renderCurrentDateTimeContext(now time.Time) string {
 // unavailable (pet agents, offline mode, lookup failures).
 func renderUserIdentityOverlay(name, nick string) string {
 	display := strings.TrimSpace(nick)
+	handle := strings.TrimSpace(name)
 	if display == "" {
-		display = strings.TrimSpace(name)
+		if handle == "" {
+			return ""
+		}
+		// Only the handle (username) is available; use it as the name.
+		return fmt.Sprintf("The user you are talking to is named %q.", handle)
 	}
-	if display == "" {
-		return ""
+	if handle != "" && handle != display {
+		return fmt.Sprintf("The user you are talking to is named %q. Their username is @%s.", display, handle)
 	}
 	return fmt.Sprintf("The user you are talking to is named %q.", display)
 }

@@ -83,6 +83,7 @@ func TestRegisterResponseRoutesIncludesPetEndpoints(t *testing.T) {
 		"POST /api/responses",
 		"POST /api/pet/responses",
 		"POST /api/pet/reset",
+		"GET /api/pet/affection",
 	} {
 		if !paths[path] {
 			t.Fatalf("missing route %s", path)

@@ -152,11 +152,20 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 func (s *ConversationService) Billing() *BillingService { return s.billing }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
+	return s.ListPetAgents(false)
+}
+
+// ListPetAgents returns enabled pet-capable agents when petOnly is true,
+// otherwise the full agent list. System prompts are stripped from responses.
+func (s *ConversationService) ListPetAgents(petOnly bool) []agent.Definition {
 	items := s.registry.List()
-	result := make([]agent.Definition, len(items))
-	for i, def := range items {
+	result := make([]agent.Definition, 0, len(items))
+	for _, def := range items {
+		if petOnly && !agent.HasAbility(def, "pet") {
+			continue
+		}
 		def.SystemPrompt = ""
-		result[i] = def
+		result = append(result, def)
 	}
 	return result
 }

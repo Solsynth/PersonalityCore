@@ -136,6 +136,10 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			}
 		}
 	}
+	// auto-load the affection adjustment tool for pet agents
+	if agent.HasAbility(def, "pet") {
+		tools = append(tools, s.petAdjustAffectionToolInfo())
+	}
 	// auto-load user-scoped skills gated on OAuth + ability
 	if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
 		userSkillAbilities := map[string]string{
@@ -326,6 +330,11 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
+			} else if isPetToolName(call.Function.Name) {
+				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
 			} else if isUserScopedToolName(call.Function.Name) {
 				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
 				if err != nil {
@@ -447,6 +456,11 @@ func (s *ConversationService) runWithGeneralTools(
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				if err != nil {
+					return "", err
+				}
+			} else if isPetToolName(call.Function.Name) {
+				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
 				if err != nil {
 					return "", err
 				}

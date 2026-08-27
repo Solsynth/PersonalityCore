@@ -24,12 +24,14 @@ type ConversationThread struct {
 }
 
 type PetSession struct {
-	ID        string    `gorm:"primaryKey;size:26" json:"id"`
-	AccountID string    `gorm:"size:128;uniqueIndex:idx_pet_sessions_account_agent,priority:1" json:"account_id"`
-	AgentID   string    `gorm:"size:64;uniqueIndex:idx_pet_sessions_account_agent,priority:2" json:"agent_id"`
-	ThreadID  string    `gorm:"size:26;uniqueIndex" json:"thread_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `gorm:"primaryKey;size:26" json:"id"`
+	AccountID       string    `gorm:"size:128;uniqueIndex:idx_pet_sessions_account_agent,priority:1" json:"account_id"`
+	AgentID         string    `gorm:"size:64;uniqueIndex:idx_pet_sessions_account_agent,priority:2" json:"agent_id"`
+	ThreadID        string    `gorm:"size:26;uniqueIndex" json:"thread_id"`
+	Affection       int       `gorm:"default:50" json:"affection"`
+	AffectionReason string    `gorm:"type:text" json:"affection_reason"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ConversationMessage struct {

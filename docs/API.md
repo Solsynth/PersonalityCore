@@ -127,6 +127,7 @@ before a client tool call is returned.
 ```
 POST /api/pet/responses
 POST /api/pet/reset?agent_id=mochi
+GET  /api/pet/affection?agent_id=mochi
 ```
 
 Pet responses use the native Responses request and response shape, but the
@@ -145,6 +146,33 @@ abilities = ["pet", "memory", "mood", "relationship"]
 Pet threads are excluded from normal conversation listings. Reset returns
 `204 No Content` and causes the next pet response to start a new hidden
 conversation.
+
+### Affection
+
+Each pet session carries an affection score (0-100, default 50) toward its
+user, adjusted by the pet agent itself. Pet agents are given a
+`pet_adjust_affection` tool; the model calls it after each user message with a
+small delta (-5 to +5, up to +/-10 for major moments) and a one-line reason in
+the pet's voice. The server clamps the score to 0-100, so repeated adjustments
+cannot grow unbounded. The score is also surfaced to the pet in its system
+overlay (`Affection toward the user`) so it stays consistent across turns.
+
+`GET /api/pet/affection?agent_id=mochi` returns the current score:
+
+```json
+{
+  "agent_id": "mochi",
+  "affection": 62,
+  "level": "warm",
+  "reason": "The user gave me a treat."
+}
+```
+
+`level` is a stable bucket derived from the score: `estranged` (0-20),
+`distant` (21-40), `familiar` (41-60), `warm` (61-80), `devoted` (81-100).
+Returns `404` when the account has no pet session for that agent yet (no
+`POST /api/pet/responses` has been made). Resetting the pet thread also resets
+affection to the default 50.
 
 
 ---
@@ -372,9 +400,12 @@ to this list; a valid provider/model reference that is not listed is rejected.
 
 ```
 GET /api/agents
+GET /api/agents?pet=true
 ```
 
-Returns all enabled agents.
+Returns all enabled agents. With `pet=true`, only pet-capable agents (those
+with the `pet` ability) are returned — useful for pet pickers that should not
+list general chat agents.
 
 **Response** `200 OK`
 
@@ -392,14 +423,21 @@ Returns all enabled agents.
 ]
 ```
 
-### Get agent
+### Delete agent memories
 
 ```
-GET /api/agents/:id
+DELETE /api/agents/:id/memories
 ```
 
-**Response** `200 OK` — same shape as a single agent object above.
-**Response** `404 Not Found` — agent does not exist or is disabled.
+Purges every trace of the agent for the authenticated account: all
+conversation threads and their messages and runs, the pet session (including
+its affection score), humanizer state, durable and saved memories, self-notes,
+scheduled tasks, and external chat bindings. Rows are hard-deleted, so the
+agent genuinely forgets the account. The agent configuration itself is
+untouched; the next conversation or pet response starts fresh.
+
+**Response** `204 No Content`
+**Response** `400 Bad Request` — agent is disabled or does not exist.
 
 ---
 

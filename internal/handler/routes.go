@@ -23,6 +23,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 	r.GET("/agents", func(c *gin.Context) { listAgents(c, conversations) })
 	r.GET("/models", func(c *gin.Context) { listModels(c, conversations) })
 	r.GET("/agents/:id", func(c *gin.Context) { getAgent(c, conversations) })
+	r.DELETE("/agents/:id/memories", func(c *gin.Context) { deleteAgentMemories(c, conversations) })
 	r.POST("/agents/:id/autonomous-runs", func(c *gin.Context) { createAutonomousRun(c, conversations) })
 
 	registerOAuthRoutes(r, conversations)
@@ -47,7 +48,11 @@ func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.Conversat
 }
 
 func listAgents(c *gin.Context, conversations *service.ConversationService) {
-	c.JSON(http.StatusOK, conversations.ListAgents())
+	petOnly := false
+	if v, ok := c.GetQuery("pet"); ok {
+		petOnly = strings.EqualFold(strings.TrimSpace(v), "true")
+	}
+	c.JSON(http.StatusOK, conversations.ListPetAgents(petOnly))
 }
 
 func listModels(c *gin.Context, conversations *service.ConversationService) {
@@ -61,6 +66,17 @@ func getAgent(c *gin.Context, conversations *service.ConversationService) {
 		return
 	}
 	c.JSON(http.StatusOK, agent)
+}
+func deleteAgentMemories(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	if err := conversations.ResetAgentMemories(c.Request.Context(), accountID, c.Param("id")); err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func createConversation(c *gin.Context, conversations *service.ConversationService) {

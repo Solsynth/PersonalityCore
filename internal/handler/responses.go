@@ -19,6 +19,7 @@ func RegisterResponseRoutes(r *gin.RouterGroup, conversations *service.Conversat
 	r.POST("/responses", func(c *gin.Context) { createResponse(c, conversations) })
 	r.POST("/pet/responses", func(c *gin.Context) { createPetResponse(c, conversations) })
 	r.POST("/pet/reset", func(c *gin.Context) { resetPetResponse(c, conversations) })
+	r.GET("/pet/affection", func(c *gin.Context) { getPetAffection(c, conversations) })
 }
 
 type responseRequest struct {
@@ -118,6 +119,24 @@ func resetPetResponse(c *gin.Context, conversations *service.ConversationService
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func getPetAffection(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	agentID := strings.TrimSpace(c.Query("agent_id"))
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	affection, err := conversations.GetPetAffection(c.Request.Context(), accountID, agentID)
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, affection)
 }
 
 func writeResponse(c *gin.Context, conversations *service.ConversationService, accountID string, request responseRequest) {

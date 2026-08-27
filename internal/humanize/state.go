@@ -18,6 +18,23 @@ type SavedMemoryCandidate struct {
 	Content  string
 }
 
+// AffectionLevel buckets a 0-100 affection score into a stable human-readable
+// tier so pet agents and the query API share one vocabulary.
+func AffectionLevel(affection int) string {
+	switch {
+	case affection <= 20:
+		return "estranged"
+	case affection <= 40:
+		return "distant"
+	case affection <= 60:
+		return "familiar"
+	case affection <= 80:
+		return "warm"
+	default:
+		return "devoted"
+	}
+}
+
 func ExtractMemoryFacts(content string, now time.Time) []MemoryFact {
 	sentences := splitSentences(content)
 	facts := make([]MemoryFact, 0, len(sentences))

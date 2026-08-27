@@ -672,7 +672,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	} else {
 		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
 		if len(tools) > 0 {
-			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel)
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, &reasoningContent)
 		} else {
 			var response *schema.Message
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})

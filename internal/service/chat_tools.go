@@ -375,6 +375,7 @@ func (s *ConversationService) runWithGeneralTools(
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
 	perkLevel int32,
+	finalReasoning *strings.Builder,
 ) (string, error) {
 	activeSkills := map[string]bool{}
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
@@ -403,6 +404,9 @@ func (s *ConversationService) runWithGeneralTools(
 			}
 		}
 		if len(response.ToolCalls) == 0 {
+			if finalReasoning != nil && strings.TrimSpace(response.ReasoningContent) != "" {
+				finalReasoning.WriteString(strings.TrimSpace(response.ReasoningContent))
+			}
 			return strings.TrimSpace(response.Content), nil
 		}
 

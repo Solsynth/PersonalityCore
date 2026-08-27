@@ -123,6 +123,7 @@ func New(cfg *config.Config) (*App, error) {
 			})
 		},
 	)
+	conversations.SetSnChatBridge(snManager)
 	var oauth *service.OAuthService
 	if cfg.OAuth.Enabled {
 		oauth = service.NewOAuthService(db, cfg)
@@ -169,6 +170,11 @@ func (a *App) Start(ctx context.Context) error {
 
 	if a.oauth != nil {
 		a.oauth.Start(ctx)
+	}
+	if a.sn != nil {
+		if err := a.sn.Start(context.Background()); err != nil {
+			return err
+		}
 	}
 
 	go func() {

@@ -657,6 +657,63 @@ func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
 		}
 	}
 }
+func TestBuildModelMessagesPrefersUserTimezoneForTimestamps(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+		Abilities:    []string{"pet"},
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 4},
+	}, registry, nil)
+	svc.SetSnChatBridge(&stubSolarBridge{
+		account: &solar_network.Account{ID: "acct-1", Name: "alice", Nick: "Alice"},
+		profile: solar_network.AccountProfile{"time_zone": "Asia/Shanghai"},
+	})
+
+	thread := &database.ConversationThread{
+		ID:        "thread-tz-1",
+		AccountID: "acct-1",
+		AgentID:   "mochi",
+		Title:     "TZ chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := db.Create(&database.ConversationMessage{
+		ID:        "msg-1",
+		ThreadID:  thread.ID,
+		AccountID: thread.AccountID,
+		Role:      "user",
+		Content:   "What time is it there?",
+		Sequence:  1,
+	}).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "alice", "Alice")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	// The final datetime context must carry the user's zone offset, not the
+	// server's local zone.
+	last := messages[len(messages)-1]
+	if last.Role != schema.System || !strings.Contains(last.Content, "Current date and time:") {
+		t.Fatalf("expected final current time system message, got %#v", last)
+	}
+	if !strings.Contains(last.Content, "+08:00") {
+		t.Fatalf("expected user timezone offset in datetime context, got %q", last.Content)
+	}
+}
 
 func TestBuildModelMessagesCompactsOlderThreadContext(t *testing.T) {
 	db := openTestDB(t)

@@ -611,6 +611,41 @@ func snUserLocalTime(profile solar_network.AccountProfile) string {
 	}
 	return fmt.Sprintf("Current time for the sender (%s): %s.", tzStr, time.Now().In(loc).Format("2006-01-02 15:04 MST"))
 }
+// resolveUserLocation returns the authenticated user's timezone from their
+// Solar profile when available, else the server's local zone. The account is
+// skipped for synthetic solar:agent:room identities (chat-path accounts).
+func (s *ConversationService) resolveUserLocation(ctx context.Context, agentID, accountID, accountName string) *time.Location {
+	if s.sn == nil {
+		return time.Local
+	}
+	if strings.HasPrefix(strings.TrimSpace(accountID), "solar:") {
+		return time.Local
+	}
+	name := strings.TrimSpace(accountName)
+	if name == "" {
+		name = strings.TrimSpace(accountID)
+	}
+	if name == "" {
+		return time.Local
+	}
+	profile, err := s.getCachedSnUserProfile(ctx, agentID, name)
+	if err != nil || profile == nil {
+		return time.Local
+	}
+	tzRaw, ok := profile["time_zone"]
+	if !ok {
+		return time.Local
+	}
+	tzStr, ok := tzRaw.(string)
+	if !ok || strings.TrimSpace(tzStr) == "" {
+		return time.Local
+	}
+	loc, err := time.LoadLocation(strings.TrimSpace(tzStr))
+	if err != nil {
+		return time.Local
+	}
+	return loc
+}
 
 func latestSnInboundMetadata(records []database.ConversationMessage) *snInboundRequestMetadata {
 	for _, record := range records {

@@ -474,6 +474,9 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 			messages = append(messages, schema.SystemMessage(overlay))
 		}
 	}
+	// Prefer the user's own timezone for timestamps; fall back to server-local
+	// when the profile has no time_zone (or the lookup is unavailable).
+	loc := s.resolveUserLocation(ctx, def.ID, thread.AccountID, accountName)
 
 	toolResponseIDs := make(map[string]struct{})
 	for _, record := range records {
@@ -501,7 +504,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case "tool":
 			role = schema.Tool
 		}
-		renderedContent := renderConversationRecordContent(record)
+		renderedContent := renderConversationRecordContent(record, loc)
 		msg := &schema.Message{Role: role, Content: renderedContent}
 		switch role {
 		case schema.User:
@@ -580,7 +583,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		}
 		messages = append(messages, msg)
 	}
-	messages = append(messages, schema.SystemMessage(renderCurrentDateTimeContext(time.Now())))
+	messages = append(messages, schema.SystemMessage(renderCurrentDateTimeContext(time.Now(), loc)))
 	perkMaxTokens := s.resolveMaxCompletionTokens(perkLevel, agentDefLite{
 		Model:               def.Model,
 		MaxCompletionTokens: def.MaxCompletionTokens,
@@ -1370,8 +1373,11 @@ func (s *ConversationService) supportsVisionForAgent(def agent.Definition) bool 
 	return s.executor.SupportsVision(def)
 }
 
-func renderMessageContextContent(content string, createdAt time.Time) string {
-	timestamp := "Sent at: " + createdAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+func renderMessageContextContent(content string, createdAt time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+	timestamp := "Sent at: " + createdAt.In(loc).Format("2006-01-02 15:04:05 -07:00 MST")
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return timestamp
@@ -1379,20 +1385,20 @@ func renderMessageContextContent(content string, createdAt time.Time) string {
 	return timestamp + "\n\n" + content
 }
 
-func renderConversationRecordContent(record database.ConversationMessage) string {
+func renderConversationRecordContent(record database.ConversationMessage, loc *time.Location) string {
 	content := strings.TrimSpace(record.Content)
 	if strings.ToLower(strings.TrimSpace(record.Role)) != "user" {
-		return renderMessageContextContent(content, record.CreatedAt)
+		return renderMessageContextContent(content, record.CreatedAt, loc)
 	}
 
-	if line, ok := renderSnUserHistoryLine(record.Metadata, record.CreatedAt, content); ok {
+	if line, ok := renderSnUserHistoryLine(record.Metadata, record.CreatedAt, content, loc); ok {
 		return line
 	}
 
-	return renderMessageContextContent(content, record.CreatedAt)
+	return renderMessageContextContent(content, record.CreatedAt, loc)
 }
 
-func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string) (string, bool) {
+func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string, loc *time.Location) (string, bool) {
 	var meta snInboundRequestMetadata
 	if decodeMessageMetadata(raw, &meta) != nil {
 		return "", false
@@ -1413,7 +1419,10 @@ func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content st
 	if strings.HasPrefix(username, "@") {
 		username = strings.TrimPrefix(username, "@")
 	}
-	timestamp := createdAt.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+	if loc == nil {
+		loc = time.Local
+	}
+	timestamp := createdAt.In(loc).Format("2006-01-02 15:04:05 -07:00 MST")
 	content = strings.TrimSpace(content)
 	switch {
 	case content == "":
@@ -1423,8 +1432,11 @@ func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content st
 	}
 }
 
-func renderCurrentDateTimeContext(now time.Time) string {
-	return "Current date and time: " + now.In(time.Local).Format("2006-01-02 15:04:05 -07:00 MST")
+func renderCurrentDateTimeContext(now time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+	return "Current date and time: " + now.In(loc).Format("2006-01-02 15:04:05 -07:00 MST")
 }
 
 // renderUserIdentityOverlay tells the model who the authenticated caller is.

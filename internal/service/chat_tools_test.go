@@ -16,20 +16,20 @@ import (
 )
 
 type stubSolarBridge struct {
-	roomID      string
-	messageID   string
-	messageIDs  []string
-	lastAgent   string
-	lastRoom    string
-	lastTarget  string
+	roomID       string
+	messageID    string
+	messageIDs   []string
+	lastAgent    string
+	lastRoom     string
+	lastTarget   string
 	lastTargetID string
-	lastBody    string
-	sendCount   int
-	account     *solar_network.Account
-	profile     solar_network.AccountProfile
-	post        solar_network.Post
-	posts       *solar_network.PaginatedPosts
-	postReplies *solar_network.PaginatedPosts
+	lastBody     string
+	sendCount    int
+	account      *solar_network.Account
+	profile      solar_network.AccountProfile
+	post         solar_network.Post
+	posts        *solar_network.PaginatedPosts
+	postReplies  *solar_network.PaginatedPosts
 }
 
 func (s *stubSolarBridge) SendBotMessage(_ context.Context, agentID, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {
@@ -586,5 +586,37 @@ func TestBuildToolInfosDynamicModeRetainsMetaTools(t *testing.T) {
 	// solar_network NOT eagerly loaded in dynamic mode (requires activate_skill)
 	if toolNames["list_user_posts"] {
 		t.Fatal("dynamic mode should not eagerly load solar_network skill tools")
+	}
+}
+
+func TestToolsForConversationFiltersSolarOutboundTools(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{
+		Personality: config.PersonalityConfig{DynamicSkills: true},
+	}}
+	def := agent.Definition{ID: "michan", Abilities: []string{"chat", "pet"}}
+
+	ordinary := svc.ToolsForConversation(def, 0, false)
+	ordinaryNames := make(map[string]bool, len(ordinary))
+	for _, tool := range ordinary {
+		ordinaryNames[tool.Name] = true
+	}
+	for _, name := range []string{"send_chat_message", "send_chat_message_batch", "no_reply", "end_engagement"} {
+		if ordinaryNames[name] {
+			t.Fatalf("ordinary conversation exposed Solar outbound tool %q", name)
+		}
+	}
+	if !ordinaryNames["pet_adjust_affection"] {
+		t.Fatal("ordinary conversation lost non-Solar agent tool")
+	}
+
+	solar := svc.ToolsForConversation(def, 0, true)
+	solarNames := make(map[string]bool, len(solar))
+	for _, tool := range solar {
+		solarNames[tool.Name] = true
+	}
+	for _, name := range []string{"send_chat_message", "send_chat_message_batch", "no_reply", "end_engagement"} {
+		if !solarNames[name] {
+			t.Fatalf("Solar conversation omitted outbound tool %q", name)
+		}
 	}
 }

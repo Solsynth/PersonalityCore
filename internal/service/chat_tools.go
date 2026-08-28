@@ -106,11 +106,51 @@ func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int3
 	return s.buildToolInfos(def, nil, perkLevel)
 }
 
+// ToolsForConversation returns tools for a persisted conversation. Solar
+// outbound tools are only meaningful for synthetic Solar-bound threads; a
+// normal REST conversation must not encourage the agent to message elsewhere.
+func (s *ConversationService) ToolsForConversation(def agent.Definition, perkLevel int32, solarBound bool) []*schema.ToolInfo {
+	tools := s.buildToolInfos(def, nil, perkLevel)
+	if solarBound {
+		return tools
+	}
+	filtered := tools[:0]
+	for _, tool := range tools {
+		if isSolarOutboundToolName(tool.Name) {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
+func isSolarOutboundToolName(name string) bool {
+	switch name {
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, endEngagementToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *ConversationService) filterSolarOutboundTools(tools []*schema.ToolInfo, solarBound bool) []*schema.ToolInfo {
+	if solarBound {
+		return tools
+	}
+	filtered := tools[:0]
+	for _, tool := range tools {
+		if isSolarOutboundToolName(tool.Name) {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
 func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []*schema.ToolInfo {
 	dynamic := s.cfg == nil || s.cfg.Personality.DynamicSkills
 	var tools []*schema.ToolInfo
 
-	// meta tools: list_skills / activate_skill only in dynamic mode
 	if dynamic {
 		tools = append(tools, s.listSkillsToolInfo(), s.activateSkillToolInfo())
 	}
@@ -120,7 +160,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 	tools = append(tools, s.getCurrentUserProfileToolInfo())
 
 	if dynamic {
-		// auto-load chat skill for chat agents
 		if agent.HasAbility(def, "chat") {
 			if s.isSkillAllowed(perkLevel, "chat") {
 				if skill, ok := skillRegistry["chat"]; ok {
@@ -128,7 +167,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 				}
 			}
 		}
-		// auto-load self_notes for humanizer agents
 		if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
 			if s.isSkillAllowed(perkLevel, "self_notes") {
 				if skill, ok := skillRegistry["self_notes"]; ok {
@@ -136,18 +174,11 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 				}
 			}
 		}
-		// auto-load user-scoped skills gated on OAuth + ability
 		if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
 			userSkillAbilities := map[string]string{
-				"files":         "files",
-				"wallet":        "wallet",
-				"notifications": "notifications",
-				"web_reader":    "web_reader",
-				"relationships": "relationships",
-				"search":        "search",
-				"stickers":      "stickers",
-				"surveys":       "surveys",
-				"leveling":      "leveling",
+				"files": "files", "wallet": "wallet", "notifications": "notifications",
+				"web_reader": "web_reader", "relationships": "relationships", "search": "search",
+				"stickers": "stickers", "surveys": "surveys", "leveling": "leveling",
 			}
 			for ability, skillName := range userSkillAbilities {
 				if agent.HasAbility(def, ability) && s.isSkillAllowed(perkLevel, skillName) {
@@ -158,17 +189,12 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			}
 		}
 	} else {
-		// static mode: eagerly load every skill whose agent has the required ability
 		for name, skill := range skillRegistry {
 			if !s.isSkillAllowed(perkLevel, name) {
 				continue
 			}
 			switch name {
-			case "chat":
-				if !agent.HasAbility(def, "chat") {
-					continue
-				}
-			case "solar_network":
+			case "chat", "solar_network":
 				if !agent.HasAbility(def, "chat") {
 					continue
 				}
@@ -185,7 +211,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 		}
 	}
 
-	// standalone tools (always loaded, not part of skillRegistry)
 	if agent.HasAbility(def, "chat") {
 		if et := s.endEngagementToolInfo(); et != nil {
 			tools = append(tools, et)
@@ -194,8 +219,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 	if agent.HasAbility(def, "pet") {
 		tools = append(tools, s.petAdjustAffectionToolInfo())
 	}
-
-	// add activated skill tools (only reachable in dynamic mode)
 	if dynamic && activeSkills != nil {
 		for name := range activeSkills {
 			if !s.isSkillAllowed(perkLevel, name) {
@@ -204,10 +227,8 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 		}
 		tools = append(tools, s.resolveSkillTools(activeSkills)...)
 	}
-
 	return tools
 }
-
 
 func (s *ConversationService) runWithChatTools(
 	ctx context.Context,
@@ -418,6 +439,7 @@ func (s *ConversationService) runWithGeneralTools(
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
 	perkLevel int32,
+	solarBound bool,
 	finalReasoning *strings.Builder,
 ) (string, error) {
 	activeSkills := map[string]bool{}
@@ -468,7 +490,7 @@ func (s *ConversationService) runWithGeneralTools(
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills)
-				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
+				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", err
@@ -616,12 +638,6 @@ func (s *ConversationService) streamToolRound(
 	return round, nil
 }
 
-// streamWithGeneralTools is the streaming counterpart of
-// [ConversationService.runWithGeneralTools]: it attaches the agent's tools,
-// streams each round, executes requested tool calls (persisting assistant and
-// tool messages), and re-invokes the model with the results until it replies
-// without tool calls. It mirrors the non-streaming path so streaming and
-// non-streaming runs behave identically for tool-capable agents.
 func (s *ConversationService) streamWithGeneralTools(
 	ctx context.Context,
 	accountID, threadID string,
@@ -630,6 +646,7 @@ func (s *ConversationService) streamWithGeneralTools(
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
 	perkLevel int32,
+	solarBound bool,
 	callbacks StreamCallbacks,
 	finalReasoning *strings.Builder,
 ) (string, *schema.TokenUsage, error) {
@@ -717,7 +734,7 @@ func (s *ConversationService) streamWithGeneralTools(
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills)
-				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
+				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", nil, err

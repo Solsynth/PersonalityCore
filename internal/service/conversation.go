@@ -682,9 +682,9 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			return nil, err
 		}
 	} else {
-		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
+		tools := s.ToolsForConversation(agentDef, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
 		if len(tools) > 0 {
-			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, &reasoningContent)
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent)
 		} else {
 			var response *schema.Message
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
@@ -867,10 +867,10 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		agentDef = effectiveChatAgentDefinition(agentDef)
 	}
 
-	tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
+	tools := s.ToolsForConversation(agentDef, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
 	if len(tools) > 0 {
 		streamed, usage, toolErr := s.streamWithGeneralTools(
-			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks, &reasoningContent,
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent,
 		)
 		if toolErr != nil {
 			_ = s.FailRun(ctx, run, toolErr)

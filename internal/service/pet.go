@@ -180,14 +180,24 @@ func (s *ConversationService) GetPetAffection(ctx context.Context, accountID, ag
 // AdjustPetAffection applies a model-directed delta to the session's
 // affection, clamped to 0-100, and records the model's stated reason.
 // Unbounded accumulation is impossible because the value is clamped.
+// The session is created on first use so any pet-capable run (conversation
+// streaming, pet responses, OpenAI-compatible calls) can adjust affection
+// without a prior explicit pet-session setup.
 func (s *ConversationService) AdjustPetAffection(ctx context.Context, accountID, agentID string, delta int, reason string) (*PetAffection, error) {
 	agentID = strings.TrimSpace(agentID)
 	session, err := s.getPetSession(ctx, accountID, agentID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("pet session not found for agent %q", agentID)
+			if _, createErr := s.GetOrCreatePetThread(ctx, accountID, agentID); createErr != nil {
+				return nil, createErr
+			}
+			session, err = s.getPetSession(ctx, accountID, agentID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
 	}
 	if delta == 0 && strings.TrimSpace(reason) == "" {
 		return s.GetPetAffection(ctx, accountID, agentID)

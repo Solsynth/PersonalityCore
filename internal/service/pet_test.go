@@ -91,6 +91,42 @@ func TestGetPetAffectionDefaultsToFiftyBeforeAdjustment(t *testing.T) {
 	}
 }
 
+func TestAdjustPetAffectionCreatesSessionWhenMissing(t *testing.T) {
+	svc := newPetTestService(t)
+	ctx := context.Background()
+
+	// No pet thread or session exists yet; the adjustment must create them
+	// instead of failing with "pet session not found".
+	after, err := svc.AdjustPetAffection(ctx, "acct-1", "mochi", 5, "First greeting.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Affection != 55 || after.Level != "familiar" {
+		t.Fatalf("affection = %d (%s), want 55 (familiar)", after.Affection, after.Level)
+	}
+	if after.Reason != "First greeting." {
+		t.Fatalf("reason = %q, want %q", after.Reason, "First greeting.")
+	}
+
+	// The created session must be reusable by the read path.
+	got, err := svc.GetPetAffection(ctx, "acct-1", "mochi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Affection != 55 {
+		t.Fatalf("persisted affection = %d, want 55", got.Affection)
+	}
+
+	// Second adjustment must accumulate on the same session.
+	again, err := svc.AdjustPetAffection(ctx, "acct-1", "mochi", 10, "Pet again.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Affection != 65 {
+		t.Fatalf("accumulated affection = %d, want 65", again.Affection)
+	}
+}
+
 func TestAdjustPetAffectionAppliesDeltaAndReason(t *testing.T) {
 	svc := newPetTestService(t)
 	ctx := context.Background()

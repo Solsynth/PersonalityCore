@@ -107,63 +107,96 @@ func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int3
 }
 
 func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []*schema.ToolInfo {
+	dynamic := s.cfg == nil || s.cfg.Personality.DynamicSkills
 	var tools []*schema.ToolInfo
 
-	// always-loaded meta tools
-	tools = append(tools, s.listSkillsToolInfo(), s.activateSkillToolInfo())
+	// meta tools: list_skills / activate_skill only in dynamic mode
+	if dynamic {
+		tools = append(tools, s.listSkillsToolInfo(), s.activateSkillToolInfo())
+	}
 	if st := s.sequentialThinkingToolInfo(); st != nil {
 		tools = append(tools, st)
 	}
 	tools = append(tools, s.getCurrentUserProfileToolInfo())
 
-	// auto-load chat skill for chat agents
-	if agent.HasAbility(def, "chat") {
-		if s.isSkillAllowed(perkLevel, "chat") {
-			if skill, ok := skillRegistry["chat"]; ok {
-				tools = append(tools, skill.Tools(s)...)
-			}
-		}
-		if et := s.endEngagementToolInfo(); et != nil {
-			tools = append(tools, et)
-		}
-	}
-
-	// auto-load self_notes for humanizer agents
-	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
-		if s.isSkillAllowed(perkLevel, "self_notes") {
-			if skill, ok := skillRegistry["self_notes"]; ok {
-				tools = append(tools, skill.Tools(s)...)
-			}
-		}
-	}
-	// auto-load the affection adjustment tool for pet agents
-	if agent.HasAbility(def, "pet") {
-		tools = append(tools, s.petAdjustAffectionToolInfo())
-	}
-	// auto-load user-scoped skills gated on OAuth + ability
-	if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
-		userSkillAbilities := map[string]string{
-			"files":         "files",
-			"wallet":        "wallet",
-			"notifications": "notifications",
-			"web_reader":    "web_reader",
-			"relationships": "relationships",
-			"search":        "search",
-			"stickers":      "stickers",
-			"surveys":       "surveys",
-			"leveling":      "leveling",
-		}
-		for ability, skillName := range userSkillAbilities {
-			if agent.HasAbility(def, ability) && s.isSkillAllowed(perkLevel, skillName) {
-				if skill, ok := skillRegistry[skillName]; ok {
+	if dynamic {
+		// auto-load chat skill for chat agents
+		if agent.HasAbility(def, "chat") {
+			if s.isSkillAllowed(perkLevel, "chat") {
+				if skill, ok := skillRegistry["chat"]; ok {
 					tools = append(tools, skill.Tools(s)...)
 				}
 			}
 		}
+		// auto-load self_notes for humanizer agents
+		if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
+			if s.isSkillAllowed(perkLevel, "self_notes") {
+				if skill, ok := skillRegistry["self_notes"]; ok {
+					tools = append(tools, skill.Tools(s)...)
+				}
+			}
+		}
+		// auto-load user-scoped skills gated on OAuth + ability
+		if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
+			userSkillAbilities := map[string]string{
+				"files":         "files",
+				"wallet":        "wallet",
+				"notifications": "notifications",
+				"web_reader":    "web_reader",
+				"relationships": "relationships",
+				"search":        "search",
+				"stickers":      "stickers",
+				"surveys":       "surveys",
+				"leveling":      "leveling",
+			}
+			for ability, skillName := range userSkillAbilities {
+				if agent.HasAbility(def, ability) && s.isSkillAllowed(perkLevel, skillName) {
+					if skill, ok := skillRegistry[skillName]; ok {
+						tools = append(tools, skill.Tools(s)...)
+					}
+				}
+			}
+		}
+	} else {
+		// static mode: eagerly load every skill whose agent has the required ability
+		for name, skill := range skillRegistry {
+			if !s.isSkillAllowed(perkLevel, name) {
+				continue
+			}
+			switch name {
+			case "chat":
+				if !agent.HasAbility(def, "chat") {
+					continue
+				}
+			case "solar_network":
+				if !agent.HasAbility(def, "chat") {
+					continue
+				}
+			case "self_notes":
+				if !agent.HasAbility(def, "humanizer") && !agent.HasAbility(def, "self_notes") {
+					continue
+				}
+			case "files", "wallet", "notifications", "web_reader", "relationships", "search", "stickers", "surveys", "leveling":
+				if s.cfg == nil || !s.cfg.OAuth.Enabled || s.oauth == nil || !agent.HasAbility(def, name) {
+					continue
+				}
+			}
+			tools = append(tools, skill.Tools(s)...)
+		}
 	}
 
-	// add activated skill tools (filtered by perk)
-	if activeSkills != nil {
+	// standalone tools (always loaded, not part of skillRegistry)
+	if agent.HasAbility(def, "chat") {
+		if et := s.endEngagementToolInfo(); et != nil {
+			tools = append(tools, et)
+		}
+	}
+	if agent.HasAbility(def, "pet") {
+		tools = append(tools, s.petAdjustAffectionToolInfo())
+	}
+
+	// add activated skill tools (only reachable in dynamic mode)
+	if dynamic && activeSkills != nil {
 		for name := range activeSkills {
 			if !s.isSkillAllowed(perkLevel, name) {
 				delete(activeSkills, name)
@@ -174,6 +207,7 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 
 	return tools
 }
+
 
 func (s *ConversationService) runWithChatTools(
 	ctx context.Context,

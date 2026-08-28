@@ -137,6 +137,7 @@ chatInboundDebounce = "5s"   # debounce window for inbound solar messages
 visionModel = "openai/gpt-4o" # model used to summarize images for non-vision models
 defaultEmbeddingModel = "openai/text-embedding-3-small"
 onlyAllowListedModels = false # true = reject provider/model references not declared below
+dynamicSkills = true          # false = all ability-gated skill tools load eagerly into context; list_skills/activate_skill are omitted
 
 # ─── Surfing ────────────────────────────────────────────────────────
 [personality.surfing]

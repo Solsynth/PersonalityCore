@@ -453,3 +453,138 @@ func TestGetCurrentUserProfileToolNoUser(t *testing.T) {
 		t.Fatalf("expected soft failure result, got %s", result.Content)
 	}
 }
+
+func TestBuildToolInfosStaticModeLoadsAllAbilitySkills(t *testing.T) {
+	// Static mode (dynamicSkills = false) should load all ability-gated skills eagerly
+	// and omit list_skills / activate_skill meta tools.
+	cfg := &config.Config{
+		Personality: config.PersonalityConfig{
+			DynamicSkills: false,
+		},
+	}
+	svc := &ConversationService{cfg: cfg}
+
+	// Chat agent gets: chat skill + solar_network skill + sequential_thinking + get_current_user_profile + end_engagement
+	def := agent.Definition{
+		ID:        "test-bot",
+		Model:     "openai/test",
+		Abilities: []string{"chat"},
+	}
+
+	tools := svc.buildToolInfos(def, nil, 0)
+	toolNames := make(map[string]bool)
+	for _, tool := range tools {
+		toolNames[tool.Name] = true
+	}
+
+	// list_skills / activate_skill must NOT be present
+	if toolNames["list_skills"] {
+		t.Fatal("static mode should not include list_skills")
+	}
+	if toolNames["activate_skill"] {
+		t.Fatal("static mode should not include activate_skill")
+	}
+
+	// chat skill tools must be present
+	if !toolNames["send_chat_message"] {
+		t.Fatal("static mode should eagerly load chat skill tools (send_chat_message)")
+	}
+	if !toolNames["send_chat_message_batch"] {
+		t.Fatal("static mode should eagerly load chat skill tools (send_chat_message_batch)")
+	}
+	if !toolNames["no_reply"] {
+		t.Fatal("static mode should eagerly load chat skill tools (no_reply)")
+	}
+
+	// solar_network skill tools must be present (gated on chat ability)
+	if !toolNames["list_user_posts"] {
+		t.Fatal("static mode should eagerly load solar_network skill tools (list_user_posts)")
+	}
+	if !toolNames["get_post"] {
+		t.Fatal("static mode should eagerly load solar_network skill tools (get_post)")
+	}
+	if !toolNames["list_post_replies"] {
+		t.Fatal("static mode should eagerly load solar_network skill tools (list_post_replies)")
+	}
+	if !toolNames["get_chat_message"] {
+		t.Fatal("static mode should eagerly load solar_network skill tools (get_chat_message)")
+	}
+	if !toolNames["get_user_profile"] {
+		t.Fatal("static mode should eagerly load solar_network skill tools (get_user_profile)")
+	}
+
+	// end_engagement (standalone tool for chat agents) must be present
+	if !toolNames["end_engagement"] {
+		t.Fatal("static mode should load end_engagement for chat agents")
+	}
+
+	// get_current_user_profile must be present
+	if !toolNames["get_current_user_profile"] {
+		t.Fatal("static mode should load get_current_user_profile")
+	}
+}
+
+func TestBuildToolInfosStaticModeOmitsUnrelatedAbilitySkills(t *testing.T) {
+	// A non-chat agent should NOT get solar_network or chat skill tools.
+	cfg := &config.Config{
+		Personality: config.PersonalityConfig{
+			DynamicSkills: false,
+		},
+	}
+	svc := &ConversationService{cfg: cfg}
+
+	def := agent.Definition{
+		ID:        "general",
+		Model:     "openai/test",
+		Abilities: []string{},
+	}
+
+	tools := svc.buildToolInfos(def, nil, 0)
+	toolNames := make(map[string]bool)
+	for _, tool := range tools {
+		toolNames[tool.Name] = true
+	}
+
+	if toolNames["send_chat_message"] {
+		t.Fatal("non-chat agent should not get chat skill tools")
+	}
+	if toolNames["list_user_posts"] {
+		t.Fatal("non-chat agent should not get solar_network skill tools")
+	}
+	if toolNames["list_skills"] {
+		t.Fatal("static mode should not include list_skills")
+	}
+}
+
+func TestBuildToolInfosDynamicModeRetainsMetaTools(t *testing.T) {
+	// Dynamic mode (default) should include list_skills / activate_skill.
+	cfg := &config.Config{
+		Personality: config.PersonalityConfig{
+			DynamicSkills: true,
+		},
+	}
+	svc := &ConversationService{cfg: cfg}
+
+	def := agent.Definition{
+		ID:        "test-bot",
+		Model:     "openai/test",
+		Abilities: []string{"chat"},
+	}
+
+	tools := svc.buildToolInfos(def, nil, 0)
+	toolNames := make(map[string]bool)
+	for _, tool := range tools {
+		toolNames[tool.Name] = true
+	}
+
+	if !toolNames["list_skills"] {
+		t.Fatal("dynamic mode should include list_skills")
+	}
+	if !toolNames["activate_skill"] {
+		t.Fatal("dynamic mode should include activate_skill")
+	}
+	// solar_network NOT eagerly loaded in dynamic mode (requires activate_skill)
+	if toolNames["list_user_posts"] {
+		t.Fatal("dynamic mode should not eagerly load solar_network skill tools")
+	}
+}

@@ -83,6 +83,7 @@ type PersonalityConfig struct {
 	VisionModel           string                 `mapstructure:"visionModel"`
 	DefaultEmbeddingModel string                 `mapstructure:"defaultEmbeddingModel"`
 	OnlyAllowListedModels bool                   `mapstructure:"onlyAllowListedModels"`
+	DynamicSkills         bool                   `mapstructure:"dynamicSkills"`
 	Surfing               SurfingConfig          `mapstructure:"surfing"`
 	PerkTiers             map[int]PerkTierConfig `mapstructure:"perkTiers"`
 }
@@ -288,7 +289,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("personality.sseHeartbeat", 15*time.Second)
 	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
 	v.SetDefault("personality.defaultEmbeddingModel", "")
-	v.SetDefault("personality.onlyAllowListedModels", false)
+	v.SetDefault("personality.dynamicSkills", true)
 	v.SetDefault("personality.surfing.enabled", false)
 	v.SetDefault("personality.surfing.interval", 1*time.Hour)
 	v.SetDefault("sentry.dsn", "")

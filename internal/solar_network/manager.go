@@ -260,18 +260,36 @@ func newAgentConnection(
 func (c *agentConnection) run(ctx context.Context) {
 	c.loadPersistedRooms(ctx)
 
-	delay := 500 * time.Millisecond
+	const baseDelay = 500 * time.Millisecond
+	delay := baseDelay
+	successStreak := 0
 	for {
 		if ctx.Err() != nil {
 			c.closeConn()
 			return
 		}
 
-		if err := c.connectAndServe(ctx); err != nil && ctx.Err() == nil {
-			logging.Log.Error().
-				Err(err).
-				Str("agent_id", c.def.ID).
-				Msg("solar websocket connection ended")
+		err := c.connectAndServe(ctx)
+		if err != nil && ctx.Err() == nil {
+			if isTransientError(err) {
+				logging.Log.Warn().
+					Err(err).
+					Str("agent_id", c.def.ID).
+					Msg("solar websocket connection lost, will retry")
+			} else {
+				logging.Log.Error().
+					Err(err).
+					Str("agent_id", c.def.ID).
+					Msg("solar websocket connection failed (non-retryable)")
+			}
+			successStreak = 0
+		} else if err == nil {
+			// connectAndServe returned nil -> clean shutdown or successful session;
+			// reset backoff once we have had a few good connects in a row.
+			successStreak++
+			if successStreak >= 3 {
+				delay = baseDelay
+			}
 		}
 
 		select {
@@ -291,6 +309,28 @@ func (c *agentConnection) run(ctx context.Context) {
 			delay = maxReconnectDelay
 		}
 	}
+}
+
+// isTransientError returns true for errors worth retrying (network flakes,
+// server5xx, temporary unavailability). Non-transient errors (auth failures,
+// permanently unreachable endpoints) should not be retried indefinitely.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// gorilla/websocket reports non-101 upgrades as "bad status"
+	if strings.Contains(msg, "bad status") {
+		return true
+	}
+	// DNS / connection-refused / timeout are transient
+	if strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection reset") {
+		return true
+	}
+	return false
 }
 
 func (c *agentConnection) sendBotMessage(ctx context.Context, roomID, targetAccountName, targetAccountID, content string) (string, string, error) {

@@ -455,12 +455,12 @@ func (s *ConversationService) runWithGeneralTools(
 
 	messages := append([]*schema.Message(nil), modelMessages...)
 	for step := 0; step < 6; step++ {
-		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
+		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceAllowed)}
 		response, err := toolModel.Generate(ctx, messages, genOpts...)
 		if err != nil {
 			if strings.Contains(err.Error(), "thinking mode") || strings.Contains(err.Error(), "tool_choice") {
 				response, err = toolModel.Generate(ctx, messages,
-					model.WithToolChoice(schema.ToolChoiceForced),
+					model.WithToolChoice(schema.ToolChoiceAllowed),
 					einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}),
 				)
 			}
@@ -667,7 +667,7 @@ func (s *ConversationService) streamWithGeneralTools(
 		var round *streamedToolRound
 		var roundErr error
 		for attempt := 0; attempt < 2; attempt++ {
-			genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
+			genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceAllowed)}
 			if attempt > 0 {
 				genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
 			}

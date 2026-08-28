@@ -1686,8 +1686,8 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 	if !ok || len(first) == 0 {
 		t.Fatalf("expected tools attached to the streamed model request, got %#v", requestBodies[0]["tools"])
 	}
-	if requestBodies[0]["tool_choice"] != "required" {
-		t.Fatalf("expected forced tool choice, got %#v", requestBodies[0]["tool_choice"])
+	if requestBodies[0]["tool_choice"] != "auto" {
+		t.Fatalf("expected allowed tool choice, got %#v", requestBodies[0]["tool_choice"])
 	}
 
 	raw, err := json.Marshal(requestBodies[1]["messages"])
@@ -1732,6 +1732,105 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 	}
 	if !gotFinalReasoning {
 		t.Fatalf("expected final assistant message to persist reasoning_content, got %#v", persisted)
+	}
+}
+
+func TestStreamRunToolLoopTerminatesOnPlainTextReply(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected completion path %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		n := len(requestBodies)
+		if n < 3 {
+			// Tool-calling rounds (1 and 2) then a plain-text reply (3).
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-r" + string(rune('0'+n)), "type": "function",
+							"function": map[string]any{"name": "get_current_user_profile", "arguments": "{}"},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
+				}},
+			}))
+			return
+		}
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Done."}, "finish_reason": nil,
+			}},
+		}))
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+		}))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:        "maid",
+		Name:      "Maid",
+		Model:     "openai/model",
+		Enabled:   true,
+		Abilities: []string{},
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	thread := &database.ConversationThread{ID: "thread-loop-1", AccountID: "acct-1", AgentID: "maid", Title: "Loop"}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{Message: "go"}, StreamCallbacks{})
+	if err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+	if result.ResponseContent != "Done." {
+		t.Fatalf("response content = %q, want %q", result.ResponseContent, "Done.")
+	}
+	if len(requestBodies) != 3 {
+		t.Fatalf("expected 3 model requests (2 tool rounds + 1 plain reply), got %d", len(requestBodies))
 	}
 }
 

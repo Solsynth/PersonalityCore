@@ -42,7 +42,7 @@ func NewClientWithHTTP(baseURL, accessToken string, hc *http.Client) *Client {
 
 func (c *Client) ResolveAccountByName(ctx context.Context, accountName string) (*Account, error) {
 	var out Account
-	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountName)), nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/stargate/accounts/"+url.PathEscape(strings.TrimSpace(accountName)), nil, nil, &out); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(out.ID) == "" {
@@ -53,7 +53,7 @@ func (c *Client) ResolveAccountByName(ctx context.Context, accountName string) (
 
 func (c *Client) GetAccountByID(ctx context.Context, accountID string) (*Account, error) {
 	var out Account
-	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountID)), nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/stargate/accounts/"+url.PathEscape(strings.TrimSpace(accountID)), nil, nil, &out); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(out.ID) == "" {
@@ -64,7 +64,7 @@ func (c *Client) GetAccountByID(ctx context.Context, accountID string) (*Account
 
 func (c *Client) GetAccountProfile(ctx context.Context, accountName string) (AccountProfile, error) {
 	out := AccountProfile{}
-	if err := c.doJSON(ctx, http.MethodGet, "/passport/accounts/"+url.PathEscape(strings.TrimSpace(accountName)), nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/stargate/accounts/"+url.PathEscape(strings.TrimSpace(accountName)), nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -634,7 +634,7 @@ func (c *Client) GetMyLeveling(ctx context.Context) ([]map[string]any, int, erro
 	query.Set("take", "20")
 	query.Set("offset", "0")
 	var out []map[string]any
-	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/passport/accounts/me/leveling", query, nil, &out)
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/stargate/accounts/me/leveling", query, nil, &out)
 	if err != nil {
 		return nil, 0, err
 	}

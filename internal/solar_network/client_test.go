@@ -538,8 +538,8 @@ func TestGetMyLeveling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h.path != "/passport/accounts/me/leveling" {
-		t.Errorf("path = %q, want /passport/accounts/me/leveling", h.path)
+	if h.path != "/stargate/accounts/me/leveling" {
+		t.Errorf("path = %q, want /stargate/accounts/me/leveling", h.path)
 	}
 	if h.query.Get("take") != "20" {
 		t.Errorf("query.take = %q, want 20", h.query.Get("take"))

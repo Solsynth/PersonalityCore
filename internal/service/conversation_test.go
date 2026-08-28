@@ -1623,7 +1623,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		ID:           "michan",
 		Name:         "Michan",
 		Model:        "openai/model",
-		Abilities:    []string{"self_notes"},
+		Abilities:    []string{"chat", "self_notes"},
 		Enabled:      true,
 		SystemPrompt: "You are Michan.",
 	}})
@@ -1636,6 +1636,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 	}
 	db := openTestDB(t)
 	svc := NewConversationService(db, cfg, registry, executor)
+	svc.sn = &stubSolarBridge{}
 
 	thread := &database.ConversationThread{
 		ID:        "thread-tool-1",

@@ -863,34 +863,28 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	var reasoningContent strings.Builder
 	chunkCount := 0
 	var billingUsage *schema.TokenUsage
-	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
+	if agent.HasAbility(agentDef, "chat") {
 		agentDef = effectiveChatAgentDefinition(agentDef)
-		logging.Log.Info().
-			Str("conversation_id", threadID).
-			Str("run_id", run.ID).
-			Str("agent_id", agentDef.ID).
-			Msg("routing streaming run through direct solar chat response path")
+	}
+
+	tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
+	if len(tools) > 0 {
+		streamed, usage, toolErr := s.streamWithGeneralTools(
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks, &reasoningContent,
+		)
+		if toolErr != nil {
+			_ = s.FailRun(ctx, run, toolErr)
+			return nil, toolErr
+		}
+		builder.WriteString(streamed)
+		billingUsage = usage
+	} else {
 		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
 		defer stream.Close()
-
-		binding, err := s.getSnRoomBinding(ctx, agentDef.ID, threadID)
-		if err != nil {
-			_ = s.FailRun(ctx, run, err)
-			return nil, err
-		}
-		replyMode, err := s.allowSnRoomReply(ctx, thread, binding)
-		if err != nil {
-			_ = s.FailRun(ctx, run, err)
-			return nil, err
-		}
-		var outboundSender *snOutboundStreamSender
-		if binding != nil && replyMode != snReplySuppress {
-			outboundSender = newSnOutboundStreamSender(s, thread, binding, agentDef.ID, run.ID)
-		}
 
 		for {
 			chunk, recvErr := stream.Recv()
@@ -907,6 +901,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 			if chunk.ResponseMeta.Usage != nil {
 				billingUsage = chunk.ResponseMeta.Usage
 			}
+			emitted := false
 			if chunk.Content != "" {
 				chunkCount++
 				builder.WriteString(chunk.Content)
@@ -916,12 +911,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 						return nil, err
 					}
 				}
-				if outboundSender != nil {
-					if err := outboundSender.Push(ctx, chunk.Content); err != nil {
-						_ = s.FailRun(ctx, run, err)
-						return nil, err
-					}
-				}
+				emitted = true
 			}
 			if chunk.ReasoningContent != "" {
 				reasoningContent.WriteString(chunk.ReasoningContent)
@@ -931,6 +921,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 						return nil, err
 					}
 				}
+				emitted = true
 			}
 			if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
 				for _, call := range chunk.ToolCalls {
@@ -939,92 +930,16 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 						return nil, err
 					}
 				}
+				emitted = true
 			}
-		}
-		if outboundSender != nil {
-			if err := outboundSender.Flush(ctx); err != nil {
-				_ = s.FailRun(ctx, run, err)
-				return nil, err
-			}
-		}
-		if binding != nil && replyMode == snReplySuppress {
-			builder.Reset()
-		}
-	} else {
-		tools := s.ToolsForAgent(agentDef, thread.PerkLevel)
-		if len(tools) > 0 {
-			streamed, usage, toolErr := s.streamWithGeneralTools(
-				ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, callbacks, &reasoningContent,
-			)
-			if toolErr != nil {
-				_ = s.FailRun(ctx, run, toolErr)
-				return nil, toolErr
-			}
-			builder.WriteString(streamed)
-			billingUsage = usage
-		} else {
-			stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
-			if err != nil {
-				_ = s.FailRun(ctx, run, err)
-				return nil, err
-			}
-			defer stream.Close()
-
-			for {
-				chunk, recvErr := stream.Recv()
-				if recvErr != nil {
-					if recvErr == io.EOF {
-						break
-					}
-					_ = s.FailRun(ctx, run, recvErr)
-					return nil, recvErr
-				}
-				if chunk == nil {
-					continue
-				}
-				if chunk.ResponseMeta.Usage != nil {
-					billingUsage = chunk.ResponseMeta.Usage
-				}
-				emitted := false
-				if chunk.Content != "" {
-					chunkCount++
-					builder.WriteString(chunk.Content)
-					if callbacks.OnChunk != nil {
-						if err := callbacks.OnChunk(chunk.Content); err != nil {
-							_ = s.FailRun(ctx, run, err)
-							return nil, err
-						}
-					}
-					emitted = true
-				}
-				if chunk.ReasoningContent != "" {
-					reasoningContent.WriteString(chunk.ReasoningContent)
-					if callbacks.OnReasoning != nil {
-						if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
-							_ = s.FailRun(ctx, run, err)
-							return nil, err
-						}
-					}
-					emitted = true
-				}
-				if callbacks.OnToolCall != nil && len(chunk.ToolCalls) > 0 {
-					for _, call := range chunk.ToolCalls {
-						if err := callbacks.OnToolCall(call); err != nil {
-							_ = s.FailRun(ctx, run, err)
-							return nil, err
-						}
-					}
-					emitted = true
-				}
-				if emitted {
-					logging.Log.Debug().
-						Str("conversation_id", threadID).
-						Str("run_id", run.ID).
-						Int("content_len", len(chunk.Content)).
-						Int("reasoning_len", len(chunk.ReasoningContent)).
-						Int("tool_calls", len(chunk.ToolCalls)).
-						Msg("stream chunk emitted")
-				}
+			if emitted {
+				logging.Log.Debug().
+					Str("conversation_id", threadID).
+					Str("run_id", run.ID).
+					Int("content_len", len(chunk.Content)).
+					Int("reasoning_len", len(chunk.ReasoningContent)).
+					Int("tool_calls", len(chunk.ToolCalls)).
+					Msg("stream chunk emitted")
 			}
 		}
 	}

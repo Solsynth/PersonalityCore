@@ -749,13 +749,13 @@ func (s *ConversationService) streamWithGeneralTools(
 				if err != nil {
 					return "", nil, err
 				}
-			} else if isSurfingToolName(call.Function.Name) {
-				result, err = s.executeSurfingToolCall(ctx, agentDef.ID, accountID, call)
+			} else if isMemoryToolName(call.Function.Name) {
+				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
 				if err != nil {
 					return "", nil, err
 				}
-			} else if isMemoryToolName(call.Function.Name) {
-				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+			} else if isPetToolName(call.Function.Name) {
+				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
 				if err != nil {
 					return "", nil, err
 				}

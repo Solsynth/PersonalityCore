@@ -1749,3 +1749,132 @@ func TestRenderUserIdentityOverlayIncludesHandle(t *testing.T) {
 		t.Fatalf("empty identity overlay = %q, want empty", got)
 	}
 }
+func TestStreamRunExecutesStreamedPetToolCall(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected completion path %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requestBodies) == 1 {
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-pet", "type": "function",
+							"function": map[string]any{"name": "pet_adjust_affection", "arguments": `{"delta":3,"reason":"playful"}`},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
+				}},
+			}))
+			return
+		}
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Yay!"}, "finish_reason": nil,
+			}},
+		}))
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+		}))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/model",
+		Abilities:    []string{"pet"},
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	thread, err := svc.GetOrCreatePetThread(context.Background(), "acct-1", "mochi")
+	if err != nil {
+		t.Fatalf("GetOrCreatePetThread() error = %v", err)
+	}
+
+	var toolResults []string
+	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+		Message: "pet me",
+	}, StreamCallbacks{
+		OnToolResult: func(call schema.ToolCall, result string) error {
+			toolResults = append(toolResults, result)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+	if result.ResponseContent != "Yay!" {
+		t.Fatalf("response content = %q, want %q", result.ResponseContent, "Yay!")
+	}
+	if len(toolResults) != 1 {
+		t.Fatalf("expected one pet tool result, got %#v", toolResults)
+	}
+	if !strings.Contains(toolResults[0], `"affection"`) {
+		t.Fatalf("expected affection payload in tool result, got %s", toolResults[0])
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("expected 2 model requests, got %d", len(requestBodies))
+	}
+	raw, err := json.Marshal(requestBodies[1]["messages"])
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var secondMessages []map[string]any
+	if err := json.Unmarshal(raw, &secondMessages); err != nil {
+		t.Fatalf("unmarshal messages: %v", err)
+	}
+	foundTool := false
+	for _, msg := range secondMessages {
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call-pet" {
+			foundTool = true
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected pet tool result message in second request, got %#v", secondMessages)
+	}
+}

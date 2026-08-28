@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	heartbeatInterval           = 60 * time.Second
 	subscriptionRefreshInterval = 4 * time.Minute
 	maxReconnectDelay           = 30 * time.Second
 )
@@ -533,9 +532,6 @@ func (c *agentConnection) serveLoop(ctx context.Context, conn *websocket.Conn) e
 
 	go c.readLoop(conn, receiveCh, errCh)
 
-	heartbeatTicker := time.NewTicker(heartbeatInterval)
-	defer heartbeatTicker.Stop()
-
 	refreshTicker := time.NewTicker(subscriptionRefreshInterval)
 	defer refreshTicker.Stop()
 
@@ -554,13 +550,6 @@ func (c *agentConnection) serveLoop(ctx context.Context, conn *websocket.Conn) e
 			}
 		case err := <-errCh:
 			return err
-		case <-heartbeatTicker.C:
-			logging.Log.Debug().
-				Str("agent_id", c.def.ID).
-				Msg("sending solar websocket ping")
-			if err := c.sendPacket(Packet{Type: "ping"}); err != nil {
-				return err
-			}
 		case <-refreshTicker.C:
 			logging.Log.Debug().
 				Str("agent_id", c.def.ID).

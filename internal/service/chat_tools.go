@@ -259,12 +259,11 @@ func (s *ConversationService) runWithChatTools(
 	}
 
 	messages := append([]*schema.Message(nil), modelMessages...)
-	for step := 0; step < 6; step++ {
+	for {
 		logging.Log.Debug().
 			Str("agent_id", agentDef.ID).
 			Str("conversation_id", threadID).
 			Str("run_id", runID).
-			Int("tool_loop_step", step+1).
 			Int("message_count", len(messages)).
 			Msg("invoking chat tool-capable model")
 		// Build generate options with tool_choice forced
@@ -298,7 +297,6 @@ func (s *ConversationService) runWithChatTools(
 					Str("agent_id", agentDef.ID).
 					Str("conversation_id", threadID).
 					Str("run_id", runID).
-					Int("tool_loop_step", step+1).
 					Int("response_chars", len(finalContent)).
 					Msg("model returned plain text without tool calls - ignoring, should use send_chat_message or no_reply tool")
 			}
@@ -309,7 +307,6 @@ func (s *ConversationService) runWithChatTools(
 			Str("agent_id", agentDef.ID).
 			Str("conversation_id", threadID).
 			Str("run_id", runID).
-			Int("tool_loop_step", step+1).
 			Int("tool_call_count", len(response.ToolCalls)).
 			Msg("chat model requested tool calls")
 
@@ -427,8 +424,6 @@ func (s *ConversationService) runWithChatTools(
 			return "", nil
 		}
 	}
-
-	return "", fmt.Errorf("chat tool loop exceeded maximum iterations")
 }
 
 func (s *ConversationService) runWithGeneralTools(
@@ -454,7 +449,7 @@ func (s *ConversationService) runWithGeneralTools(
 	}
 
 	messages := append([]*schema.Message(nil), modelMessages...)
-	for step := 0; step < 6; step++ {
+	for {
 		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceAllowed)}
 		response, err := toolModel.Generate(ctx, messages, genOpts...)
 		if err != nil {
@@ -540,7 +535,6 @@ func (s *ConversationService) runWithGeneralTools(
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
 		}
 	}
-	return "", fmt.Errorf("tool loop exceeded maximum iterations")
 }
 
 type streamedToolRound struct {
@@ -663,7 +657,7 @@ func (s *ConversationService) streamWithGeneralTools(
 
 	messages := append([]*schema.Message(nil), modelMessages...)
 	var usage *schema.TokenUsage
-	for step := 0; step < 6; step++ {
+	for {
 		var round *streamedToolRound
 		var roundErr error
 		for attempt := 0; attempt < 2; attempt++ {
@@ -702,7 +696,6 @@ func (s *ConversationService) streamWithGeneralTools(
 			Str("agent_id", agentDef.ID).
 			Str("conversation_id", threadID).
 			Str("run_id", runID).
-			Int("tool_loop_step", step+1).
 			Int("tool_call_count", len(round.calls)).
 			Msg("streamed model requested tool calls")
 
@@ -795,7 +788,6 @@ func (s *ConversationService) streamWithGeneralTools(
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
 		}
 	}
-	return "", nil, fmt.Errorf("streamed tool loop exceeded maximum iterations")
 }
 
 func isSolarOutboundChatToolName(name string) bool {

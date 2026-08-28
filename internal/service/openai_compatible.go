@@ -132,7 +132,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 		return nil, err
 	}
 	serverNames := toolNames(serverTools)
-	for step := 0; step < 6; step++ {
+	for {
 		response, err := toolModel.Generate(ctx, messages, model.WithToolChoice(schema.ToolChoiceAllowed))
 		if err != nil {
 			return nil, fmt.Errorf("generation failed: %w", err)
@@ -187,7 +187,6 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 			}
 		}
 	}
-	return nil, fmt.Errorf("server tool loop exceeded maximum iterations")
 }
 
 // resolveOpenAIAgentModel lets standard OpenAI clients select an agent through

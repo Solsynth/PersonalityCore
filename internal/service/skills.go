@@ -146,10 +146,12 @@ var skillRegistry = map[string]Skill{
 	},
 	"stickers": {
 		Name:        "stickers",
-		Description: "Browse Solar sticker packs",
+		Description: "Browse, search, and load Solar sticker packs and individual stickers",
 		Tools: func(s *ConversationService) []*schema.ToolInfo {
 			return []*schema.ToolInfo{
 				s.listStickersToolInfo(),
+				s.searchStickersToolInfo(),
+				s.getPackStickersToolInfo(),
 			}
 		},
 	},

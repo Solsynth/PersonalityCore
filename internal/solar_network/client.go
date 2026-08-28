@@ -591,7 +591,7 @@ func (c *Client) ReadWebpage(ctx context.Context, rawURL string) (map[string]any
 	return out, nil
 }
 
-func (c *Client) ListStickers(ctx context.Context, take, offset int) ([]map[string]any, int, error) {
+func (c *Client) ListStickers(ctx context.Context, take, offset int, queryStr, order string) ([]map[string]any, int, error) {
 	if take < 1 {
 		take = 20
 	}
@@ -601,12 +601,62 @@ func (c *Client) ListStickers(ctx context.Context, take, offset int) ([]map[stri
 	query := url.Values{}
 	query.Set("take", fmt.Sprintf("%d", take))
 	query.Set("offset", fmt.Sprintf("%d", offset))
+	if queryStr != "" {
+		query.Set("query", queryStr)
+	}
+	if order != "" {
+		query.Set("order", order)
+	}
 	var out []map[string]any
 	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/api/stickers", query, nil, &out)
 	if err != nil {
 		return nil, 0, err
 	}
 	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) SearchStickers(ctx context.Context, query string, take, offset int) ([]map[string]any, int, error) {
+	if take < 1 {
+		take = 10
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	params := url.Values{}
+	params.Set("query", query)
+	params.Set("take", fmt.Sprintf("%d", take))
+	params.Set("offset", fmt.Sprintf("%d", offset))
+	var out []map[string]any
+	headers, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/api/stickers/search", params, nil, &out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, parseTotalHeader(headers), nil
+}
+
+func (c *Client) GetPackStickers(ctx context.Context, packID string) ([]map[string]any, error) {
+	// Fetch the pack to get its prefix for assembling identifiers.
+	var pack map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/sphere/api/stickers/"+packID, nil, nil, &pack); err != nil {
+		return nil, err
+	}
+	prefix, _ := pack["prefix"].(string)
+
+	var out []map[string]any
+	_, err := c.doJSONWithHeaders(ctx, http.MethodGet, "/sphere/api/stickers/"+packID+"/content", nil, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+
+	// Inject identifier (prefix+slug) into each sticker for chat placeholder use.
+	if prefix != "" {
+		for _, sticker := range out {
+			if slug, ok := sticker["slug"].(string); ok {
+				sticker["identifier"] = prefix + "+" + slug
+			}
+		}
+	}
+	return out, nil
 }
 
 func (c *Client) ListSurveys(ctx context.Context, take, offset int) ([]map[string]any, int, error) {

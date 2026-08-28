@@ -30,6 +30,8 @@ const (
 	markAllNotificationsReadToolName   = "mark_all_notifications_read"
 	readWebpageToolName           = "read_webpage"
 	listStickersToolName          = "list_stickers"
+	searchStickersToolName        = "search_stickers"
+	getPackStickersToolName       = "get_pack_stickers"
 	listSurveysToolName           = "list_surveys"
 	getMyLevelingToolName         = "get_my_leveling"
 	listRelationshipsToolName     = "list_relationships"
@@ -91,8 +93,20 @@ type readWebpageInput struct {
 }
 
 type listStickersInput struct {
-	Take   *int `json:"take,omitempty"`
-	Offset *int `json:"offset,omitempty"`
+	Query  *string `json:"query,omitempty"`
+	Order  *string `json:"order,omitempty"`
+	Take   *int    `json:"take,omitempty"`
+	Offset *int    `json:"offset,omitempty"`
+}
+
+type searchStickersInput struct {
+	Query  string `json:"query"`
+	Take   *int   `json:"take,omitempty"`
+	Offset *int   `json:"offset,omitempty"`
+}
+
+type getPackStickersInput struct {
+	PackID string `json:"pack_id"`
 }
 
 type listSurveysInput struct {
@@ -246,8 +260,67 @@ func (s *ConversationService) readWebpageToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listStickersToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listStickersToolName,
-		Desc: "List available Solar sticker packs. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+		Desc: "List available Solar sticker packs. Supports filtering by name/description query and sorting by popularity (order=usage) or date. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"query": {
+				Type:     schema.String,
+				Desc:     "Optional search text to filter packs by name or description.",
+				Required: false,
+			},
+			"order": {
+				Type:     schema.String,
+				Desc:     "Sort order: 'usage' for most popular, omitted for newest first.",
+				Required: false,
+			},
+			"take": {
+				Type:     schema.Integer,
+				Desc:     "Number of packs to return (default 20).",
+				Required: false,
+			},
+			"offset": {
+				Type:     schema.Integer,
+				Desc:     "Pagination offset (default 0).",
+				Required: false,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) searchStickersToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: searchStickersToolName,
+		Desc: "Search for individual stickers by their placeholder identifier (prefix+slug). Returns matching stickers with pack info. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"query": {
+				Type:     schema.String,
+				Desc:     "Search prefix to match sticker identifiers (e.g. 'packname+').",
+				Required: true,
+			},
+			"take": {
+				Type:     schema.Integer,
+				Desc:     "Number of stickers to return (default 10).",
+				Required: false,
+			},
+			"offset": {
+				Type:     schema.Integer,
+				Desc:     "Pagination offset (default 0).",
+				Required: false,
+			},
+		}),
+	}
+}
+
+func (s *ConversationService) getPackStickersToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: getPackStickersToolName,
+		Desc: "List all stickers in a specific sticker pack by its ID. Returns stickers ordered by their display order. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"pack_id": {
+				Type:     schema.String,
+				Desc:     "The UUID of the sticker pack.",
+				Required: true,
+			},
+		}),
 	}
 }
 
@@ -314,7 +387,7 @@ func isUserScopedToolName(name string) bool {
 		listRecycleBinToolName, getStorageQuotaToolName,
 		listWalletsToolName, listOrdersToolName,
 		listNotificationsToolName, getUnreadNotificationCountToolName, markAllNotificationsReadToolName,
-		readWebpageToolName, listStickersToolName, listSurveysToolName,
+		readWebpageToolName, listStickersToolName, searchStickersToolName, getPackStickersToolName, listSurveysToolName,
 		getMyLevelingToolName,
 		listRelationshipsToolName, followAccountToolName, unfollowAccountToolName,
 		searchAccountsToolName:
@@ -388,6 +461,10 @@ func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, age
 		return s.executeReadWebpage(ctx, client, call)
 	case listStickersToolName:
 		return s.executeListStickers(ctx, client, call)
+	case searchStickersToolName:
+		return s.executeSearchStickers(ctx, client, call)
+	case getPackStickersToolName:
+		return s.executeGetPackStickers(ctx, client, call)
 	case listSurveysToolName:
 		return s.executeListSurveys(ctx, client, call)
 	case getMyLevelingToolName:
@@ -598,11 +675,36 @@ func (s *ConversationService) executeListStickers(ctx context.Context, client *s
 		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
 	}
 	take, offset := defaultPagination(input.Take, input.Offset)
-	items, total, err := client.ListStickers(ctx, take, offset)
+	items, total, err := client.ListStickers(ctx, take, offset, ptrStr(input.Query), ptrStr(input.Order))
 	if err != nil {
 		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
 	}
 	return toolResultJSON(call, map[string]any{"ok": true, "items": items, "total": total})
+}
+
+func (s *ConversationService) executeSearchStickers(ctx context.Context, client *solar_network.Client, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input searchStickersInput
+	if err := decodeToolCallArgs(call, &input); err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	take, offset := defaultPagination(input.Take, input.Offset)
+	items, total, err := client.SearchStickers(ctx, input.Query, take, offset)
+	if err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toolResultJSON(call, map[string]any{"ok": true, "items": items, "total": total})
+}
+
+func (s *ConversationService) executeGetPackStickers(ctx context.Context, client *solar_network.Client, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input getPackStickersInput
+	if err := decodeToolCallArgs(call, &input); err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	items, err := client.GetPackStickers(ctx, input.PackID)
+	if err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toolResultJSON(call, map[string]any{"ok": true, "items": items})
 }
 
 func (s *ConversationService) executeListSurveys(ctx context.Context, client *solar_network.Client, call schema.ToolCall) (*executedChatToolResult, error) {

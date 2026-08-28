@@ -482,7 +482,7 @@ func TestListStickers(t *testing.T) {
 	defer ts.Close()
 
 	ctx := context.Background()
-	items, total, err := c.ListStickers(ctx, 20, 0)
+	items, total, err := c.ListStickers(ctx, 20, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,6 +494,94 @@ func TestListStickers(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Errorf("items len = %d, want 1", len(items))
+	}
+}
+
+func TestListStickersWithQuery(t *testing.T) {
+	h := &testHandler{t: t}
+	ts, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		w.Header().Set("X-Total", "2")
+		fmt.Fprint(w, `[{"id":"s2"}]`)
+	})
+	defer ts.Close()
+
+	ctx := context.Background()
+	items, total, err := c.ListStickers(ctx, 10, 0, "cat", "usage")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.query.Get("query") != "cat" {
+		t.Errorf("query = %q, want cat", h.query.Get("query"))
+	}
+	if h.query.Get("order") != "usage" {
+		t.Errorf("order = %q, want usage", h.query.Get("order"))
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(items) != 1 {
+		t.Errorf("items len = %d, want 1", len(items))
+	}
+}
+
+func TestSearchStickers(t *testing.T) {
+	h := &testHandler{t: t}
+	ts, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		w.Header().Set("X-Total", "3")
+		fmt.Fprint(w, `[{"id":"s3","slug":"happy"}]`)
+	})
+	defer ts.Close()
+
+	ctx := context.Background()
+	items, total, err := c.SearchStickers(ctx, "happy", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.path != "/sphere/api/stickers/search" {
+		t.Errorf("path = %q, want /sphere/api/stickers/search", h.path)
+	}
+	if h.query.Get("query") != "happy" {
+		t.Errorf("query = %q, want happy", h.query.Get("query"))
+	}
+	if total != 3 {
+		t.Errorf("total = %d, want 3", total)
+	}
+	if len(items) != 1 {
+		t.Errorf("items len = %d, want 1", len(items))
+	}
+}
+
+func TestGetPackStickers(t *testing.T) {
+	callCount := 0
+	h := &testHandler{t: t}
+	ts, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		callCount++
+		if callCount == 1 {
+			// First call: GET /stickers/{id} (pack info)
+			fmt.Fprint(w, `{"id":"pack-123","prefix":"cat","name":"Cats"}`)
+		} else {
+			// Second call: GET /stickers/{id}/content (stickers)
+			fmt.Fprint(w, `[{"id":"stk1","slug":"happy"},{"id":"stk2","slug":"wave"}]`)
+		}
+	})
+	defer ts.Close()
+
+	ctx := context.Background()
+	items, err := c.GetPackStickers(ctx, "pack-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(items))
+	}
+	if items[0]["identifier"] != "cat+happy" {
+		t.Errorf("items[0].identifier = %q, want cat+happy", items[0]["identifier"])
+	}
+	if items[1]["identifier"] != "cat+wave" {
+		t.Errorf("items[1].identifier = %q, want cat+wave", items[1]["identifier"])
 	}
 }
 

@@ -2,6 +2,7 @@ package grpcsvc
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -149,11 +150,15 @@ func (s *PersonalityService) Complete(ctx context.Context, req *gen.DyCompletePe
 }
 
 func mapError(err error) error {
-	switch err {
-	case service.ErrNotFound:
+	switch {
+	case errors.Is(err, service.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case service.ErrForbidden:
+	case errors.Is(err, service.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
 	default:
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

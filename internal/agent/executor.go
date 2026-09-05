@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -171,11 +172,22 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 		maxTokens = *agent.PerkMaxTokens
 	}
 
+	timeout := provider.Timeout
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining > 0 {
+			// The caller's per-request deadline is authoritative. Honoring it
+			// prevents a shorter static provider timeout (e.g. 90s) from
+			// preempting a request that explicitly budgets more (e.g. a long
+			// check-in fortune generation with a 600s deadline).
+			timeout = remaining
+		}
+	}
+
 	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
 		APIKey:              provider.APIKey,
 		BaseURL:             provider.BaseURL,
 		Model:               modelName,
-		Timeout:             provider.Timeout,
+		Timeout:             timeout,
 		MaxCompletionTokens: intPtr(maxTokens),
 		Temperature:         float32Ptr(temperature),
 		TopP:                float32Ptr(topP),

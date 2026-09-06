@@ -221,7 +221,7 @@ curl -X POST http://127.0.0.1:8090/api/internal/agents/support-bot/start-convers
   -d '{"target_account_name":"alice","prompt":"Say hi and ask how her project is going."}'
 ```
 
-If you already know the Solar account ID, you can also send `target_account_id` directly.
+If you already know the Solarpass account ID, you can also send `target_account_id` directly.
 
 The TUI binary can call the same endpoint in one-shot mode:
 

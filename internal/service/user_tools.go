@@ -133,7 +133,7 @@ type searchAccountsInput struct {
 func (s *ConversationService) listFilesToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listFilesToolName,
-		Desc: "List files in your Solar Drive. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List files in your Solar Drive. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -141,7 +141,7 @@ func (s *ConversationService) listFilesToolInfo() *schema.ToolInfo {
 func (s *ConversationService) getFileInfoToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getFileInfoToolName,
-		Desc: "Get detailed information about a file in your Solar Drive. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Get detailed information about a file in your Solar Drive. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"file_id": {Type: schema.String, Desc: "The file ID", Required: true},
 		}),
@@ -151,7 +151,7 @@ func (s *ConversationService) getFileInfoToolInfo() *schema.ToolInfo {
 func (s *ConversationService) createFolderToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: createFolderToolName,
-		Desc: "Create a folder in your Solar Drive. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Create a folder in your Solar Drive. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"name":      {Type: schema.String, Desc: "Folder name", Required: true},
 			"parent_id": {Type: schema.String, Desc: "Parent folder ID (omit for root)"},
@@ -162,7 +162,7 @@ func (s *ConversationService) createFolderToolInfo() *schema.ToolInfo {
 func (s *ConversationService) uploadTextFileToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: uploadTextFileToolName,
-		Desc: "Upload a text file to your Solar Drive. Content should be the file body text. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Upload a text file to your Solar Drive. Content should be the file body text. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"name":      {Type: schema.String, Desc: "File name", Required: true},
 			"parent_id": {Type: schema.String, Desc: "Parent folder ID (omit for root)"},
@@ -174,7 +174,7 @@ func (s *ConversationService) uploadTextFileToolInfo() *schema.ToolInfo {
 func (s *ConversationService) recycleFileToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: recycleFileToolName,
-		Desc: "Move a file to your Solar Drive recycle bin. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Move a file to your Solar Drive recycle bin. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"file_id": {Type: schema.String, Desc: "The file ID to recycle", Required: true},
 		}),
@@ -184,7 +184,7 @@ func (s *ConversationService) recycleFileToolInfo() *schema.ToolInfo {
 func (s *ConversationService) restoreFileToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: restoreFileToolName,
-		Desc: "Restore a file from your Solar Drive recycle bin. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Restore a file from your Solar Drive recycle bin. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"file_id": {Type: schema.String, Desc: "The file ID to restore", Required: true},
 		}),
@@ -194,7 +194,7 @@ func (s *ConversationService) restoreFileToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listRecycleBinToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listRecycleBinToolName,
-		Desc: "List files in your Solar Drive recycle bin. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List files in your Solar Drive recycle bin. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -202,7 +202,7 @@ func (s *ConversationService) listRecycleBinToolInfo() *schema.ToolInfo {
 func (s *ConversationService) getStorageQuotaToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getStorageQuotaToolName,
-		Desc: "Get your Solar Drive storage quota and usage. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Get your Solar Drive storage quota and usage. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -210,7 +210,7 @@ func (s *ConversationService) getStorageQuotaToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listWalletsToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listWalletsToolName,
-		Desc: "List your Solar wallets and balances. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List your Solar wallets and balances. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -218,7 +218,7 @@ func (s *ConversationService) listWalletsToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listOrdersToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listOrdersToolName,
-		Desc: "List your Solar wallet orders. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List your Solar wallet orders. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -226,7 +226,7 @@ func (s *ConversationService) listOrdersToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listNotificationsToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listNotificationsToolName,
-		Desc: "List your Solar notifications. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List your Solar notifications. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -234,7 +234,7 @@ func (s *ConversationService) listNotificationsToolInfo() *schema.ToolInfo {
 func (s *ConversationService) getUnreadNotificationCountToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getUnreadNotificationCountToolName,
-		Desc: "Get the count of unread Solar notifications. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Get the count of unread Solar notifications. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -242,7 +242,7 @@ func (s *ConversationService) getUnreadNotificationCountToolInfo() *schema.ToolI
 func (s *ConversationService) markAllNotificationsReadToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: markAllNotificationsReadToolName,
-		Desc: "Mark all Solar notifications as read. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Mark all Solar notifications as read. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -250,7 +250,7 @@ func (s *ConversationService) markAllNotificationsReadToolInfo() *schema.ToolInf
 func (s *ConversationService) readWebpageToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: readWebpageToolName,
-		Desc: "Read and extract metadata from a web page URL. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Read and extract metadata from a web page URL. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"url": {Type: schema.String, Desc: "The URL to read", Required: true},
 		}),
@@ -260,7 +260,7 @@ func (s *ConversationService) readWebpageToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listStickersToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listStickersToolName,
-		Desc: "List available Solar sticker packs. Supports filtering by name/description query and sorting by popularity (order=usage) or date. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List available Solar sticker packs. Supports filtering by name/description query and sorting by popularity (order=usage) or date. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {
 				Type:     schema.String,
@@ -289,7 +289,7 @@ func (s *ConversationService) listStickersToolInfo() *schema.ToolInfo {
 func (s *ConversationService) searchStickersToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: searchStickersToolName,
-		Desc: "Search for individual stickers by their placeholder identifier (prefix+slug). Returns matching stickers with pack info. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Search for individual stickers by their placeholder identifier (prefix+slug). Returns matching stickers with pack info. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {
 				Type:     schema.String,
@@ -313,7 +313,7 @@ func (s *ConversationService) searchStickersToolInfo() *schema.ToolInfo {
 func (s *ConversationService) getPackStickersToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getPackStickersToolName,
-		Desc: "List all stickers in a specific sticker pack by its ID. Returns stickers ordered by their display order. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List all stickers in a specific sticker pack by its ID. Returns stickers ordered by their display order. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"pack_id": {
 				Type:     schema.String,
@@ -327,7 +327,7 @@ func (s *ConversationService) getPackStickersToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listSurveysToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listSurveysToolName,
-		Desc: "List your Solar surveys. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List your Solar surveys. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -335,7 +335,7 @@ func (s *ConversationService) listSurveysToolInfo() *schema.ToolInfo {
 func (s *ConversationService) getMyLevelingToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: getMyLevelingToolName,
-		Desc: "Get your Solar leveling and experience history. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Get your Solar leveling and experience history. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -343,7 +343,7 @@ func (s *ConversationService) getMyLevelingToolInfo() *schema.ToolInfo {
 func (s *ConversationService) listRelationshipsToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: listRelationshipsToolName,
-		Desc: "List your Solar relationships (friends, blocked, muted, etc). Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "List your Solar relationships (friends, blocked, muted, etc). Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}
 }
@@ -351,7 +351,7 @@ func (s *ConversationService) listRelationshipsToolInfo() *schema.ToolInfo {
 func (s *ConversationService) followAccountToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: followAccountToolName,
-		Desc: "Send a friend request to a Solar account. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Send a friend request to a Solarpass. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"account_id": {Type: schema.String, Desc: "The account ID to follow", Required: true},
 		}),
@@ -361,7 +361,7 @@ func (s *ConversationService) followAccountToolInfo() *schema.ToolInfo {
 func (s *ConversationService) unfollowAccountToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: unfollowAccountToolName,
-		Desc: "Remove a relationship with a Solar account. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Remove a relationship with a Solarpass. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"account_id": {Type: schema.String, Desc: "The account ID to unfollow", Required: true},
 		}),
@@ -371,7 +371,7 @@ func (s *ConversationService) unfollowAccountToolInfo() *schema.ToolInfo {
 func (s *ConversationService) searchAccountsToolInfo() *schema.ToolInfo {
 	return &schema.ToolInfo{
 		Name: searchAccountsToolName,
-		Desc: "Search for Solar Network accounts by name or nickname. Acts on the user's own Solar account (connected via OAuth), not the bot's.",
+		Desc: "Search for Solarpass accounts by name or nickname. Acts on the user's own Solarpass (connected via OAuth), not the bot's.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {Type: schema.String, Desc: "Search query (matches account name or nickname)", Required: true},
 		}),
@@ -403,7 +403,7 @@ func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, cal
 		return toolResultJSON(call, map[string]any{
 			"ok":      false,
 			"error":   "user_authorization_required",
-			"message": "This tool acts on your Solar account. Connect your Solar account first via OAuth.",
+			"message": "This tool acts on your Solarpass. Connect your Solarpass first via OAuth.",
 		})
 	}
 
@@ -421,7 +421,7 @@ func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, cal
 			return toolResultJSON(call, map[string]any{
 				"ok":      false,
 				"error":   "user_authorization_required",
-				"message": "Your Solar account is not connected. Please connect it first via OAuth device flow.",
+				"message": "Your Solarpass is not connected. Please connect it first via the OAuth device flow.",
 			})
 		}
 		return nil, fmt.Errorf("get user access token: %w", err)

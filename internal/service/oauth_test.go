@@ -144,7 +144,7 @@ func TestOAuthDeviceFlowRequestContainsClientIDAndScopes(t *testing.T) {
 	defer ts.Close()
 
 	svc := newTestOAuthService(t, ts.URL)
-	info, err := svc.StartDeviceFlow(context.Background(), "agent-1", "acct-1")
+	info, err := svc.StartDeviceFlow(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("StartDeviceFlow() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestOAuthPollSuccessPersistsSession(t *testing.T) {
 	svc := newTestOAuthService(t, ts.URL)
 
 	// Start device flow
-	_, err := svc.StartDeviceFlow(context.Background(), "agent-1", "acct-1")
+	_, err := svc.StartDeviceFlow(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("StartDeviceFlow() error = %v", err)
 	}
@@ -227,7 +227,7 @@ func TestOAuthPollSuccessPersistsSession(t *testing.T) {
 	defer svc.Stop()
 
 	// Check status is "pending" initially
-	status, _, _, err := svc.Status(context.Background(), "agent-1", "acct-1")
+	status, _, _, err := svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -243,7 +243,7 @@ func TestOAuthPollSuccessPersistsSession(t *testing.T) {
 	time.Sleep(16 * time.Second)
 
 	// Now check that the session was persisted
-	status, scopes, _, err := svc.Status(context.Background(), "agent-1", "acct-1")
+	status, scopes, _, err := svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -255,7 +255,7 @@ func TestOAuthPollSuccessPersistsSession(t *testing.T) {
 	}
 
 	// Verify we can get an access token
-	token, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	token, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("UserAccessToken() error = %v", err)
 	}
@@ -302,7 +302,6 @@ func TestOAuthRefreshRotationPersistsNewPair(t *testing.T) {
 	refreshExpiry := now.Add(24 * time.Hour) // refresh still valid
 	session := database.AgentOAuthSession{
 		ID:               "test-id-1",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid profile *",
 		AccessToken:      "old-access-token",
@@ -315,7 +314,7 @@ func TestOAuthRefreshRotationPersistsNewPair(t *testing.T) {
 	}
 
 	// Request access token — should trigger refresh
-	token, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	token, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("UserAccessToken() error = %v", err)
 	}
@@ -325,7 +324,7 @@ func TestOAuthRefreshRotationPersistsNewPair(t *testing.T) {
 
 	// Verify the session was updated with the new tokens
 	var updated database.AgentOAuthSession
-	if err := openTestDBForOAuth(t).Where("agent_id = ? AND account_id = ?", "agent-1", "acct-1").First(&updated).Error; err != nil {
+	if err := openTestDBForOAuth(t).Where("account_id = ?", "acct-1").First(&updated).Error; err != nil {
 		t.Fatalf("load updated session: %v", err)
 	}
 	if updated.AccessToken != "refreshed-access-token" {
@@ -360,7 +359,6 @@ func TestOAuthExpiredAccessTriggersRefresh(t *testing.T) {
 	refreshExpiry := now.Add(24 * time.Hour)
 	session := database.AgentOAuthSession{
 		ID:               "test-id-2",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid",
 		AccessToken:      "expired-token",
@@ -373,7 +371,7 @@ func TestOAuthExpiredAccessTriggersRefresh(t *testing.T) {
 	}
 
 	// Should refresh
-	token, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	token, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("UserAccessToken() error = %v", err)
 	}
@@ -402,7 +400,6 @@ func TestOAuthFailedRefreshDeletesSessionAndReturnsErr(t *testing.T) {
 	refreshExpiry := now.Add(24 * time.Hour)
 	session := database.AgentOAuthSession{
 		ID:               "test-id-3",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid",
 		AccessToken:      "expired-token",
@@ -415,7 +412,7 @@ func TestOAuthFailedRefreshDeletesSessionAndReturnsErr(t *testing.T) {
 	}
 
 	// Should fail and delete session
-	_, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	_, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -426,7 +423,7 @@ func TestOAuthFailedRefreshDeletesSessionAndReturnsErr(t *testing.T) {
 	// Verify session was deleted
 	var count int64
 	openTestDBForOAuth(t).Model(&database.AgentOAuthSession{}).
-		Where("agent_id = ? AND account_id = ?", "agent-1", "acct-1").Count(&count)
+		Where("account_id = ?", "acct-1").Count(&count)
 	if count != 0 {
 		t.Errorf("expected session to be deleted, but found %d", count)
 	}
@@ -437,7 +434,7 @@ func TestOAuthStatusReturnsCorrectStates(t *testing.T) {
 	svc := newTestOAuthService(t, ts.URL)
 
 	// Initially: none
-	status, _, _, err := svc.Status(context.Background(), "agent-1", "acct-1")
+	status, _, _, err := svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -446,12 +443,12 @@ func TestOAuthStatusReturnsCorrectStates(t *testing.T) {
 	}
 
 		// Start device flow → pending
-	_, err = svc.StartDeviceFlow(context.Background(), "agent-1", "acct-1")
+	_, err = svc.StartDeviceFlow(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("StartDeviceFlow() error = %v", err)
 	}
 
-	status, _, _, err = svc.Status(context.Background(), "agent-1", "acct-1")
+	status, _, _, err = svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -460,7 +457,7 @@ func TestOAuthStatusReturnsCorrectStates(t *testing.T) {
 	}
 
 	// Revoke the pending flow, then test connected state separately
-	if err := svc.Revoke(context.Background(), "agent-1", "acct-1"); err != nil {
+	if err := svc.Revoke(context.Background(), "acct-1"); err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
 
@@ -470,7 +467,6 @@ func TestOAuthStatusReturnsCorrectStates(t *testing.T) {
 	accessExpiry := now.Add(1 * time.Hour)
 	session := database.AgentOAuthSession{
 		ID:               "test-id-4",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid profile *",
 		AccessToken:      "valid-token",
@@ -482,7 +478,7 @@ func TestOAuthStatusReturnsCorrectStates(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 
-	status, scopes, expiresAt, err := svc.Status(context.Background(), "agent-1", "acct-1")
+	status, scopes, expiresAt, err := svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -502,13 +498,13 @@ func TestOAuthRevoke(t *testing.T) {
 	svc := newTestOAuthService(t, ts.URL)
 
 	// Start a device flow
-	_, err := svc.StartDeviceFlow(context.Background(), "agent-1", "acct-1")
+	_, err := svc.StartDeviceFlow(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("StartDeviceFlow() error = %v", err)
 	}
 
 	// Verify it's pending
-	status, _, _, err := svc.Status(context.Background(), "agent-1", "acct-1")
+	status, _, _, err := svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -517,12 +513,12 @@ func TestOAuthRevoke(t *testing.T) {
 	}
 
 	// Revoke
-	if err := svc.Revoke(context.Background(), "agent-1", "acct-1"); err != nil {
+	if err := svc.Revoke(context.Background(), "acct-1"); err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
 
 	// Verify it's none now
-	status, _, _, err = svc.Status(context.Background(), "agent-1", "acct-1")
+	status, _, _, err = svc.Status(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -535,7 +531,7 @@ func TestOAuthUserAccessTokenNoSessionReturnsErr(t *testing.T) {
 	ts := newMockStargate(t)
 	svc := newTestOAuthService(t, ts.URL)
 
-	_, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	_, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != ErrUserAuthRequired {
 		t.Errorf("UserAccessToken() error = %v, want %v", err, ErrUserAuthRequired)
 	}
@@ -570,7 +566,6 @@ func TestOAuthUserAccessTokenNearExpiryTriggersRefresh(t *testing.T) {
 	refreshExpiry := now.Add(24 * time.Hour)
 	session := database.AgentOAuthSession{
 		ID:               "test-id-5",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid",
 		AccessToken:      "still-valid-token",
@@ -582,7 +577,7 @@ func TestOAuthUserAccessTokenNearExpiryTriggersRefresh(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 
-	token, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	token, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("UserAccessToken() error = %v", err)
 	}
@@ -621,7 +616,6 @@ func TestOAuthUserAccessTokenValidTokenNotRefreshed(t *testing.T) {
 	refreshExpiry := now.Add(24 * time.Hour)
 	session := database.AgentOAuthSession{
 		ID:               "test-id-6",
-		AgentID:          "agent-1",
 		AccountID:        "acct-1",
 		Scopes:           "openid",
 		AccessToken:      "valid-token",
@@ -633,7 +627,7 @@ func TestOAuthUserAccessTokenValidTokenNotRefreshed(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 
-	token, err := svc.UserAccessToken(context.Background(), "agent-1", "acct-1")
+	token, err := svc.UserAccessToken(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("UserAccessToken() error = %v", err)
 	}
@@ -673,14 +667,14 @@ func TestOAuthSlowDownDoublesInterval(t *testing.T) {
 
 	svc := newTestOAuthService(t, ts.URL)
 
-	_, err := svc.StartDeviceFlow(context.Background(), "agent-1", "acct-1")
+	_, err := svc.StartDeviceFlow(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("StartDeviceFlow() error = %v", err)
 	}
 
 	// Check initial interval
 	svc.mu.Lock()
-	pf := svc.pending[pendingKey("agent-1", "acct-1")]
+	pf := svc.pending[pendingKey("acct-1")]
 	if pf == nil {
 		svc.mu.Unlock()
 		t.Fatal("pending flow not found")
@@ -697,7 +691,7 @@ func TestOAuthSlowDownDoublesInterval(t *testing.T) {
 
 	// Check interval doubled
 	svc.mu.Lock()
-	pf = svc.pending[pendingKey("agent-1", "acct-1")]
+	pf = svc.pending[pendingKey("acct-1")]
 	svc.mu.Unlock()
 
 	if pf == nil {

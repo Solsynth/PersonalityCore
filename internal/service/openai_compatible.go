@@ -258,7 +258,7 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		return s.executePetToolCall(ctx, accountID, def.ID, call)
 	}
 	if isUserScopedToolName(call.Function.Name) {
-		return s.executeUserScopedToolCall(ctx, def.ID, call)
+		return s.executeUserScopedToolCall(ctx, call)
 	}
 	return s.executeChatToolCall(ctx, def.ID, call)
 }

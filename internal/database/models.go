@@ -227,14 +227,15 @@ type FileSummary struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// AgentOAuthSession stores a user's OAuth token pair for one (agent, account)
-// so Personality can call Solar Network REST APIs as the conversation user.
-// Tokens are stored plaintext to match the existing house convention (bot
-// tokens live in TOML); the server must refresh on the user's behalf.
+// AgentOAuthSession stores a user's OAuth token pair for the account so
+// Personality can call Solar Network REST APIs as the conversation user.
+// The token is account-scoped — the same Stargate grant serves every agent —
+// so a session is keyed by account_id alone. Tokens are stored plaintext to
+// match the existing house convention (bot tokens live in TOML); the server
+// must refresh on the user's behalf.
 type AgentOAuthSession struct {
 	ID               string     `gorm:"primaryKey;size:26" json:"id"`
-	AgentID          string     `gorm:"size:64;uniqueIndex:idx_agent_oauth_sessions_agent_account,priority:1" json:"agent_id"`
-	AccountID        string     `gorm:"size:128;uniqueIndex:idx_agent_oauth_sessions_agent_account,priority:2" json:"account_id"`
+	AccountID        string     `gorm:"size:128;uniqueIndex:idx_agent_oauth_sessions_account;priority:1" json:"account_id"`
 	Scopes           string     `gorm:"size:255" json:"scopes"`
 	AccessToken      string     `gorm:"type:text" json:"-"`
 	RefreshToken     string     `gorm:"type:text" json:"-"`

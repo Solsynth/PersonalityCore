@@ -388,7 +388,7 @@ func (s *ConversationService) runWithChatTools(
 					return "", err
 				}
 			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
+				result, err = s.executeUserScopedToolCall(ctx, call)
 				if err != nil {
 					return "", err
 				}
@@ -516,7 +516,7 @@ func (s *ConversationService) runWithGeneralTools(
 					return "", err
 				}
 			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
+				result, err = s.executeUserScopedToolCall(ctx, call)
 				if err != nil {
 					return "", err
 				}
@@ -753,7 +753,7 @@ func (s *ConversationService) streamWithGeneralTools(
 					return "", nil, err
 				}
 			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, agentDef.ID, call)
+				result, err = s.executeUserScopedToolCall(ctx, call)
 				if err != nil {
 					return "", nil, err
 				}

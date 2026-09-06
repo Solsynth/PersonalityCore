@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,28 +12,23 @@ import (
 // registerOAuthRoutes mounts the user OAuth device-flow routes under the
 // authenticated API group. These are thin passthroughs to OAuthService.
 func registerOAuthRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
-	r.POST("/agents/:id/oauth/device", func(c *gin.Context) {
+	r.POST("/oauth/device", func(c *gin.Context) {
 		startOAuthDeviceFlow(c, conversations)
 	})
-	r.GET("/agents/:id/oauth/status", func(c *gin.Context) {
+	r.GET("/oauth/status", func(c *gin.Context) {
 		getOAuthStatus(c, conversations)
 	})
-	r.DELETE("/agents/:id/oauth", func(c *gin.Context) {
+	r.DELETE("/oauth", func(c *gin.Context) {
 		revokeOAuth(c, conversations)
 	})
 }
 
 func startOAuthDeviceFlow(c *gin.Context, conversations *service.ConversationService) {
-	agentID := c.Param("id")
 	accountID, ok := identity.RequireAccountID(c)
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(agentID) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "agent id is required"})
-		return
-	}
-	info, err := conversations.StartOAuthDeviceFlow(c.Request.Context(), agentID, accountID)
+	info, err := conversations.StartOAuthDeviceFlow(c.Request.Context(), accountID)
 	if err != nil {
 		renderServiceError(c, err)
 		return
@@ -43,18 +37,17 @@ func startOAuthDeviceFlow(c *gin.Context, conversations *service.ConversationSer
 }
 
 func getOAuthStatus(c *gin.Context, conversations *service.ConversationService) {
-	agentID := c.Param("id")
 	accountID, ok := identity.RequireAccountID(c)
 	if !ok {
 		return
 	}
-	status, scopes, expiresAt, err := conversations.OAuthStatus(c.Request.Context(), agentID, accountID)
+	status, scopes, expiresAt, err := conversations.OAuthStatus(c.Request.Context(), accountID)
 	if err != nil {
 		renderServiceError(c, err)
 		return
 	}
 	resp := gin.H{
-		"status":    status,
+		"status":     status,
 		"account_id": accountID,
 	}
 	if scopes != "" {
@@ -67,12 +60,11 @@ func getOAuthStatus(c *gin.Context, conversations *service.ConversationService) 
 }
 
 func revokeOAuth(c *gin.Context, conversations *service.ConversationService) {
-	agentID := c.Param("id")
 	accountID, ok := identity.RequireAccountID(c)
 	if !ok {
 		return
 	}
-	if err := conversations.RevokeOAuth(c.Request.Context(), agentID, accountID); err != nil {
+	if err := conversations.RevokeOAuth(c.Request.Context(), accountID); err != nil {
 		renderServiceError(c, err)
 		return
 	}

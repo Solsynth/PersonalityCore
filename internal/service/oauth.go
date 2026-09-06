@@ -95,12 +95,12 @@ func (s *OAuthService) Stop() {
 	}
 }
 
-func pendingKey(agentID, accountID string) string {
-	return agentID + "\x00" + accountID
+func pendingKey(accountID string) string {
+	return accountID
 }
 
 // StartDeviceFlow initiates a new OIDC device-flow authorization.
-func (s *OAuthService) StartDeviceFlow(ctx context.Context, agentID, accountID string) (*DeviceFlowInfo, error) {
+func (s *OAuthService) StartDeviceFlow(ctx context.Context, accountID string) (*DeviceFlowInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -145,7 +145,7 @@ func (s *OAuthService) StartDeviceFlow(ctx context.Context, agentID, accountID s
 		interval = 5 * time.Second
 	}
 
-	key := pendingKey(agentID, accountID)
+	key := pendingKey(accountID)
 	s.pending[key] = &pendingDeviceFlow{
 		DeviceCode: parsed.DeviceCode,
 		AccountID:  accountID,
@@ -160,10 +160,10 @@ func (s *OAuthService) StartDeviceFlow(ctx context.Context, agentID, accountID s
 	}, nil
 }
 
-// Status returns the current OAuth status for the given (agent, account) pair.
-func (s *OAuthService) Status(ctx context.Context, agentID, accountID string) (status string, scopes string, expiresAt *time.Time, err error) {
+// Status returns the current OAuth status for the account.
+func (s *OAuthService) Status(ctx context.Context, accountID string) (status string, scopes string, expiresAt *time.Time, err error) {
 	s.mu.Lock()
-	key := pendingKey(agentID, accountID)
+	key := pendingKey(accountID)
 	pf, pending := s.pending[key]
 	s.mu.Unlock()
 
@@ -172,7 +172,7 @@ func (s *OAuthService) Status(ctx context.Context, agentID, accountID string) (s
 	}
 
 	var session database.AgentOAuthSession
-	result := s.db.Where("agent_id = ? AND account_id = ?", agentID, accountID).First(&session)
+	result := s.db.Where("account_id = ?", accountID).First(&session)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return "none", "", nil, nil
@@ -188,12 +188,12 @@ func (s *OAuthService) Status(ctx context.Context, agentID, accountID string) (s
 }
 
 // Revoke removes the OAuth session and any pending device flow.
-func (s *OAuthService) Revoke(ctx context.Context, agentID, accountID string) error {
+func (s *OAuthService) Revoke(ctx context.Context, accountID string) error {
 	s.mu.Lock()
-	delete(s.pending, pendingKey(agentID, accountID))
+	delete(s.pending, pendingKey(accountID))
 	s.mu.Unlock()
 
-	result := s.db.Where("agent_id = ? AND account_id = ?", agentID, accountID).Delete(&database.AgentOAuthSession{})
+	result := s.db.Where("account_id = ?", accountID).Delete(&database.AgentOAuthSession{})
 	if result.Error != nil {
 		return fmt.Errorf("delete oauth session: %w", result.Error)
 	}
@@ -202,9 +202,9 @@ func (s *OAuthService) Revoke(ctx context.Context, agentID, accountID string) er
 
 // UserAccessToken returns a valid access token for the user, refreshing if
 // necessary. Returns ErrUserAuthRequired if no session exists or refresh fails.
-func (s *OAuthService) UserAccessToken(ctx context.Context, agentID, accountID string) (string, error) {
+func (s *OAuthService) UserAccessToken(ctx context.Context, accountID string) (string, error) {
 	var session database.AgentOAuthSession
-	result := s.db.Where("agent_id = ? AND account_id = ?", agentID, accountID).First(&session)
+	result := s.db.Where("account_id = ?", accountID).First(&session)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return "", ErrUserAuthRequired
@@ -219,14 +219,14 @@ func (s *OAuthService) UserAccessToken(ctx context.Context, agentID, accountID s
 
 	// Access token is expired or near expiry — attempt refresh.
 	if session.RefreshToken == "" {
-		_ = s.deleteSession(agentID, accountID)
+		_ = s.deleteSession(accountID)
 		return "", ErrUserAuthRequired
 	}
 
 	newAccess, newRefresh, newExpiresIn, err := s.refreshToken(ctx, session.RefreshToken)
 	if err != nil {
 		// Stargate refresh rotation invalidates old tokens; delete the dead session.
-		_ = s.deleteSession(agentID, accountID)
+		_ = s.deleteSession(accountID)
 		return "", ErrUserAuthRequired
 	}
 
@@ -241,7 +241,7 @@ func (s *OAuthService) UserAccessToken(ctx context.Context, agentID, accountID s
 		"refresh_expires_at": refreshExpiresAt,
 	}
 	if err := s.db.Model(&database.AgentOAuthSession{}).
-		Where("agent_id = ? AND account_id = ?", agentID, accountID).
+		Where("account_id = ?", accountID).
 		Updates(update).Error; err != nil {
 		return "", fmt.Errorf("persist refreshed tokens: %w", err)
 	}
@@ -251,8 +251,8 @@ func (s *OAuthService) UserAccessToken(ctx context.Context, agentID, accountID s
 
 // --- internal helpers ---
 
-func (s *OAuthService) deleteSession(agentID, accountID string) error {
-	result := s.db.Where("agent_id = ? AND account_id = ?", agentID, accountID).Delete(&database.AgentOAuthSession{})
+func (s *OAuthService) deleteSession(accountID string) error {
+	result := s.db.Where("account_id = ?", accountID).Delete(&database.AgentOAuthSession{})
 	return result.Error
 }
 
@@ -354,7 +354,7 @@ func (s *OAuthService) pollOneDeviceFlow(ctx context.Context, key string, pf *pe
 	tokenURL := s.cfg.SolarNetwork.BaseURL + "/stargate/auth/open/token"
 	resp, err := s.postForm(ctx, tokenURL, form)
 	if err != nil {
-		logging.Log.Warn().Err(err).Str("agent_id", key).Msg("device flow poll failed")
+		logging.Log.Warn().Err(err).Str("account_id", key).Msg("device flow poll failed")
 		s.mu.Lock()
 		pf.CurrentPoll = now
 		s.mu.Unlock()
@@ -364,7 +364,7 @@ func (s *OAuthService) pollOneDeviceFlow(ctx context.Context, key string, pf *pe
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logging.Log.Warn().Err(err).Str("agent_id", key).Msg("read device flow poll response failed")
+		logging.Log.Warn().Err(err).Str("account_id", key).Msg("read device flow poll response failed")
 		s.mu.Lock()
 		pf.CurrentPoll = now
 		s.mu.Unlock()
@@ -373,7 +373,7 @@ func (s *OAuthService) pollOneDeviceFlow(ctx context.Context, key string, pf *pe
 
 	// Handle non-200 status codes as errors.
 	if resp.StatusCode != http.StatusOK {
-		logging.Log.Warn().Int("status", resp.StatusCode).Str("agent_id", key).Msg("device flow poll returned non-200")
+		logging.Log.Warn().Int("status", resp.StatusCode).Str("account_id", key).Msg("device flow poll returned non-200")
 		s.mu.Lock()
 		pf.CurrentPoll = now
 		s.mu.Unlock()
@@ -388,7 +388,7 @@ func (s *OAuthService) pollOneDeviceFlow(ctx context.Context, key string, pf *pe
 		Error        string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		logging.Log.Warn().Err(err).Str("agent_id", key).Msg("decode device flow poll response failed")
+		logging.Log.Warn().Err(err).Str("account_id", key).Msg("decode device flow poll response failed")
 		s.mu.Lock()
 		pf.CurrentPoll = now
 		s.mu.Unlock()
@@ -430,12 +430,11 @@ func (s *OAuthService) handleDeviceFlowSuccess(key string, pf *pendingDeviceFlow
 	Scope        string `json:"scope"`
 	Error        string `json:"error"`
 }) {
-	// Parse agent_id from the key (split on \x00).
-	parts := strings.SplitN(key, "\x00", 2)
-	if len(parts) != 2 {
+	// The pending key is the account_id itself.
+	accountID := key
+	if accountID == "" {
 		return
 	}
-	agentID, accountID := parts[0], parts[1]
 
 	now := time.Now()
 	accessExpiresAt := now.Add(time.Duration(parsed.ExpiresIn) * time.Second)
@@ -443,7 +442,6 @@ func (s *OAuthService) handleDeviceFlowSuccess(key string, pf *pendingDeviceFlow
 
 	session := database.AgentOAuthSession{
 		ID:               ulid.Make().String(),
-		AgentID:          agentID,
 		AccountID:        accountID,
 		Scopes:           parsed.Scope,
 		AccessToken:      parsed.AccessToken,
@@ -452,12 +450,12 @@ func (s *OAuthService) handleDeviceFlowSuccess(key string, pf *pendingDeviceFlow
 		RefreshExpiresAt: &refreshExpiresAt,
 	}
 
-	// Upsert: if a session already exists for (agent, account), replace it.
+	// Upsert: if a session already exists for the account, replace it.
 	if err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "agent_id"}, {Name: "account_id"}},
+		Columns:   []clause.Column{{Name: "account_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"scopes", "access_token", "refresh_token", "access_expires_at", "refresh_expires_at"}),
 	}).Create(&session).Error; err != nil {
-		logging.Log.Error().Err(err).Str("agent_id", agentID).Msg("persist oauth session failed")
+		logging.Log.Error().Err(err).Str("account_id", accountID).Msg("persist oauth session failed")
 		return
 	}
 
@@ -466,5 +464,5 @@ func (s *OAuthService) handleDeviceFlowSuccess(key string, pf *pendingDeviceFlow
 	delete(s.pending, key)
 	s.mu.Unlock()
 
-	logging.Log.Info().Str("agent_id", agentID).Str("account_id", accountID).Msg("oauth device flow completed")
+	logging.Log.Info().Str("account_id", accountID).Msg("oauth device flow completed")
 }

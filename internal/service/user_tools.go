@@ -396,7 +396,7 @@ func isUserScopedToolName(name string) bool {
 	return false
 }
 
-func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
+func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, call schema.ToolCall) (*executedChatToolResult, error) {
 	// 1. Resolve authenticated caller
 	id, ok := CallerIdentityFrom(ctx)
 	if !ok {
@@ -415,7 +415,7 @@ func (s *ConversationService) executeUserScopedToolCall(ctx context.Context, age
 			"message": "OAuth is not configured. Contact the administrator.",
 		})
 	}
-	token, err := s.oauth.UserAccessToken(ctx, agentID, id.AccountID)
+	token, err := s.oauth.UserAccessToken(ctx, id.AccountID)
 	if err != nil {
 		if err == ErrUserAuthRequired {
 			return toolResultJSON(call, map[string]any{
@@ -805,23 +805,23 @@ func NewID() string {
 
 // ─── ConversationService OAuth passthrough methods ─────────────────
 
-func (s *ConversationService) StartOAuthDeviceFlow(ctx context.Context, agentID, accountID string) (*DeviceFlowInfo, error) {
+func (s *ConversationService) StartOAuthDeviceFlow(ctx context.Context, accountID string) (*DeviceFlowInfo, error) {
 	if s.oauth == nil {
 		return nil, fmt.Errorf("oauth is not configured")
 	}
-	return s.oauth.StartDeviceFlow(ctx, agentID, accountID)
+	return s.oauth.StartDeviceFlow(ctx, accountID)
 }
 
-func (s *ConversationService) OAuthStatus(ctx context.Context, agentID, accountID string) (status, scopes string, expiresAt *time.Time, err error) {
+func (s *ConversationService) OAuthStatus(ctx context.Context, accountID string) (status, scopes string, expiresAt *time.Time, err error) {
 	if s.oauth == nil {
 		return "none", "", nil, nil
 	}
-	return s.oauth.Status(ctx, agentID, accountID)
+	return s.oauth.Status(ctx, accountID)
 }
 
-func (s *ConversationService) RevokeOAuth(ctx context.Context, agentID, accountID string) error {
+func (s *ConversationService) RevokeOAuth(ctx context.Context, accountID string) error {
 	if s.oauth == nil {
 		return fmt.Errorf("oauth is not configured")
 	}
-	return s.oauth.Revoke(ctx, agentID, accountID)
+	return s.oauth.Revoke(ctx, accountID)
 }

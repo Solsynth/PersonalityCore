@@ -177,16 +177,19 @@ var skillRegistry = map[string]Skill{
 
 func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []Skill {
 	var skills []Skill
-	isChat := agent.HasAbility(def, "chat")
+	loaded := s.autoLoadedSkills(def, perkLevel)
+	oauthReady := s.oauthReady()
 	for name, skill := range skillRegistry {
-		// chat skill is auto-loaded for chat agents, skip in discovery
-		if name == "chat" && isChat {
-			continue
-		}
-		if activeSkills[name] {
+		// Skills whose tools this agent already has must not be advertised:
+		// activating them would be a no-op the model cannot observe.
+		if loaded[name] || activeSkills[name] {
 			continue
 		}
 		if !s.isSkillAllowed(perkLevel, name) {
+			continue
+		}
+		// OAuth-backed skills only produce failing tools without a session.
+		if userSkillNames[name] && !oauthReady {
 			continue
 		}
 		skills = append(skills, skill)

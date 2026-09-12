@@ -589,6 +589,85 @@ func TestBuildToolInfosDynamicModeRetainsMetaTools(t *testing.T) {
 	}
 }
 
+func TestBuildToolInfosKeepsToolNamesUniqueAfterSkillActivation(t *testing.T) {
+	// Auto-loaded skills stay in skillRegistry, so a model can activate one it
+	// already has. The rebuilt tool list must never repeat a tool name:
+	// providers reject duplicate tool names with a 400.
+	svc := &ConversationService{
+		cfg: &config.Config{
+			Personality: config.PersonalityConfig{DynamicSkills: true},
+			OAuth:       config.OAuthConfig{Enabled: true},
+		},
+		oauth: &OAuthService{},
+	}
+	def := agent.Definition{
+		ID:        "mochi",
+		Model:     "openai/test",
+		Abilities: []string{"chat", "humanizer", "stickers"},
+	}
+
+	active := map[string]bool{}
+	for _, name := range []string{"chat", "self_notes", "solar_network", "stickers"} {
+		active[name] = true
+	}
+	tools := svc.buildToolInfos(def, active, 0)
+	seen := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if seen[tool.Name] {
+			t.Fatalf("tool name %q appears more than once", tool.Name)
+		}
+		seen[tool.Name] = true
+	}
+	for _, name := range []string{"send_chat_message", "save_self_note", "list_stickers", "get_post"} {
+		if !seen[name] {
+			t.Fatalf("expected tool %q in list", name)
+		}
+	}
+}
+
+func TestAvailableSkillsOmitsAutoLoadedSkills(t *testing.T) {
+	svc := &ConversationService{
+		cfg: &config.Config{
+			Personality: config.PersonalityConfig{DynamicSkills: true},
+			OAuth:       config.OAuthConfig{Enabled: true},
+		},
+		oauth: &OAuthService{},
+	}
+	def := agent.Definition{
+		ID:        "mochi",
+		Model:     "openai/test",
+		Abilities: []string{"chat", "humanizer", "stickers"},
+	}
+
+	names := make(map[string]bool)
+	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0) {
+		names[skill.Name] = true
+	}
+	for _, name := range []string{"chat", "self_notes", "stickers"} {
+		if names[name] {
+			t.Fatalf("list_skills advertised already-loaded skill %q", name)
+		}
+	}
+	if !names["solar_network"] {
+		t.Fatal("solar_network should stay discoverable for chat agents")
+	}
+}
+
+func TestAvailableSkillsOmitsUserSkillsWithoutOAuth(t *testing.T) {
+	svc := &ConversationService{
+		cfg: &config.Config{Personality: config.PersonalityConfig{DynamicSkills: true}},
+	}
+	def := agent.Definition{ID: "mochi", Model: "openai/test", Abilities: []string{"stickers"}}
+
+	names := make(map[string]bool)
+	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0) {
+		names[skill.Name] = true
+	}
+	if names["stickers"] {
+		t.Fatal("OAuth-backed skills must not be advertised when OAuth is disabled")
+	}
+}
+
 func TestToolsForConversationFiltersSolarOutboundTools(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{
 		Personality: config.PersonalityConfig{DynamicSkills: true},

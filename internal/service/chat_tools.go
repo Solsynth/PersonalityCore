@@ -147,6 +147,70 @@ func (s *ConversationService) filterSolarOutboundTools(tools []*schema.ToolInfo,
 	return filtered
 }
 
+// userSkillAbilities maps an agent ability to the skill that backs it. These
+// skills need an OAuth session because their tools act on the caller's account.
+var userSkillAbilities = map[string]string{
+	"files": "files", "wallet": "wallet", "notifications": "notifications",
+	"web_reader": "web_reader", "relationships": "relationships", "search": "search",
+	"stickers": "stickers", "surveys": "surveys", "leveling": "leveling",
+}
+
+// userSkillNames is the set of OAuth-backed skill names.
+var userSkillNames = func() map[string]bool {
+	names := make(map[string]bool, len(userSkillAbilities))
+	for _, skillName := range userSkillAbilities {
+		names[skillName] = true
+	}
+	return names
+}()
+
+func (s *ConversationService) oauthReady() bool {
+	return s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil
+}
+
+// autoLoadedSkills returns the skills whose tools buildToolInfos injects on its
+// own for this agent, keyed by skill name. Skill discovery must not advertise
+// them: activating an already-loaded skill would re-append tools the model
+// already has, and providers reject duplicate tool names.
+func (s *ConversationService) autoLoadedSkills(def agent.Definition, perkLevel int32) map[string]bool {
+	loaded := make(map[string]bool, len(userSkillAbilities)+2)
+	mark := func(name string) {
+		if _, ok := skillRegistry[name]; ok && s.isSkillAllowed(perkLevel, name) {
+			loaded[name] = true
+		}
+	}
+	if agent.HasAbility(def, "chat") {
+		mark("chat")
+	}
+	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
+		mark("self_notes")
+	}
+	if s.oauthReady() {
+		for ability, skillName := range userSkillAbilities {
+			if agent.HasAbility(def, ability) {
+				mark(skillName)
+			}
+		}
+	}
+	return loaded
+}
+
+// uniqueToolInfos drops later tools that reuse an earlier name. Providers
+// reject requests carrying duplicate tool names, and overlaps are possible:
+// a model can activate a skill whose tools the agent already auto-loaded.
+func uniqueToolInfos(tools []*schema.ToolInfo) []*schema.ToolInfo {
+	seen := make(map[string]bool, len(tools))
+	unique := tools[:0]
+	for _, tool := range tools {
+		if tool == nil || seen[tool.Name] {
+			continue
+		}
+		seen[tool.Name] = true
+		unique = append(unique, tool)
+	}
+	return unique
+}
+
 func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []*schema.ToolInfo {
 	dynamic := s.cfg == nil || s.cfg.Personality.DynamicSkills
 	var tools []*schema.ToolInfo
@@ -160,32 +224,9 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 	tools = append(tools, s.getCurrentUserProfileToolInfo())
 
 	if dynamic {
-		if agent.HasAbility(def, "chat") {
-			if s.isSkillAllowed(perkLevel, "chat") {
-				if skill, ok := skillRegistry["chat"]; ok {
-					tools = append(tools, skill.Tools(s)...)
-				}
-			}
-		}
-		if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
-			if s.isSkillAllowed(perkLevel, "self_notes") {
-				if skill, ok := skillRegistry["self_notes"]; ok {
-					tools = append(tools, skill.Tools(s)...)
-				}
-			}
-		}
-		if s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil {
-			userSkillAbilities := map[string]string{
-				"files": "files", "wallet": "wallet", "notifications": "notifications",
-				"web_reader": "web_reader", "relationships": "relationships", "search": "search",
-				"stickers": "stickers", "surveys": "surveys", "leveling": "leveling",
-			}
-			for ability, skillName := range userSkillAbilities {
-				if agent.HasAbility(def, ability) && s.isSkillAllowed(perkLevel, skillName) {
-					if skill, ok := skillRegistry[skillName]; ok {
-						tools = append(tools, skill.Tools(s)...)
-					}
-				}
+		for name := range s.autoLoadedSkills(def, perkLevel) {
+			if skill, ok := skillRegistry[name]; ok {
+				tools = append(tools, skill.Tools(s)...)
 			}
 		}
 	} else {
@@ -227,7 +268,7 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 		}
 		tools = append(tools, s.resolveSkillTools(activeSkills)...)
 	}
-	return tools
+	return uniqueToolInfos(tools)
 }
 
 func (s *ConversationService) runWithChatTools(

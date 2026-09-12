@@ -222,11 +222,14 @@ func TestBuildModelMessagesPrefixesSolarUserHistoryWithUsername(t *testing.T) {
 	if userMsg == nil {
 		t.Fatal("expected user message to be present")
 	}
-	if !strings.Contains(userMsg.Content, "[@alice] [") {
-		t.Fatalf("expected solar history to include [@alice] [date] prefix, got %q", userMsg.Content)
+	if !strings.Contains(userMsg.Content, "[@alice] ") {
+		t.Fatalf("expected solar history to include [@alice] prefix, got %q", userMsg.Content)
 	}
-	if !strings.Contains(userMsg.Content, "] hello there") {
+	if !strings.Contains(userMsg.Content, "hello there") {
 		t.Fatalf("expected solar history content, got %q", userMsg.Content)
+	}
+	if strings.Contains(userMsg.Content, "Sent at") || strings.Contains(userMsg.Content, "20") {
+		t.Fatalf("expected solar history without timestamp, got %q", userMsg.Content)
 	}
 }
 
@@ -583,8 +586,8 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 			break
 		}
 	}
-	if userMessage == nil || !strings.Contains(userMessage.Content, "Sent at: 2026-06-13 10:30:00 +08:00") {
-		t.Fatalf("expected timestamped user content, got %#v", userMessage)
+	if userMessage == nil || strings.TrimSpace(userMessage.Content) != "What do you like to drink?" {
+		t.Fatalf("expected plain user content without timestamp, got %#v", userMessage)
 	}
 	last := messages[len(messages)-1]
 	if last.Role != schema.System || !strings.Contains(last.Content, "Current date and time:") {
@@ -712,6 +715,183 @@ func TestBuildModelMessagesPrefersUserTimezoneForTimestamps(t *testing.T) {
 	}
 	if !strings.Contains(last.Content, "+08:00") {
 		t.Fatalf("expected user timezone offset in datetime context, got %q", last.Content)
+	}
+}
+
+func TestBuildModelMessagesAddsElapsedTimeNoteForLargeGap(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-gap-1",
+		AccountID: "acct-1",
+		AgentID:   "mochi",
+		Title:     "Gap chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i, msg := range []struct {
+		content string
+		at      time.Time
+	}{
+		{content: "first", at: base},
+		{content: "second", at: base.Add(25 * time.Minute)},
+	} {
+		if err := db.Create(&database.ConversationMessage{
+			ID:        fmt.Sprintf("gap-msg-%d", i),
+			ThreadID:  thread.ID,
+			AccountID: thread.AccountID,
+			Role:      "user",
+			Content:   msg.content,
+			Sequence:  int64(i) + 1,
+			CreatedAt: msg.at,
+			UpdatedAt: msg.at,
+		}).Error; err != nil {
+			t.Fatalf("create message: %v", err)
+		}
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	found := false
+	for _, msg := range messages {
+		if msg.Role == schema.System && strings.Contains(msg.Content, "Time elapsed since the user's previous message: 25 minutes.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected elapsed-time system note between user messages")
+	}
+}
+
+func TestBuildModelMessagesSkipsElapsedTimeNoteForSmallGap(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-gap-2",
+		AccountID: "acct-1",
+		AgentID:   "mochi",
+		Title:     "Gap chat",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i, msg := range []struct {
+		content string
+		at      time.Time
+	}{
+		{content: "first", at: base},
+		{content: "second", at: base.Add(9 * time.Minute)},
+	} {
+		if err := db.Create(&database.ConversationMessage{
+			ID:        fmt.Sprintf("gap-msg-%d", i),
+			ThreadID:  thread.ID,
+			AccountID: thread.AccountID,
+			Role:      "user",
+			Content:   msg.content,
+			Sequence:  int64(i) + 1,
+			CreatedAt: msg.at,
+			UpdatedAt: msg.at,
+		}).Error; err != nil {
+			t.Fatalf("create message: %v", err)
+		}
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	for _, msg := range messages {
+		if msg.Role == schema.System && strings.Contains(msg.Content, "Time elapsed since the user's previous message:") {
+			t.Fatalf("unexpected elapsed-time note for small gap: %q", msg.Content)
+		}
+	}
+}
+
+func TestBuildModelMessagesResolvesSolarSenderTimezone(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "mochi",
+		Name:         "Mochi",
+		Model:        "openai/test",
+		Enabled:      true,
+		SystemPrompt: "You are Mochi.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	svc := NewConversationService(db, &config.Config{
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 4},
+	}, registry, nil)
+	svc.SetSnChatBridge(&stubSolarBridge{
+		account: &solar_network.Account{ID: "acct-9", Name: "alice", Nick: "Alice"},
+		profile: solar_network.AccountProfile{"time_zone": "Asia/Shanghai"},
+	})
+
+	thread := &database.ConversationThread{
+		ID:        "thread-solar-tz-1",
+		AccountID: "solar:mochi:room-1",
+		AgentID:   "mochi",
+		Title:     "Solar room",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "hello", nil, map[string]any{
+		"source":              "solar",
+		"sender_account_id":   "acct-9",
+		"sender_account_name": "alice",
+	}); err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	last := messages[len(messages)-1]
+	if last.Role != schema.System || !strings.Contains(last.Content, "Current date and time:") {
+		t.Fatalf("expected final current time system message, got %#v", last)
+	}
+	if !strings.Contains(last.Content, "+08:00") {
+		t.Fatalf("expected sender timezone offset in datetime context, got %q", last.Content)
 	}
 }
 

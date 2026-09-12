@@ -474,9 +474,10 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 			messages = append(messages, schema.SystemMessage(overlay))
 		}
 	}
-	// Prefer the user's own timezone for timestamps; fall back to server-local
-	// when the profile has no time_zone (or the lookup is unavailable).
-	loc := s.resolveUserLocation(ctx, def.ID, thread.AccountID, accountName)
+	// Prefer the user's own timezone for the datetime context; fall back to
+	// server-local when the profile has no time_zone (or the lookup is
+	// unavailable). Chat-path threads resolve from the latest sender profile.
+	loc := s.resolveUserLocation(ctx, def.ID, thread.AccountID, accountName, records)
 
 	toolResponseIDs := make(map[string]struct{})
 	for _, record := range records {
@@ -493,6 +494,7 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	}
 
 	pendingToolCalls := make(map[string]struct{})
+	var lastUserMessageAt time.Time
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
 		role := schema.User
@@ -504,8 +506,17 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 		case "tool":
 			role = schema.Tool
 		}
-		renderedContent := renderConversationRecordContent(record, loc)
+		renderedContent := renderConversationRecordContent(record)
 		msg := &schema.Message{Role: role, Content: renderedContent}
+		elapsedNote := ""
+		if role == schema.User {
+			if !lastUserMessageAt.IsZero() {
+				if gap := record.CreatedAt.Sub(lastUserMessageAt); gap > elapsedMessageNoteThreshold {
+					elapsedNote = renderElapsedTimeNote(gap)
+				}
+			}
+			lastUserMessageAt = record.CreatedAt
+		}
 		switch role {
 		case schema.User:
 			var meta userMessageMetadata
@@ -580,6 +591,9 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 				continue
 			}
 			delete(pendingToolCalls, strings.TrimSpace(msg.ToolCallID))
+		}
+		if elapsedNote != "" {
+			messages = append(messages, schema.SystemMessage(elapsedNote))
 		}
 		messages = append(messages, msg)
 	}
@@ -1288,32 +1302,23 @@ func (s *ConversationService) supportsVisionForAgent(def agent.Definition) bool 
 	return s.executor.SupportsVision(def)
 }
 
-func renderMessageContextContent(content string, createdAt time.Time, loc *time.Location) string {
-	if loc == nil {
-		loc = time.Local
-	}
-	timestamp := "Sent at: " + createdAt.In(loc).Format("2006-01-02 15:04:05 -07:00 MST")
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return timestamp
-	}
-	return timestamp + "\n\n" + content
-}
-
-func renderConversationRecordContent(record database.ConversationMessage, loc *time.Location) string {
+func renderConversationRecordContent(record database.ConversationMessage) string {
 	content := strings.TrimSpace(record.Content)
 	if strings.ToLower(strings.TrimSpace(record.Role)) != "user" {
-		return renderMessageContextContent(content, record.CreatedAt, loc)
+		return content
 	}
-
-	if line, ok := renderSnUserHistoryLine(record.Metadata, record.CreatedAt, content, loc); ok {
+	if line, ok := renderSnUserHistoryLine(record.Metadata, content); ok {
 		return line
 	}
-
-	return renderMessageContextContent(content, record.CreatedAt, loc)
+	return content
 }
 
-func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content string, loc *time.Location) (string, bool) {
+// renderSnUserHistoryLine prefixes solar chat-path user messages with the
+// sender's handle so multi-user group chats stay unambiguous. Timestamps are
+// deliberately not embedded here: they are machine-generated, confuse the
+// model (it echoes "Sent at: ..."), and are replaced by elapsed-time system
+// notes between consecutive user messages.
+func renderSnUserHistoryLine(raw datatypes.JSON, content string) (string, bool) {
 	var meta snInboundRequestMetadata
 	if decodeMessageMetadata(raw, &meta) != nil {
 		return "", false
@@ -1334,17 +1339,52 @@ func renderSnUserHistoryLine(raw datatypes.JSON, createdAt time.Time, content st
 	if strings.HasPrefix(username, "@") {
 		username = strings.TrimPrefix(username, "@")
 	}
-	if loc == nil {
-		loc = time.Local
-	}
-	timestamp := createdAt.In(loc).Format("2006-01-02 15:04:05 -07:00 MST")
 	content = strings.TrimSpace(content)
 	switch {
 	case content == "":
-		return fmt.Sprintf("[@%s] [%s]", username, timestamp), true
+		return fmt.Sprintf("[@%s]", username), true
 	default:
-		return fmt.Sprintf("[@%s] [%s] %s", username, timestamp, content), true
+		return fmt.Sprintf("[@%s] %s", username, content), true
 	}
+}
+
+// elapsedMessageNoteThreshold is the minimum gap between consecutive user
+// messages that gets surfaced to the model as an elapsed-time system note.
+const elapsedMessageNoteThreshold = 10 * time.Minute
+
+func renderElapsedTimeNote(gap time.Duration) string {
+	return "Time elapsed since the user's previous message: " + formatElapsedDuration(gap) + "."
+}
+
+func formatElapsedDuration(d time.Duration) string {
+	d = d.Round(time.Minute)
+	if d < time.Minute {
+		d = time.Minute
+	}
+	days := int(d / (24 * time.Hour))
+	hours := int(d % (24 * time.Hour) / time.Hour)
+	minutes := int(d % time.Hour / time.Minute)
+	parts := make([]string, 0, 3)
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%d day%s", days, pluralSuffix(days)))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%d hour%s", hours, pluralSuffix(hours)))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%d minute%s", minutes, pluralSuffix(minutes)))
+	}
+	if len(parts) == 0 {
+		return "less than a minute"
+	}
+	return strings.Join(parts, " ")
+}
+
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func renderCurrentDateTimeContext(now time.Time, loc *time.Location) string {

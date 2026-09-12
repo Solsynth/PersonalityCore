@@ -172,7 +172,7 @@ Chat tool-calling also exposes `list_self_notes`, `save_self_note`, and `delete_
 Inbound Solar chat image attachments are passed to the model as multimodal image inputs using `{solarNetwork.baseUrl}/drive/files/{file_id}`.
 When the agent replies in plain assistant text for a Solar chat conversation, each non-empty newline-delimited line is sent as a separate outbound chat message. In streaming mode, completed lines are sent immediately when the newline arrives.
 For live inbound handling, a direct mention or reply to the bot opens a 5-minute active follow-up window so the bot can continue the current group-chat exchange.
-Every run also appends explicit message timestamps in context and a final `Current date and time:` system message so the model can reason about chronology without depending on cache-retained earlier prompt sections.
+Every run also appends an elapsed-time system note when more than 10 minutes passed between consecutive user messages, plus a final `Current date and time:` system message (in the user's timezone from their Solar profile, server-local as fallback) so the model can reason about chronology without depending on cache-retained earlier prompt sections.
 When a thread grows beyond the live history window, older messages are automatically compacted into a persisted thread summary that is injected back into future runs as `Earlier compacted thread context:`.
 
 Agents can also opt into `autonomous`:

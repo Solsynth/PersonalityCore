@@ -613,12 +613,25 @@ func snUserLocalTime(profile solar_network.AccountProfile) string {
 }
 // resolveUserLocation returns the authenticated user's timezone from their
 // Solar profile when available, else the server's local zone. The account is
-// skipped for synthetic solar:agent:room identities (chat-path accounts).
-func (s *ConversationService) resolveUserLocation(ctx context.Context, agentID, accountID, accountName string) *time.Location {
+// skipped for synthetic solar:agent:room identities (chat-path accounts):
+// those threads have no caller account, so the sender's timezone is resolved
+// from the latest inbound message's sender profile instead.
+func (s *ConversationService) resolveUserLocation(ctx context.Context, agentID, accountID, accountName string, records []database.ConversationMessage) *time.Location {
 	if s.sn == nil {
 		return time.Local
 	}
 	if strings.HasPrefix(strings.TrimSpace(accountID), "solar:") {
+		if meta := latestSnInboundMetadata(records); meta != nil {
+			name := strings.TrimSpace(meta.SenderAccountName)
+			if name == "" {
+				name = strings.TrimSpace(meta.SenderAccountID)
+			}
+			if name != "" {
+				if loc := s.locationFromProfile(ctx, agentID, name); loc != nil {
+					return loc
+				}
+			}
+		}
 		return time.Local
 	}
 	name := strings.TrimSpace(accountName)
@@ -628,21 +641,31 @@ func (s *ConversationService) resolveUserLocation(ctx context.Context, agentID, 
 	if name == "" {
 		return time.Local
 	}
-	profile, err := s.getCachedSnUserProfile(ctx, agentID, name)
+	if loc := s.locationFromProfile(ctx, agentID, name); loc != nil {
+		return loc
+	}
+	return time.Local
+}
+
+func (s *ConversationService) locationFromProfile(ctx context.Context, agentID, accountName string) *time.Location {
+	if s.sn == nil || strings.TrimSpace(accountName) == "" {
+		return nil
+	}
+	profile, err := s.getCachedSnUserProfile(ctx, agentID, accountName)
 	if err != nil || profile == nil {
-		return time.Local
+		return nil
 	}
 	tzRaw, ok := profile["time_zone"]
 	if !ok {
-		return time.Local
+		return nil
 	}
 	tzStr, ok := tzRaw.(string)
 	if !ok || strings.TrimSpace(tzStr) == "" {
-		return time.Local
+		return nil
 	}
 	loc, err := time.LoadLocation(strings.TrimSpace(tzStr))
 	if err != nil {
-		return time.Local
+		return nil
 	}
 	return loc
 }

@@ -113,6 +113,21 @@ Each sub-section is included only when the corresponding ability is present and 
 
 The conversation history follows as standard `user` / `assistant` / `tool` messages, built from the database records. Image parts in user messages are either sent directly (vision-capable models) or summarized via the configured `visionModel` (non-vision models).
 
+### Time Context
+
+Machine-generated per-message timestamps are NOT embedded in message content (they confused the model into echoing `Sent at: ...`). Time context is provided two ways:
+
+- **Elapsed-time note**: when the gap between two consecutive user messages exceeds 10 minutes, a `SystemMessage` is inserted before the newer user message:
+  ```
+  Time elapsed since the user's previous message: 2 hours 15 minutes.
+  ```
+- **Current datetime**: the final message of every prompt is a `SystemMessage` with the current time in the user's timezone (from their Solar profile `time_zone`; server-local as fallback):
+  ```
+  Current date and time: 2026-09-12 18:02:03 +08:00 CST
+  ```
+
+Solar chat-path threads resolve the sender's timezone from the latest inbound sender's profile, so the datetime context follows the sender's local time.
+
 ---
 
 ## Chat Agent Path

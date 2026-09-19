@@ -152,6 +152,8 @@ Tools are organized into **skills** — loadable bundles that add capabilities o
 **Auto-loaded** (based on agent abilities, not shown in `list_skills`):
 - `chat` ability → `send_chat_message`, `send_chat_message_batch`, `no_reply`
 - `humanizer` / `self_notes` ability → `list_self_notes`, `save_self_note`, `delete_self_note`
+- `web_search` ability → `web_search` (skill `web_search`)
+- `files`, `wallet`, `notifications`, `web_reader`, `relationships`, `search`, `stickers`, `surveys`, `leveling` abilities → the matching OAuth-backed skill
 
 **Loadable skills** (model calls `activate_skill` to load):
 

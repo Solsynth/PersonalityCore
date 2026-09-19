@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -479,4 +480,201 @@ clientId = "personality"
 	if err == nil {
 		t.Fatal("expected oauth validation error when enabled without solarNetwork.baseUrl")
 	}
+}
+
+func TestLoad_WebSearchParsesEnginesAndDefaults(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+language = "en"
+
+[[webSearch.engines]]
+type = "bing"
+region = "en-GB"
+timeout = "5s"
+
+[[webSearch.engines]]
+id = "ddg"
+type = "duckduckgo"
+enabled = false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.WebSearch.Enabled || cfg.WebSearch.Language != "en" {
+		t.Fatalf("unexpected webSearch config: %#v", cfg.WebSearch)
+	}
+	if cfg.WebSearch.DefaultLimit != 5 || cfg.WebSearch.MaxLimit != 10 {
+		t.Fatalf("unexpected limits: %#v", cfg.WebSearch)
+	}
+	if cfg.WebSearch.Timeout != 15*time.Second || cfg.WebSearch.CacheTTL != 5*time.Minute {
+		t.Fatalf("unexpected durations: %#v", cfg.WebSearch)
+	}
+	// The explicitly disabled engine is dropped; the remaining one gets an id.
+	if len(cfg.WebSearch.Engines) != 1 {
+		t.Fatalf("got %d engines, want 1: %#v", len(cfg.WebSearch.Engines), cfg.WebSearch.Engines)
+	}
+	engine := cfg.WebSearch.Engines[0]
+	if engine.ID != "bing" || engine.Type != "bing" || engine.Region != "en-GB" || engine.Timeout != 5*time.Second {
+		t.Fatalf("unexpected engine: %#v", engine)
+	}
+}
+
+func TestLoad_WebSearchDefaultsToDirectEngines(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	types := make([]string, 0, len(cfg.WebSearch.Engines))
+	for _, engine := range cfg.WebSearch.Engines {
+		types = append(types, engine.Type)
+	}
+	if len(types) != 1 || types[0] != "duckduckgo" {
+		t.Fatalf("default engines = %#v, want duckduckgo only", types)
+	}
+	if !cfg.WebSearch.Crawl.Enabled {
+		t.Fatal("crawling must be on by default so discovered pages can be indexed")
+	}
+	if cfg.WebSearch.Crawl.MaxPagesPerQuery != 3 || cfg.WebSearch.Crawl.PageTimeout != 8*time.Second {
+		t.Fatalf("unexpected crawl defaults: %#v", cfg.WebSearch.Crawl)
+	}
+}
+
+func TestLoad_WebSearchAbilityRequiresEnabledConfig(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[[agents.items]]
+id = "researcher"
+name = "Researcher"
+model = "openai/gpt-4.1-mini"
+abilities = ["web_search"]
+enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(mainFile)
+	if err == nil {
+		t.Fatal("expected a validation error when an agent declares web_search without webSearch.enabled")
+	}
+}
+
+func TestLoad_WebSearchValidationRules(t *testing.T) {
+	cases := map[string]string{
+		"unknown engine type": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "altavista"
+`,
+		"duplicate engine id": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+id = "google-mirror"
+type = "google"
+
+[[webSearch.engines]]
+id = "google-mirror"
+type = "bing"
+`,
+		"every engine disabled": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "bing"
+enabled = false
+`,
+	}
+
+	for name, block := range cases {
+		dir := t.TempDir()
+		mainFile := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(mainFile, []byte("[database]\ndsn = \"postgres://example\"\n"+block), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := Load(mainFile); err == nil {
+			t.Fatalf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestLoad_WebSearchNormalizesInconsistentValues(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+defaultLimit = 25
+maxLimit = 3
+
+[webSearch.crawl]
+maxPagesPerQuery = 500
+
+[[webSearch.engines]]
+type = "searxng"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An unsupported engine type must fail even though the limits are clamped.
+	if _, err := Load(mainFile); err == nil {
+		t.Fatal("expected an unsupported engine type error")
+	}
+
+	block := strings.ReplaceAll(string(mustRead(t, mainFile)), `type = "searxng"`, `type = "bing"`)
+	if err := os.WriteFile(mainFile, []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebSearch.DefaultLimit != 25 || cfg.WebSearch.MaxLimit != 25 {
+		t.Fatalf("maxLimit must not fall below defaultLimit: %#v", cfg.WebSearch)
+	}
+	if cfg.WebSearch.Crawl.MaxPagesPerQuery != 10 {
+		t.Fatalf("maxPagesPerQuery = %d, want the 10 page cap", cfg.WebSearch.Crawl.MaxPagesPerQuery)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
 }

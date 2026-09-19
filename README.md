@@ -44,6 +44,9 @@ Current humanization-related abilities:
 Chat integration ability:
 - `chat`: enables Solar Network bot messaging through a configured bot account and keeps one websocket connection open per enabled integrated agent
 
+Web search ability:
+- `web_search`: gives the agent a `web_search` tool over the public web. It requires a `[webSearch]` block with at least one engine; the config loader fails startup when an agent declares the ability while web search is disabled. Agents without the ability can neither see the skill in `list_skills` nor activate it.
+
 These are server-side systems. They do not require client-side function-calling support.
 For humanization, the current server behavior includes:
 - passive fact extraction from user messages
@@ -295,6 +298,61 @@ dir = "./agents.d"
 offline = true
 offlineAccountId = "local-dev"
 autonomousSecret = ""
+```
+
+Web search is configured in the main config. The server queries public search
+engines directly over HTTP — no search API, aggregator, or hosted index sits in
+between — merges what they return, and can crawl the pages it discovers into a
+local index:
+
+```toml
+[webSearch]
+enabled = true
+defaultLimit = 5
+maxLimit = 10
+timeout = "15s"
+cacheTTL = "5m"
+language = "en"
+userAgent = ""
+
+[[webSearch.engines]]
+type = "duckduckgo"
+
+# Optional extra engines. Bing answers longer queries with results about
+# unrelated topics, and Google serves a JavaScript interstitial to server-side
+# clients, so both are opt-in.
+# [[webSearch.engines]]
+# id = "bing-eu"
+# type = "bing"
+# region = "en-GB"
+# timeout = "10s"
+
+[webSearch.crawl]
+enabled = true
+maxPagesPerQuery = 3
+pageTimeout = "8s"
+perHostDelay = "1s"
+maxPageBytes = 2097152
+```
+
+- `duckduckgo` (its no-JavaScript HTML endpoint) is the default engine when `webSearch.enabled = true` and no `[[webSearch.engines]]` are listed. `bing` and `google` are supported but opt-in: Bing replies to longer queries with HTTP 200 pages about unrelated topics, and Google answers server-side clients with a JavaScript interstitial instead of results.
+- Scraped engines can answer an HTTP 200 page about an unrelated topic. An engine whose results mostly mention none of the query terms is reported as a failed engine rather than ranked, so `engines[].error` in a response explains a missing engine.
+- Engines also rate limit. DuckDuckGo answers a throttled request with `202` and a bot-challenge page; that is reported as an engine error (`rate limited or challenged; retry later`), never as an empty result set, and the local index still answers queries.
+- `webSearch.crawl` is what makes results answerable later: pages behind the top results are fetched (robots.txt and `perHostDelay` respected, HTML only), their text is extracted, and thin engine snippets are replaced with the page's own opening text. Crawled pages are stored in `web_search_pages` and answer later queries when every live engine fails.
+- `enabled = false` on one `[[webSearch.engines]]` entry keeps it configured but unused.
+- Requests are made with `userAgent` (a browser identity by default) because search engines serve bot walls to obviously automated clients.
+
+Example agent that can search:
+
+```toml
+[[agents.items]]
+id = "researcher"
+name = "Researcher"
+description = "Answers with sources from the web"
+systemPromptFile = "./prompts/researcher.md"
+model = "openai/gpt-4.1-mini"
+abilities = ["web_search"]
+enabled = true
 ```
 
 Example `agents.d/support.toml`:
@@ -554,6 +612,46 @@ List endpoints follow Solar pagination style:
 - request: `take`, `offset`
 - response header: `X-Total`
 
+### Web search
+
+- `POST /api/web/search`
+
+Runs the configured engines directly, without a model in the loop. Available
+whenever `[webSearch]` is enabled; the per-agent `web_search` ability only gates
+the tool.
+
+```bash
+curl -s http://localhost:8090/api/web/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"PostgreSQL 18 asynchronous I/O","limit":5,"freshness":"month"}'
+```
+
+```json
+{
+  "query": "PostgreSQL 18 asynchronous I/O",
+  "results": [
+    {
+      "title": "PostgreSQL 18 Asynchronous I/O: A Complete Guide",
+      "url": "https://betterstack.com/community/guides/databases/postgresql-asynchronous-io/",
+      "snippet": "PostgreSQL 18 introduces asynchronous I/O support for read operations…",
+      "provider": "duckduckgo"
+    }
+  ],
+  "engines": [{"name": "duckduckgo", "results": 5}, {"name": "bing", "results": 0, "error": "engine returned results unrelated to the query"}],
+  "cached": false,
+  "pages_crawled": 1
+}
+```
+
+Status codes:
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Results, from live engines or the local index (`fallback: true`) |
+| 400 | Missing `query`, or an unsupported `freshness` value |
+| 502 | Every engine failed |
+| 503 | Web search is not configured |
+
 ### Billing
 
 Optional Wallet-backed billing is configured with `[billing]`. Every configured
@@ -777,6 +875,8 @@ Current behavior:
 - `abilities` are the primary agent capability field.
 - `abilities` is the canonical agent capability field.
 - `autonomous` is an initiation ability: it lets the server wake an agent without a fresh user message.
+- `web_search` is an initiation-free ability for public web search: it loads the `web_search` tool and requires an enabled `[webSearch]` block. Web search is implemented in-process (`internal/websearch`), querying search engines directly over HTTP and crawling discovered pages into `web_search_pages` (`internal/webindex`); it depends on no third-party search API.
+- `POST /api/web/search` exposes the same engine to any authenticated caller without a model in the loop.
 - The gRPC service is intended for internal Solar usage; the primary client API is REST + SSE.
 
 ## Verification

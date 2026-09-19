@@ -790,6 +790,79 @@ Requires `X-Autonomous-Secret` header matching the server config.
 
 ---
 
+## Web Search
+
+Search the public web through the engines configured in `[webSearch]`. The
+request is answered without a model in the loop, so any authenticated caller can
+use it directly. Configure `[[webSearch.engines]]` (defaults to DuckDuckGo's
+no-JavaScript endpoint) plus the optional crawl settings described in
+`README.md`.
+
+```
+POST /api/web/search
+```
+
+**Request body**
+
+```json
+{
+  "query": "PostgreSQL 18 asynchronous I/O",
+  "limit": 5,
+  "freshness": "month",
+  "domains": ["postgresql.org"],
+  "language": "en"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | yes | Search terms. |
+| `limit` | int | no | Maximum results. Defaults to `webSearch.defaultLimit`, capped by `maxLimit`. |
+| `freshness` | string | no | Recency window: `day`, `week`, `month`, or `year`. |
+| `domains` | string[] | no | Restrict results to these domains. |
+| `language` | string | no | Language hint for engines that accept one. Defaults to `webSearch.language`. |
+
+**Response**
+
+```json
+{
+  "query": "PostgreSQL 18 asynchronous I/O",
+  "results": [
+    {
+      "title": "PostgreSQL 18 Asynchronous I/O: A Complete Guide",
+      "url": "https://betterstack.com/community/guides/databases/postgresql-asynchronous-io/",
+      "snippet": "PostgreSQL 18 introduces asynchronous I/O support for read operations…",
+      "provider": "duckduckgo"
+    }
+  ],
+  "engines": [
+    {"name": "duckduckgo", "results": 5},
+    {"name": "bing", "results": 0, "error": "engine returned results unrelated to the query"}
+  ],
+  "cached": false,
+  "pages_crawled": 1
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `results[].provider` | string | Engine that returned the hit, or `index` for a locally indexed page. |
+| `engines[]` | object[] | Per-engine outcome. `error` is set when that engine failed or answered a different question; the remaining engines still answer. |
+| `cached` | bool | Served from the in-process response cache within `webSearch.cacheTTL`. |
+| `fallback` | bool | Every live engine failed and the results come from the local page index. Only present when true. |
+| `pages_crawled` | int | Pages fetched into the local index for this query. Only present when non-zero. |
+
+**Status codes**
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Results returned. |
+| 400 | `query` is empty or `freshness` is not a supported window. |
+| 502 | Every engine failed and the local index had nothing to answer with. |
+| 503 | Web search is not configured (`webSearch.enabled = false` or no engines). |
+
+---
+
 ## Input Parts
 
 For multimodal input, pass `attachment_ids` alongside `message`:

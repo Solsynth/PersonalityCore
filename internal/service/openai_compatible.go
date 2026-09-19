@@ -244,7 +244,7 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 	case "list_skills":
 		return s.executeListSkillsToolCall(def, activeSkills, 0), nil
 	case "activate_skill":
-		return s.executeActivateSkillToolCall(call, activeSkills), nil
+		return s.executeActivateSkillToolCall(call, activeSkills, def), nil
 	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
 		return s.executeMemoryToolCall(ctx, def, accountID, call)
 	}
@@ -256,6 +256,9 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 	}
 	if isPetToolName(call.Function.Name) {
 		return s.executePetToolCall(ctx, accountID, def.ID, call)
+	}
+	if isWebSearchToolName(call.Function.Name) {
+		return s.executeWebSearchToolCall(ctx, call)
 	}
 	if isUserScopedToolName(call.Function.Name) {
 		return s.executeUserScopedToolCall(ctx, call)

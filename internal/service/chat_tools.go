@@ -185,6 +185,11 @@ func (s *ConversationService) autoLoadedSkills(def agent.Definition, perkLevel i
 	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
 		mark("self_notes")
 	}
+	for skillName, ability := range abilityGatedSkills {
+		if agent.HasAbility(def, ability) {
+			mark(skillName)
+		}
+	}
 	if s.oauthReady() {
 		for ability, skillName := range userSkillAbilities {
 			if agent.HasAbility(def, ability) {
@@ -232,6 +237,9 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 	} else {
 		for name, skill := range skillRegistry {
 			if !s.isSkillAllowed(perkLevel, name) {
+				continue
+			}
+			if !s.skillAllowedForAgent(def, name) {
 				continue
 			}
 			switch name {
@@ -397,7 +405,7 @@ func (s *ConversationService) runWithChatTools(
 			} else if call.Function.Name == "list_skills" {
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills)
+				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
 				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
@@ -425,6 +433,11 @@ func (s *ConversationService) runWithChatTools(
 				}
 			} else if isPetToolName(call.Function.Name) {
 				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
+			} else if isWebSearchToolName(call.Function.Name) {
+				result, err = s.executeWebSearchToolCall(ctx, call)
 				if err != nil {
 					return "", err
 				}
@@ -525,7 +538,7 @@ func (s *ConversationService) runWithGeneralTools(
 			if call.Function.Name == "list_skills" {
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills)
+				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
 				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
@@ -553,6 +566,11 @@ func (s *ConversationService) runWithGeneralTools(
 				}
 			} else if isPetToolName(call.Function.Name) {
 				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
+				if err != nil {
+					return "", err
+				}
+			} else if isWebSearchToolName(call.Function.Name) {
+				result, err = s.executeWebSearchToolCall(ctx, call)
 				if err != nil {
 					return "", err
 				}
@@ -767,7 +785,7 @@ func (s *ConversationService) streamWithGeneralTools(
 			if call.Function.Name == "list_skills" {
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills)
+				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
 				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
@@ -790,6 +808,11 @@ func (s *ConversationService) streamWithGeneralTools(
 				}
 			} else if isPetToolName(call.Function.Name) {
 				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if isWebSearchToolName(call.Function.Name) {
+				result, err = s.executeWebSearchToolCall(ctx, call)
 				if err != nil {
 					return "", nil, err
 				}

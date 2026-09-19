@@ -244,3 +244,17 @@ type AgentOAuthSession struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
+
+// WebSearchPage is one crawled document kept by the local web search index.
+// Pages are server-global (search is not account-scoped) and keyed by URL so a
+// re-crawl refreshes the stored text instead of adding a duplicate.
+type WebSearchPage struct {
+	ID        string    `gorm:"primaryKey;size:26" json:"id"`
+	URL       string    `gorm:"size:768;uniqueIndex" json:"url"`
+	Host      string    `gorm:"size:255;index" json:"host"`
+	Title     string    `gorm:"type:text" json:"title"`
+	Text      string    `gorm:"type:text" json:"text"`
+	FetchedAt time.Time `json:"fetched_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

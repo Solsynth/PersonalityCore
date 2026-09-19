@@ -48,5 +48,6 @@ func (d *DB) AutoMigrate() error {
 		&FileSummary{},
 		&ScheduledTask{},
 		&AgentOAuthSession{},
+		&WebSearchPage{},
 	)
 }

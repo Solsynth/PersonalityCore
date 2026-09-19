@@ -124,6 +124,15 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
+	"web_search": {
+		Name:        "web_search",
+		Description: "Search the public web for current information",
+		Tools: func(s *ConversationService) []*schema.ToolInfo {
+			return []*schema.ToolInfo{
+				s.webSearchToolInfo(),
+			}
+		},
+	},
 	"relationships": {
 		Name:        "relationships",
 		Description: "View and manage Solar relationships (follow, unfollow, friends)",
@@ -175,6 +184,21 @@ var skillRegistry = map[string]Skill{
 	},
 }
 
+// abilityGatedSkills maps a skill to the agent ability that unlocks it. For
+// these skills the ability is the whole gate: capable agents get the tools
+// auto-loaded, every other agent never sees or activates them. Skills absent
+// from this map are gated by buildToolInfos (chat, solar_network, self_notes)
+// or by their OAuth session requirement (userSkillAbilities).
+var abilityGatedSkills = map[string]string{
+	"web_search": "web_search",
+}
+
+// skillAllowedForAgent reports whether an agent may use a skill at all.
+func (s *ConversationService) skillAllowedForAgent(def agent.Definition, name string) bool {
+	ability, gated := abilityGatedSkills[name]
+	return !gated || agent.HasAbility(def, ability)
+}
+
 func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []Skill {
 	var skills []Skill
 	loaded := s.autoLoadedSkills(def, perkLevel)
@@ -186,6 +210,9 @@ func (s *ConversationService) availableSkills(def agent.Definition, activeSkills
 			continue
 		}
 		if !s.isSkillAllowed(perkLevel, name) {
+			continue
+		}
+		if !s.skillAllowedForAgent(def, name) {
 			continue
 		}
 		// OAuth-backed skills only produce failing tools without a session.
@@ -247,7 +274,7 @@ func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, ac
 	}
 }
 
-func (s *ConversationService) executeActivateSkillToolCall(call schema.ToolCall, activeSkills map[string]bool) *executedChatToolResult {
+func (s *ConversationService) executeActivateSkillToolCall(call schema.ToolCall, activeSkills map[string]bool, def agent.Definition) *executedChatToolResult {
 	var input struct {
 		Skill string `json:"skill"`
 	}
@@ -263,6 +290,13 @@ func (s *ConversationService) executeActivateSkillToolCall(call schema.ToolCall,
 	if !exists {
 		return &executedChatToolResult{
 			Content:    `{"ok":false,"error":"skill not found: ` + skillName + `"}`,
+			ToolName:   "activate_skill",
+			ToolCallID: call.ID,
+		}
+	}
+	if !s.skillAllowedForAgent(def, skillName) {
+		return &executedChatToolResult{
+			Content:    `{"ok":false,"error":"skill not available: ` + skillName + `"}`,
 			ToolName:   "activate_skill",
 			ToolCallID: call.ID,
 		}

@@ -21,6 +21,7 @@ type Config struct {
 	Sentry       SentryConfig       `mapstructure:"sentry"`
 	SolarNetwork SolarNetworkConfig `mapstructure:"solarNetwork"`
 	OAuth        OAuthConfig        `mapstructure:"oauth"`
+	WebSearch    WebSearchConfig    `mapstructure:"webSearch"`
 	Agents       AgentsConfig       `mapstructure:"agents"`
 	ProvidersDir string             `mapstructure:"providersDir"`
 	Providers    []ProviderConfig   `mapstructure:"providers"`
@@ -34,6 +35,48 @@ type OAuthConfig struct {
 	ClientID     string   `mapstructure:"clientId"`
 	ClientSecret string   `mapstructure:"clientSecret"` // empty => public client
 	Scopes       []string `mapstructure:"scopes"`
+}
+
+// WebSearchConfig configures the built-in web search engine. Engines are the
+// public search front ends the server queries directly over HTTP; no search API
+// or aggregator sits in between. Engines are queried in parallel and their
+// results merged, so several can be combined.
+//
+// Agents reach it through the "web_search" ability; the HTTP endpoint is
+// available whenever the feature is enabled.
+type WebSearchConfig struct {
+	Enabled      bool                    `mapstructure:"enabled"`
+	DefaultLimit int                     `mapstructure:"defaultLimit"`
+	MaxLimit     int                     `mapstructure:"maxLimit"`
+	Timeout      time.Duration           `mapstructure:"timeout"`
+	CacheTTL     time.Duration           `mapstructure:"cacheTTL"`
+	Language     string                  `mapstructure:"language"`
+	UserAgent    string                  `mapstructure:"userAgent"`
+	Engines      []WebSearchEngineConfig `mapstructure:"engines"`
+	Crawl        WebSearchCrawlConfig    `mapstructure:"crawl"`
+}
+
+// WebSearchEngineConfig is one search engine front end. Type selects the parser
+// and the request shape; baseUrl overrides the engine's public host, which is
+// useful behind a proxy or in tests.
+type WebSearchEngineConfig struct {
+	ID      string        `mapstructure:"id"`
+	Type    string        `mapstructure:"type"`
+	Enabled *bool         `mapstructure:"enabled"`
+	BaseURL string        `mapstructure:"baseUrl"`
+	Region  string        `mapstructure:"region"`
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+// WebSearchCrawlConfig controls how pages discovered by the engines are read
+// into the local index. Crawling is what makes results answerable later without
+// a live engine: extracted page text is stored and searched locally.
+type WebSearchCrawlConfig struct {
+	Enabled          bool          `mapstructure:"enabled"`
+	MaxPagesPerQuery int           `mapstructure:"maxPagesPerQuery"`
+	PageTimeout      time.Duration `mapstructure:"pageTimeout"`
+	PerHostDelay     time.Duration `mapstructure:"perHostDelay"`
+	MaxPageBytes     int64         `mapstructure:"maxPageBytes"`
 }
 
 // BillingConfig controls metered Personality usage. Amounts are decimal strings
@@ -257,6 +300,10 @@ func Load(configPath string) (*Config, error) {
 	if err := validateOAuthConfig(&cfg); err != nil {
 		return nil, err
 	}
+	normalizeWebSearchConfig(&cfg)
+	if err := validateWebSearchConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -301,6 +348,19 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("oauth.clientId", "")
 	v.SetDefault("oauth.clientSecret", "")
 	v.SetDefault("oauth.scopes", []string{"*"})
+	v.SetDefault("webSearch.enabled", false)
+	v.SetDefault("webSearch.defaultLimit", 5)
+	v.SetDefault("webSearch.maxLimit", 10)
+	v.SetDefault("webSearch.timeout", 15*time.Second)
+	v.SetDefault("webSearch.cacheTTL", 5*time.Minute)
+	v.SetDefault("webSearch.language", "")
+	v.SetDefault("webSearch.userAgent", "")
+	v.SetDefault("webSearch.engines", []WebSearchEngineConfig{})
+	v.SetDefault("webSearch.crawl.enabled", true)
+	v.SetDefault("webSearch.crawl.maxPagesPerQuery", 3)
+	v.SetDefault("webSearch.crawl.pageTimeout", 8*time.Second)
+	v.SetDefault("webSearch.crawl.perHostDelay", 1*time.Second)
+	v.SetDefault("webSearch.crawl.maxPageBytes", int64(2<<20))
 	v.SetDefault("agents.dir", "")
 	v.SetDefault("agents.items", []AgentConfig{})
 	v.SetDefault("providersDir", "")
@@ -454,6 +514,110 @@ func hasAbility(abilities []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// defaultWebSearchEngines are used when the feature is enabled without an
+// explicit engine list. DuckDuckGo's no-JavaScript endpoint is the default: it
+// answers server-side requests with a parseable result page. Bing is supported
+// but opt-in, because it replies to longer queries with HTTP 200 pages about
+// unrelated topics.
+var defaultWebSearchEngines = []string{"duckduckgo"}
+
+// normalizeWebSearchConfig fills in defaults, resolves the default engine set,
+// and clamps inconsistent values so runtime search behavior never depends on a
+// zero-valued config.
+func normalizeWebSearchConfig(cfg *Config) {
+	if cfg.WebSearch.DefaultLimit < 1 {
+		cfg.WebSearch.DefaultLimit = 5
+	}
+	if cfg.WebSearch.MaxLimit < cfg.WebSearch.DefaultLimit {
+		cfg.WebSearch.MaxLimit = cfg.WebSearch.DefaultLimit
+	}
+	if cfg.WebSearch.Timeout <= 0 {
+		cfg.WebSearch.Timeout = 15 * time.Second
+	}
+	if cfg.WebSearch.CacheTTL < 0 {
+		cfg.WebSearch.CacheTTL = 0
+	}
+
+	if cfg.WebSearch.Enabled {
+		kept := make([]WebSearchEngineConfig, 0, len(cfg.WebSearch.Engines))
+		for _, engine := range cfg.WebSearch.Engines {
+			if engine.Enabled != nil && !*engine.Enabled {
+				continue
+			}
+			if strings.TrimSpace(engine.ID) == "" {
+				engine.ID = strings.TrimSpace(engine.Type)
+			}
+			kept = append(kept, engine)
+		}
+		if len(kept) == 0 && len(cfg.WebSearch.Engines) == 0 {
+			for _, engineType := range defaultWebSearchEngines {
+				kept = append(kept, WebSearchEngineConfig{ID: engineType, Type: engineType})
+			}
+		}
+		cfg.WebSearch.Engines = kept
+	}
+
+	if cfg.WebSearch.Crawl.MaxPagesPerQuery <= 0 {
+		cfg.WebSearch.Crawl.MaxPagesPerQuery = 3
+	}
+	if cfg.WebSearch.Crawl.MaxPagesPerQuery > 10 {
+		cfg.WebSearch.Crawl.MaxPagesPerQuery = 10
+	}
+	if cfg.WebSearch.Crawl.PageTimeout <= 0 {
+		cfg.WebSearch.Crawl.PageTimeout = 8 * time.Second
+	}
+	if cfg.WebSearch.Crawl.PerHostDelay < 0 {
+		cfg.WebSearch.Crawl.PerHostDelay = 0
+	}
+	if cfg.WebSearch.Crawl.MaxPageBytes <= 0 {
+		cfg.WebSearch.Crawl.MaxPageBytes = 2 << 20
+	}
+}
+
+func validateWebSearchConfig(cfg *Config) error {
+	requiresSearch := false
+	for _, agent := range cfg.Agents.Items {
+		if agent.Enabled && hasAbility(agent.Abilities, "web_search") {
+			requiresSearch = true
+			break
+		}
+	}
+
+	if !cfg.WebSearch.Enabled {
+		if requiresSearch {
+			return fmt.Errorf("webSearch.enabled must be true when an enabled agent has web_search ability")
+		}
+		return nil
+	}
+	if len(cfg.WebSearch.Engines) == 0 {
+		return fmt.Errorf("webSearch.engines requires at least one engine when webSearch.enabled")
+	}
+
+	seen := make(map[string]bool, len(cfg.WebSearch.Engines))
+	for index, engine := range cfg.WebSearch.Engines {
+		engineType := strings.ToLower(strings.TrimSpace(engine.Type))
+		id := strings.TrimSpace(engine.ID)
+		if id == "" {
+			id = engineType
+		}
+		if id == "" {
+			return fmt.Errorf("webSearch.engines[%d] requires id or type", index)
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate web search engine id %q", id)
+		}
+		seen[id] = true
+
+		switch engineType {
+		case "duckduckgo", "bing", "google":
+		default:
+			return fmt.Errorf("web search engine %q uses unsupported type %q", id, engine.Type)
+		}
+	}
+
+	return nil
 }
 
 func resolvePromptPath(baseDir, sourceDir, promptFile string) (string, error) {

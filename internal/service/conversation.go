@@ -22,6 +22,8 @@ import (
 	"src.solsynth.dev/sosys/persona/internal/database"
 	"src.solsynth.dev/sosys/persona/internal/humanize"
 	"src.solsynth.dev/sosys/persona/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/webindex"
+	"src.solsynth.dev/sosys/persona/internal/websearch"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -63,6 +65,7 @@ type ConversationService struct {
 	billing           *BillingService
 	billingPermission PermissionChecker
 	oauth             *OAuthService
+	webSearch         WebSearchEngine
 	netHTTP           *http.Client
 	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed
 }
@@ -140,6 +143,18 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 		humanize: humanize.NewManager(db),
 		billing:  NewBillingService(db, cfg),
 		netHTTP:  &http.Client{Timeout: 30 * time.Second},
+	}
+	if cfg != nil {
+		searcher, err := websearch.New(cfg.WebSearch, webindex.New(db))
+		switch {
+		case err == nil:
+			svc.webSearch = searcher
+		case errors.Is(err, websearch.ErrNotConfigured):
+			// Web search is optional: without providers the ability and the
+			// endpoint stay unavailable instead of failing startup.
+		default:
+			logging.Log.Error().Err(err).Msg("web search unavailable: invalid webSearch configuration")
+		}
 	}
 	debounceDelay := 2 * time.Second
 	if cfg != nil && cfg.Personality.ChatInboundDebounce > 0 {

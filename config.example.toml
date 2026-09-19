@@ -163,6 +163,39 @@ blockedSkills = ["surfing"]   # can use tasks but not surf
 
 # perk 2 and 3 are unrestricted (no config needed)
 
+# ─── Web search ─────────────────────────────────────────────────────
+# The server queries public search engines directly (no search API or
+# aggregator), merges their results, and crawls what it finds into a local
+# index so later queries can still be answered when engines block.
+[webSearch]
+enabled = false                # required by agents with the "web_search" ability
+defaultLimit = 5
+maxLimit = 10
+timeout = "15s"                # per engine request
+cacheTTL = "5m"                # 0 disables the response cache
+language = "en"
+# userAgent = ""               # defaults to a browser identity; engines block bots
+
+# Defaults to duckduckgo's no-JavaScript endpoint when omitted. "bing" and
+# "google" are supported but opt-in: Bing answers longer queries with results
+# about unrelated topics, and Google serves a JavaScript interstitial to
+# server-side clients unless the egress renders it.
+[[webSearch.engines]]
+type = "duckduckgo"
+
+# [[webSearch.engines]]
+# type = "bing"
+# region = "en-GB"             # ddg: kl, bing: mkt, google: gl
+# timeout = "10s"
+# enabled = false              # keep the engine configured but unused
+
+[webSearch.crawl]
+enabled = true                 # fetch top results into the local index
+maxPagesPerQuery = 3
+pageTimeout = "8s"
+perHostDelay = "1s"            # robots.txt Crawl-delay wins when larger
+maxPageBytes = 2097152
+
 # ─── Agents ─────────────────────────────────────────────────────────
 [agents]
 dir = "./agents.d"
@@ -182,6 +215,7 @@ billingMultiplier = 1.0         # optional multiplier for this agent's priced mo
 # User-scoped abilities (require [oauth] enabled): "files", "wallet",
 # "notifications", "web_reader", "relationships", "search", "stickers",
 # "surveys", "leveling"
+# Web search ability (requires [webSearch] enabled): "web_search"
 enabled = true
 enabled = true
 

@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 
 	"src.solsynth.dev/sosys/persona/internal/agent"
 )
@@ -264,4 +266,224 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		return s.executeUserScopedToolCall(ctx, call)
 	}
 	return s.executeChatToolCall(ctx, def.ID, call)
+}
+
+
+// OpenAIStreamCallbacks forwards the streamed parts of one completion.
+type OpenAIStreamCallbacks struct {
+	OnContent   func(string) error
+	OnReasoning func(string) error
+}
+
+// StreamOpenAICompletion is the streaming variant of CompleteOpenAI. Content
+// and reasoning deltas are forwarded as they arrive, so a plain turn streams
+// live; server-owned tool calls are executed in-process exactly like the
+// non-streaming path; and a round that calls a client-owned tool returns those
+// calls to the caller, who executes them and continues with a new request.
+func (s *ConversationService) StreamOpenAICompletion(ctx context.Context, input OpenAICompletionInput, callbacks OpenAIStreamCallbacks) (*OpenAICompletionResult, error) {
+	if s.billing != nil {
+		if err := s.billing.CheckAccess(ctx, input.AccountID); err != nil {
+			return nil, err
+		}
+	}
+	agentID, modelOverride, err := resolveOpenAIAgentModel(input.AgentID, input.Model)
+	if err != nil {
+		return nil, err
+	}
+	var def agent.Definition
+	if strings.EqualFold(agentID, "raw") {
+		if modelOverride == "" {
+			return nil, fmt.Errorf("raw requires model raw/provider/model")
+		}
+		def = agent.Definition{ID: "raw", Name: "raw", Model: modelOverride, Enabled: true}
+		input.IncludeServerTools = false
+	} else {
+		var ok bool
+		def, ok = s.registry.Get(agentID)
+		if !ok {
+			return nil, fmt.Errorf("agent %q is unavailable", agentID)
+		}
+		if modelOverride != "" {
+			def.Model = modelOverride
+		}
+	}
+	if len(input.Messages) == 0 {
+		return nil, fmt.Errorf("messages is required")
+	}
+	if err := s.AuthorizeOpenAICredential(ctx, input.CredentialID, agentID, def.Model, def); err != nil {
+		return nil, err
+	}
+
+	billingUsageID := strings.TrimSpace(input.BillingUsageID)
+	ownsBilling := billingUsageID == ""
+	billingRunID := strings.TrimSpace(input.BillingRunID)
+	if billingRunID == "" {
+		billingRunID = newID()
+	}
+	if ownsBilling && s.billing != nil {
+		billingUsageID, err = s.billing.AuthorizeRun(ctx, input.AccountID, def)
+		if err != nil {
+			return nil, err
+		}
+	}
+	generationCompleted := false
+	defer func() {
+		if ownsBilling && !generationCompleted && s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
+	}()
+	finish := func(response *schema.Message) (*OpenAICompletionResult, error) {
+		generationCompleted = true
+		if ownsBilling && s.billing != nil {
+			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, response.ResponseMeta.Usage); err != nil {
+				return nil, err
+			}
+		}
+		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: response.ResponseMeta.Usage}, nil
+	}
+
+	messages := append([]*schema.Message(nil), input.Messages...)
+	if strings.TrimSpace(def.SystemPrompt) != "" {
+		messages = append([]*schema.Message{schema.SystemMessage(def.SystemPrompt)}, messages...)
+	}
+	if overlay := renderUserIdentityOverlay(input.AccountName, input.AccountNick); overlay != "" {
+		messages = append(messages, schema.SystemMessage(overlay))
+	}
+	activeSkills := map[string]bool{}
+	serverTools := []*schema.ToolInfo(nil)
+	if input.IncludeServerTools {
+		serverTools = s.buildToolInfos(def, activeSkills, 0)
+	}
+	if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
+		return nil, err
+	}
+	tools := append(append([]*schema.ToolInfo(nil), serverTools...), input.ClientTools...)
+	if len(tools) == 0 {
+		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: def, Messages: messages})
+		if err != nil {
+			return nil, fmt.Errorf("generation failed: %w", err)
+		}
+		defer stream.Close()
+		var content, reasoning strings.Builder
+		var usage *schema.TokenUsage
+		for {
+			chunk, recvErr := stream.Recv()
+			if recvErr != nil {
+				if recvErr == io.EOF {
+					break
+				}
+				return nil, fmt.Errorf("generation failed: %w", recvErr)
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+				usage = chunk.ResponseMeta.Usage
+			}
+			if chunk.Content != "" {
+				content.WriteString(chunk.Content)
+				if callbacks.OnContent != nil {
+					if err := callbacks.OnContent(chunk.Content); err != nil {
+						return nil, err
+					}
+				}
+			}
+			if chunk.ReasoningContent != "" {
+				reasoning.WriteString(chunk.ReasoningContent)
+				if callbacks.OnReasoning != nil {
+					if err := callbacks.OnReasoning(chunk.ReasoningContent); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		return finish(&schema.Message{
+			Role:             schema.Assistant,
+			Content:          strings.TrimSpace(content.String()),
+			ReasoningContent: strings.TrimSpace(reasoning.String()),
+			ResponseMeta:     &schema.ResponseMeta{Usage: usage},
+		})
+	}
+
+	toolModel, err := s.executor.NewToolCallingModel(ctx, def, tools)
+	if err != nil {
+		return nil, err
+	}
+	serverNames := toolNames(serverTools)
+	for {
+		var round *streamedToolRound
+		var roundErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceAllowed)}
+			if attempt > 0 {
+				genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
+			}
+			round, roundErr = s.streamToolRound(ctx, toolModel, messages, genOpts, StreamCallbacks{
+				OnChunk:      callbacks.OnContent,
+				OnReasoning:  callbacks.OnReasoning,
+			})
+			if roundErr == nil {
+				break
+			}
+			if attempt == 0 && (strings.Contains(roundErr.Error(), "thinking mode") || strings.Contains(roundErr.Error(), "tool_choice")) {
+				continue
+			}
+			break
+		}
+		if roundErr != nil {
+			return nil, fmt.Errorf("generation failed: %w", roundErr)
+		}
+		if len(round.calls) == 0 {
+			return finish(&schema.Message{
+				Role:             schema.Assistant,
+				Content:          round.content,
+				ReasoningContent: round.reasoning,
+				ResponseMeta:     &schema.ResponseMeta{Usage: round.usage},
+			})
+		}
+
+		clientCalls := make([]schema.ToolCall, 0, len(round.calls))
+		serverCalls := make([]schema.ToolCall, 0, len(round.calls))
+		for _, call := range round.calls {
+			if serverNames[call.Function.Name] {
+				serverCalls = append(serverCalls, call)
+			} else {
+				clientCalls = append(clientCalls, call)
+			}
+		}
+		if len(clientCalls) > 0 {
+			for _, call := range serverCalls {
+				if _, err := s.executeOpenAIServerTool(ctx, def, input.AccountID, call, activeSkills); err != nil {
+					return nil, err
+				}
+			}
+			return finish(&schema.Message{
+				Role:             schema.Assistant,
+				Content:          round.content,
+				ReasoningContent: round.reasoning,
+				ToolCalls:        clientCalls,
+				ResponseMeta:     &schema.ResponseMeta{Usage: round.usage},
+			})
+		}
+		messages = append(messages, &schema.Message{Role: schema.Assistant, Content: round.content, ToolCalls: round.calls, ReasoningContent: round.reasoning})
+		for _, call := range serverCalls {
+			result, err := s.executeOpenAIServerTool(ctx, def, input.AccountID, call, activeSkills)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
+			if call.Function.Name == "activate_skill" {
+				serverTools = s.buildToolInfos(def, activeSkills, 0)
+				if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
+					return nil, err
+				}
+				tools = append(append([]*schema.ToolInfo(nil), serverTools...), input.ClientTools...)
+				toolModel, err = s.executor.NewToolCallingModel(ctx, def, tools)
+				if err != nil {
+					return nil, err
+				}
+				serverNames = toolNames(serverTools)
+			}
+		}
+	}
 }

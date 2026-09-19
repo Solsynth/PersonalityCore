@@ -68,6 +68,11 @@ type ConversationService struct {
 	webSearch         WebSearchEngine
 	netHTTP           *http.Client
 	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed
+
+	// clientToolWaiters resolves a paused run's pending client-owned tool
+	// calls: key is accountID + "\x00" + runID + "\x00" + toolCallID.
+	clientToolsMu     sync.Mutex
+	clientToolWaiters map[string]chan string
 }
 
 type CreateConversationInput struct {
@@ -91,12 +96,22 @@ type RunInput struct {
 	AttachmentIDs   []string               `json:"attachment_ids,omitempty"`
 	InputParts      []userMessageInputPart `json:"input_parts"`
 	Stream          bool                   `json:"stream"`
+	// ClientTools are tools the caller executes itself. They are handed to the
+	// caller over the run stream (`tool_call.client`) instead of running on
+	// the server; the caller resumes the run with the result. Streamed runs
+	// only: there is no channel to the caller on the non-streaming path.
+	ClientTools     []*schema.ToolInfo     `json:"client_tools,omitempty"`
 	RequestMetadata map[string]any         `json:"-"`
 	// AccountName and AccountNick carry the authenticated caller's identity
 	// from the request context; they are never accepted from the body.
 	AccountName string `json:"-"`
 	AccountNick string `json:"-"`
 }
+
+// clientToolResultTimeout bounds how long a streamed run waits for the caller
+// to resume one paused client-owned tool call before continuing with an error
+// result, so a vanished client cannot wedge the run forever.
+const clientToolResultTimeout = 2 * time.Minute
 
 type AutonomousRunInput struct {
 	ThreadID          string         `json:"thread_id"`
@@ -868,6 +883,61 @@ type StreamCallbacks struct {
 	OnToolCall   func(schema.ToolCall) error
 	OnReasoning  func(string) error
 	OnToolResult func(schema.ToolCall, string) error
+	// OnClientTool is called when the model requests a client-owned tool. The
+	// run pauses on that call until SubmitClientToolResult resumes it; the
+	// caller learns the run id from this callback and answers on
+	// POST /conversations/:id/runs/:runId/tool-results.
+	OnClientTool func(runID string, call schema.ToolCall) error
+}
+
+func clientToolWaiterKey(accountID, runID, toolCallID string) string {
+	return accountID + "\x00" + runID + "\x00" + toolCallID
+}
+
+// SubmitClientToolResult resumes a paused client-owned tool call. It reports
+// whether a matching waiter existed; it never blocks.
+func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountID, runID, toolCallID, result string) (bool, error) {
+	s.clientToolsMu.Lock()
+	defer s.clientToolsMu.Unlock()
+	waiter, ok := s.clientToolWaiters[clientToolWaiterKey(accountID, runID, toolCallID)]
+	if !ok {
+		return false, nil
+	}
+	select {
+	case waiter <- result:
+		return true, nil
+	default:
+		// Already resumed or timed out; nothing to deliver.
+		return false, nil
+	}
+}
+
+// awaitClientToolResult pauses a streamed run on one client-owned call until
+// the caller resumes it. A timeout keeps the run moving with an error result;
+// a cancelled context aborts the run.
+func (s *ConversationService) awaitClientToolResult(ctx context.Context, accountID, runID string, call schema.ToolCall) (string, error) {
+	key := clientToolWaiterKey(accountID, runID, call.ID)
+	waiter := make(chan string, 1)
+	s.clientToolsMu.Lock()
+	if s.clientToolWaiters == nil {
+		s.clientToolWaiters = map[string]chan string{}
+	}
+	s.clientToolWaiters[key] = waiter
+	s.clientToolsMu.Unlock()
+	defer func() {
+		s.clientToolsMu.Lock()
+		delete(s.clientToolWaiters, key)
+		s.clientToolsMu.Unlock()
+	}()
+
+	select {
+	case result := <-waiter:
+		return result, nil
+	case <-time.After(clientToolResultTimeout):
+		return fmt.Sprintf("Error: client tool %q timed out waiting for a result.", call.Function.Name), nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID string, input RunInput, callbacks StreamCallbacks) (*RunResult, error) {
@@ -909,9 +979,15 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	}
 
 	tools := s.ToolsForConversation(agentDef, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
-	if len(tools) > 0 {
+	if len(input.ClientTools) > 0 {
+		if err := rejectToolNameCollisions(tools, input.ClientTools); err != nil {
+			_ = s.FailRun(ctx, run, err)
+			return nil, err
+		}
+	}
+	if len(tools) > 0 || len(input.ClientTools) > 0 {
 		streamed, usage, toolErr := s.streamWithGeneralTools(
-			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent,
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, input.ClientTools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent,
 		)
 		if toolErr != nil {
 			_ = s.FailRun(ctx, run, toolErr)

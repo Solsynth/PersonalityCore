@@ -703,16 +703,21 @@ func (s *ConversationService) streamWithGeneralTools(
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
+	clientTools []*schema.ToolInfo,
 	perkLevel int32,
 	solarBound bool,
 	callbacks StreamCallbacks,
 	finalReasoning *strings.Builder,
 ) (string, *schema.TokenUsage, error) {
 	activeSkills := map[string]bool{}
-	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
+	// Client tools ride alongside the server tools so the model can call them;
+	// only the server-owned subset is executed here.
+	allTools := append(append([]*schema.ToolInfo(nil), tools...), clientTools...)
+	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, allTools)
 	if err != nil {
 		return "", nil, err
 	}
+	clientNames := toolNames(clientTools)
 
 	thread, err := s.GetConversation(ctx, accountID, threadID)
 	if err != nil {
@@ -786,6 +791,32 @@ func (s *ConversationService) streamWithGeneralTools(
 				Str("tool_call_id", call.ID).
 				Str("tool_arguments", call.Function.Arguments).
 				Msg("executing streamed tool call")
+			if clientNames[call.Function.Name] {
+				// A client-owned call is a protocol handoff: pause the run,
+				// tell the caller, and wait for the resumed result.
+				if callbacks.OnClientTool != nil {
+					if err := callbacks.OnClientTool(runID, call); err != nil {
+						return "", nil, err
+					}
+				}
+				clientResult, clientErr := s.awaitClientToolResult(ctx, accountID, runID, call)
+				if clientErr != nil {
+					return "", nil, clientErr
+				}
+				if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", clientResult, nil, map[string]any{
+					"tool_call_id": call.ID,
+					"tool_name":    call.Function.Name,
+				}); err != nil {
+					return "", nil, err
+				}
+				if callbacks.OnToolResult != nil {
+					if err := callbacks.OnToolResult(call, clientResult); err != nil {
+						return "", nil, err
+					}
+				}
+				messages = append(messages, schema.ToolMessage(clientResult, call.ID, schema.WithToolName(call.Function.Name)))
+				continue
+			}
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)

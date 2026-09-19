@@ -39,6 +39,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.POST("/:id/runs", func(c *gin.Context) { createRun(c, conversations) })
 		conv.GET("/:id/runs", func(c *gin.Context) { listRuns(c, conversations) })
 		conv.GET("/:id/runs/:runId", func(c *gin.Context) { getRun(c, conversations) })
+		conv.POST("/:id/runs/:runId/tool-results", func(c *gin.Context) { submitRunToolResult(c, conversations) })
 		conv.POST("/:id/compact", func(c *gin.Context) { compactConversation(c, conversations) })
 	}
 	RegisterResponseRoutes(r, conversations)
@@ -166,16 +167,63 @@ func addMessage(c *gin.Context, conversations *service.ConversationService) {
 	c.JSON(http.StatusCreated, message)
 }
 
+// submitRunToolResult resumes a streamed run paused on a client-owned tool
+// call: the run loop is waiting on the waiter keyed by this call, and the
+// result is fed back exactly like a server tool result (persisted + replayed
+// as tool_call.completed on the stream).
+func submitRunToolResult(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		ToolCallID string `json:"tool_call_id"`
+		Result     string `json:"result"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(input.ToolCallID) == "" || strings.TrimSpace(input.Result) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tool_call_id and result are required"})
+		return
+	}
+	resumed, err := conversations.SubmitClientToolResult(c.Request.Context(), accountID, c.Param("runId"), strings.TrimSpace(input.ToolCallID), input.Result)
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	if !resumed {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending client tool call with this id"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func createRun(c *gin.Context, conversations *service.ConversationService) {
 	accountID, ok := identity.RequireAccountID(c)
 	if !ok {
 		return
 	}
 
-	var input service.RunInput
-	if err := c.ShouldBindJSON(&input); err != nil {
+	// Client tools arrive in the OpenAI function-tool shape (the same wire the
+	// stateless completions endpoint uses) and are normalized here.
+	var wire struct {
+		service.RunInput
+		ClientTools []openAITool `json:"client_tools"`
+	}
+	if err := c.ShouldBindJSON(&wire); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	input := wire.RunInput
+	if len(wire.ClientTools) > 0 {
+		converted, err := parseOpenAITools(wire.ClientTools)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.ClientTools = converted
 	}
 	input.AccountName, input.AccountNick = identity.GetAccountProfile(c)
 
@@ -277,6 +325,17 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 				"name":      call.Function.Name,
 				"arguments": call.Function.Arguments,
 				"result":    result,
+			})
+			return nil
+		},
+		OnClientTool: func(runID string, call schema.ToolCall) error {
+			// The run pauses here; the caller executes the tool on its own
+			// connection and resumes it on /runs/:runId/tool-results.
+			writeSSE(c, "tool_call.client", gin.H{
+				"run_id":    runID,
+				"id":        call.ID,
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
 			})
 			return nil
 		},

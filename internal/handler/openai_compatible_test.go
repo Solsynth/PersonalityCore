@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
@@ -48,7 +50,7 @@ func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {
 		t.Fatalf("response reasoning_content missing: %#v", message)
 	}
 
-	chunkPayload, err := json.Marshal(newOpenAIChunk("deepseek/reasoner", reasoning[0]))
+	chunkPayload, err := json.Marshal(openAIStreamFrame(gin.H{"reasoning_content": "thought it through"}, ""))
 	if err != nil {
 		t.Fatalf("marshal chunk error = %v", err)
 	}
@@ -59,6 +61,10 @@ func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {
 	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
 	if delta["reasoning_content"] != "thought it through" {
 		t.Fatalf("chunk reasoning_content missing: %#v", delta)
+	}
+	terminal := openAIStreamFrame(gin.H{"role": "assistant"}, "stop")
+	if terminal["choices"].([]gin.H)[0]["finish_reason"] != "stop" {
+		t.Fatalf("terminal finish_reason missing: %#v", terminal)
 	}
 
 	tool := openAITool{Type: "function"}

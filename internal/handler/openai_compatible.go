@@ -91,11 +91,16 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 			Nick:      accountNick,
 		})
 	}
-	result, err := conversations.CompleteOpenAI(ctx, service.OpenAICompletionInput{
+	input := service.OpenAICompletionInput{
 		AgentID: request.AgentID, AccountID: accountID, CredentialID: credentialID, Model: request.Model, Messages: messages,
 		ClientTools: tools, IncludeServerTools: request.ServerTools && credentialID == "",
 		AccountName: accountName, AccountNick: accountNick,
-	})
+	}
+	if request.Stream {
+		streamOpenAIChatCompletion(c, conversations, input)
+		return
+	}
+	result, err := conversations.CompleteOpenAI(ctx, input)
 	if err != nil {
 		openAIError(c, openAICompletionErrorStatus(err), err.Error())
 		return
@@ -106,16 +111,64 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 			return
 		}
 	}
-	response := newOpenAIResponse(result.Model, result.Message)
-	if request.Stream {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		writeOpenAIData(c, newOpenAIChunk(result.Model, result.Message))
+	c.JSON(http.StatusOK, newOpenAIResponse(result.Model, result.Message))
+}
+
+// streamOpenAIChatCompletion writes the OpenAI SSE stream: content and
+// reasoning deltas are forwarded as they are generated, then one terminal
+// chunk carries the finish reason and any client-owned tool calls the caller
+// must execute itself.
+func streamOpenAIChatCompletion(c *gin.Context, conversations *service.ConversationService, input service.OpenAICompletionInput) {
+	ctx := c.Request.Context()
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Writer.Flush()
+
+	result, err := conversations.StreamOpenAICompletion(ctx, input, service.OpenAIStreamCallbacks{
+		OnContent: func(text string) error {
+			writeOpenAIData(c, openAIStreamFrame(gin.H{"content": text}, ""))
+			return nil
+		},
+		OnReasoning: func(text string) error {
+			writeOpenAIData(c, openAIStreamFrame(gin.H{"reasoning_content": text}, ""))
+			return nil
+		},
+	})
+	if err != nil {
+		writeOpenAIData(c, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 		_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 		return
 	}
-	c.JSON(http.StatusOK, response)
+	if input.CredentialID != "" {
+		if err := conversations.RecordOpenAICredentialUsage(ctx, input.CredentialID, result.Definition, result.Usage); err != nil {
+			writeOpenAIData(c, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+		}
+	}
+
+	delta := gin.H{"role": "assistant"}
+	finishReason := "stop"
+	if len(result.Message.ToolCalls) > 0 {
+		calls := make([]gin.H, 0, len(result.Message.ToolCalls))
+		for index, call := range result.Message.ToolCalls {
+			calls = append(calls, gin.H{"index": index, "id": call.ID, "type": firstNonEmpty(call.Type, "function"), "function": gin.H{"name": call.Function.Name, "arguments": call.Function.Arguments}})
+		}
+		delta["tool_calls"] = calls
+		finishReason = "tool_calls"
+	}
+	writeOpenAIData(c, openAIStreamFrame(delta, finishReason))
+	_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+	c.Writer.Flush()
+}
+
+// openAIStreamFrame wraps one SSE delta (live content/reasoning, or the
+// terminal role/tool_calls frame) in the OpenAI chunk envelope.
+func openAIStreamFrame(delta gin.H, finishReason string) gin.H {
+	choice := gin.H{"index": 0, "delta": delta}
+	if finishReason != "" {
+		choice["finish_reason"] = finishReason
+	}
+	return gin.H{"choices": []gin.H{choice}}
 }
 
 func openAIRequestIdentity(c *gin.Context, conversations *service.ConversationService) (string, string, bool) {
@@ -310,29 +363,6 @@ func newOpenAIResponse(model string, message *schema.Message) gin.H {
 		response["choices"].([]gin.H)[0]["message"].(gin.H)["reasoning_content"] = message.ReasoningContent
 	}
 	return response
-}
-
-func newOpenAIChunk(model string, message *schema.Message) gin.H {
-	delta := gin.H{"role": "assistant"}
-	if message.Content != "" {
-		delta["content"] = message.Content
-	}
-	if len(message.ToolCalls) > 0 {
-		calls := make([]gin.H, 0, len(message.ToolCalls))
-		for index, call := range message.ToolCalls {
-			calls = append(calls, gin.H{"index": index, "id": call.ID, "type": firstNonEmpty(call.Type, "function"), "function": gin.H{"name": call.Function.Name, "arguments": call.Function.Arguments}})
-		}
-		delta["tool_calls"] = calls
-	}
-	finishReason := "stop"
-	if len(message.ToolCalls) > 0 {
-		finishReason = "tool_calls"
-	}
-	chunk := gin.H{"id": "chatcmpl-" + ulid.Make().String(), "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []gin.H{{"index": 0, "delta": delta, "finish_reason": finishReason}}}
-	if message.ReasoningContent != "" {
-		chunk["choices"].([]gin.H)[0]["delta"].(gin.H)["reasoning_content"] = message.ReasoningContent
-	}
-	return chunk
 }
 
 func writeOpenAIData(c *gin.Context, value any) {

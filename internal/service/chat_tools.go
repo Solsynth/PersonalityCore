@@ -26,6 +26,7 @@ const noReplyToolName = "no_reply"
 const getChatMessageToolName = "get_chat_message"
 const getUserProfileToolName = "get_user_profile"
 const getCurrentUserProfileToolName = "get_current_user_profile"
+const setConversationTitleToolName = "set_conversation_title"
 const listUserPostsToolName = "list_user_posts"
 const getPostToolName = "get_post"
 const listPostRepliesToolName = "list_post_replies"
@@ -110,18 +111,17 @@ func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int3
 // outbound tools are only meaningful for synthetic Solar-bound threads; a
 // normal REST conversation must not encourage the agent to message elsewhere.
 func (s *ConversationService) ToolsForConversation(def agent.Definition, perkLevel int32, solarBound bool) []*schema.ToolInfo {
-	tools := s.buildToolInfos(def, nil, perkLevel)
-	if solarBound {
-		return tools
-	}
-	filtered := tools[:0]
-	for _, tool := range tools {
-		if isSolarOutboundToolName(tool.Name) {
-			continue
-		}
-		filtered = append(filtered, tool)
-	}
-	return filtered
+	return s.conversationToolInfos(def, nil, perkLevel, solarBound)
+}
+
+// conversationToolInfos builds the tool set for the persisted conversation run
+// path. set_conversation_title is not ability-gated: every conversation run
+// exposes it so the agent can name the thread it is running in. The stateless
+// OpenAI-compatible path builds from buildToolInfos directly, so it never
+// advertises a title tool it could not persist.
+func (s *ConversationService) conversationToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32, solarBound bool) []*schema.ToolInfo {
+	tools := s.filterSolarOutboundTools(s.buildToolInfos(def, activeSkills, perkLevel), solarBound)
+	return uniqueToolInfos(append(tools, s.setConversationTitleToolInfo()))
 }
 
 func isSolarOutboundToolName(name string) bool {
@@ -539,13 +539,18 @@ func (s *ConversationService) runWithGeneralTools(
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
-				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
+				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", err
 				}
 			} else if call.Function.Name == getCurrentUserProfileToolName {
 				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
+				if err != nil {
+					return "", err
+				}
+			} else if call.Function.Name == setConversationTitleToolName {
+				result, err = s.executeSetConversationTitleToolCall(ctx, thread, call)
 				if err != nil {
 					return "", err
 				}
@@ -786,13 +791,18 @@ func (s *ConversationService) streamWithGeneralTools(
 				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
 			} else if call.Function.Name == "activate_skill" {
 				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
-				tools = s.filterSolarOutboundTools(s.buildToolInfos(agentDef, activeSkills, perkLevel), solarBound)
+				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", nil, err
 				}
 			} else if call.Function.Name == getCurrentUserProfileToolName {
 				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
+				if err != nil {
+					return "", nil, err
+				}
+			} else if call.Function.Name == setConversationTitleToolName {
+				result, err = s.executeSetConversationTitleToolCall(ctx, thread, call)
 				if err != nil {
 					return "", nil, err
 				}
@@ -1242,6 +1252,24 @@ func (s *ConversationService) getCurrentUserProfileToolInfo() *schema.ToolInfo {
 		Name:        getCurrentUserProfileToolName,
 		Desc:        "Fetch the full profile of the user you are currently talking to: account, profile fields, and local time. Takes no arguments; the user is resolved automatically from the conversation. Use this when you need to know who you are talking to or recall their details.",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+	}
+}
+
+const conversationTitleMaxRunes = 255
+
+// setConversationTitleToolInfo is exposed on every conversation run. It is not
+// ability-gated: naming the current thread is useful to any agent.
+func (s *ConversationService) setConversationTitleToolInfo() *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: setConversationTitleToolName,
+		Desc: "Set the title of the conversation you are currently in. Use it to give the thread a short, descriptive name once the topic is clear; it replaces any previous title.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"title": {
+				Type:     schema.String,
+				Desc:     "New conversation title. Keep it short and specific, without quotes or trailing punctuation. Titles longer than 255 characters are truncated.",
+				Required: true,
+			},
+		}),
 	}
 }
 
@@ -1753,6 +1781,39 @@ func (s *ConversationService) executeGetCurrentUserProfileToolCall(
 		return nil, err
 	}
 	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
+}
+
+func (s *ConversationService) executeSetConversationTitleToolCall(ctx context.Context, thread *database.ConversationThread, call schema.ToolCall) (*executedChatToolResult, error) {
+	var input struct {
+		Title string `json:"title"`
+	}
+	if err := decodeToolCallArgs(call, &input); err != nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": err.Error()})
+	}
+	runes := []rune(strings.TrimSpace(input.Title))
+	if len(runes) == 0 {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": "title must not be empty"})
+	}
+	if len(runes) > conversationTitleMaxRunes {
+		runes = runes[:conversationTitleMaxRunes]
+	}
+	title := string(runes)
+	if thread == nil || s.db == nil {
+		return toolResultJSON(call, map[string]any{"ok": false, "error": "no conversation is available to title"})
+	}
+	if err := s.db.WithContext(ctx).Model(&database.ConversationThread{}).Where("id = ?", thread.ID).Update("title", title).Error; err != nil {
+		return nil, err
+	}
+	// Keep the in-memory row in sync: the tool loops still hold this pointer and
+	// createMessageWithMetadata saves it afterwards, which would re-derive a
+	// placeholder title over a title that is no longer blank/placeholder.
+	thread.Title = title
+	logging.Log.Info().
+		Str("conversation_id", thread.ID).
+		Str("tool_call_id", call.ID).
+		Str("title", title).
+		Msg("conversation title set by tool call")
+	return toolResultJSON(call, map[string]any{"ok": true, "title": title})
 }
 
 func (s *ConversationService) executeListUserPostsToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {

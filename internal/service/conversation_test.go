@@ -1719,6 +1719,116 @@ func TestStreamRunExecutesStreamedMemoryToolCall(t *testing.T) {
 	}
 }
 
+func TestStreamRunExecutesSetConversationTitleToolCall(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requestBodies) == 1 {
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-title", "type": "function",
+							"function": map[string]any{"name": setConversationTitleToolName, "arguments": `{"title":"Tea brewing notes"}`},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseStreamData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
+				}},
+			}))
+			return
+		}
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Named this chat."}, "finish_reason": nil,
+			}},
+		}))
+		flush(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+		}))
+	}))
+	defer modelServer.Close()
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:      "titler",
+		Name:    "Titler",
+		Model:   "openai/model",
+		Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	// Start from the auto-title placeholder: the run persists messages after the
+	// tool executes, and those saves must not re-derive a title over the tool's.
+	thread := &database.ConversationThread{
+		ID:        "thread-title-1",
+		AccountID: "acct-1",
+		AgentID:   "titler",
+		Title:     "New conversation",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+		Message: "let's talk about tea",
+	}, StreamCallbacks{})
+	if err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+	if result.ResponseContent != "Named this chat." {
+		t.Fatalf("response content = %q", result.ResponseContent)
+	}
+	if result.Thread.Title != "Tea brewing notes" {
+		t.Fatalf("returned thread title = %q", result.Thread.Title)
+	}
+
+	var stored database.ConversationThread
+	if err := db.First(&stored, "id = ?", thread.ID).Error; err != nil {
+		t.Fatalf("reload thread: %v", err)
+	}
+	if stored.Title != "Tea brewing notes" {
+		t.Fatalf("persisted thread title = %q", stored.Title)
+	}
+}
+
 // sseStreamData wraps a payload as a single SSE data event.
 func sseStreamData(payload map[string]any) string {
 	raw, err := json.Marshal(payload)

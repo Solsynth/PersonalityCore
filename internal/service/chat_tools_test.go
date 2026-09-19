@@ -699,3 +699,85 @@ func TestToolsForConversationFiltersSolarOutboundTools(t *testing.T) {
 		}
 	}
 }
+
+func countToolName(tools []*schema.ToolInfo, name string) int {
+	count := 0
+	for _, tool := range tools {
+		if tool.Name == name {
+			count++
+		}
+	}
+	return count
+}
+
+func TestToolsForConversationAlwaysIncludesTitleTool(t *testing.T) {
+	// The title tool is not ability-gated: every conversation run gets exactly
+	// one copy, in both skill modes.
+	for _, dynamic := range []bool{false, true} {
+		svc := &ConversationService{cfg: &config.Config{
+			Personality: config.PersonalityConfig{DynamicSkills: dynamic},
+		}}
+		def := agent.Definition{ID: "michan", Model: "openai/test", Abilities: []string{}}
+
+		for _, solarBound := range []bool{false, true} {
+			tools := svc.ToolsForConversation(def, 0, solarBound)
+			if got := countToolName(tools, setConversationTitleToolName); got != 1 {
+				t.Fatalf("dynamicSkills=%v solarBound=%v: set_conversation_title appears %d times, want once", dynamic, solarBound, got)
+			}
+		}
+
+		// buildToolInfos backs the stateless OpenAI-compatible path, which never
+		// persists a conversation and must not advertise a title tool.
+		if got := countToolName(svc.buildToolInfos(def, nil, 0), setConversationTitleToolName); got != 0 {
+			t.Fatalf("dynamicSkills=%v: buildToolInfos leaked %d set_conversation_title tools", dynamic, got)
+		}
+	}
+}
+
+func TestExecuteSetConversationTitleToolCallPersistsTrimmedTitle(t *testing.T) {
+	svc := newTestConversationService(t)
+	ctx := context.Background()
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "acct-1", AgentID: "michan", Title: "New conversation"}
+	if err := svc.db.WithContext(ctx).Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	result, err := svc.executeSetConversationTitleToolCall(ctx, thread, schema.ToolCall{
+		Function: schema.FunctionCall{Name: setConversationTitleToolName, Arguments: `{"title":"  Tea brewing notes  "}`},
+	})
+	if err != nil {
+		t.Fatalf("executeSetConversationTitleToolCall() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"ok":true`) {
+		t.Fatalf("expected success result, got %s", result.Content)
+	}
+
+	var stored database.ConversationThread
+	if err := svc.db.WithContext(ctx).First(&stored, "id = ?", thread.ID).Error; err != nil {
+		t.Fatalf("reload thread: %v", err)
+	}
+	if stored.Title != "Tea brewing notes" {
+		t.Fatalf("persisted title = %q", stored.Title)
+	}
+	if thread.Title != "Tea brewing notes" {
+		t.Fatalf("in-memory title = %q, must track the persisted value", thread.Title)
+	}
+}
+
+func TestExecuteSetConversationTitleToolCallRejectsEmptyTitle(t *testing.T) {
+	svc := newTestConversationService(t)
+	thread := &database.ConversationThread{ID: "thread-1", AccountID: "acct-1", AgentID: "michan", Title: "Keep me"}
+
+	result, err := svc.executeSetConversationTitleToolCall(context.Background(), thread, schema.ToolCall{
+		Function: schema.FunctionCall{Name: setConversationTitleToolName, Arguments: `{"title":"   "}`},
+	})
+	if err != nil {
+		t.Fatalf("executeSetConversationTitleToolCall() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"ok":false`) {
+		t.Fatalf("expected soft failure result, got %s", result.Content)
+	}
+	if thread.Title != "Keep me" {
+		t.Fatalf("empty title must not change the thread, got %q", thread.Title)
+	}
+}

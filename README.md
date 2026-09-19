@@ -728,6 +728,15 @@ curl -X POST http://localhost:8090/api/conversations/CONVERSATION_ID/runs \
   }'
 ```
 
+### Conversation title tool
+
+Every persisted conversation run exposes the `set_conversation_title` tool, regardless of the
+agent's abilities. The model can call it with a `title` argument to rename the thread it is
+running in; PersonalityCore trims the value, truncates it to 255 characters, and persists it on
+`conversation_threads.title`. The refreshed title is returned on the run result's `thread` object.
+The stateless `/v1/chat/completions` path never advertises this tool because it does not persist
+conversations.
+
 ### Vision / multimodal run
 
 `POST /api/conversations/:id/runs` also accepts `input_parts` for multimodal user input.

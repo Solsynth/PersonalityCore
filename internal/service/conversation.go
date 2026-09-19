@@ -247,6 +247,17 @@ func (s *ConversationService) GetConversation(ctx context.Context, accountID, th
 	return &thread, nil
 }
 
+// reloadThread re-reads a conversation after generation. Tool calls can change
+// persisted thread fields (set_conversation_title) that the caller's pre-run
+// pointer never observes; on a read failure the caller's pointer is kept.
+func (s *ConversationService) reloadThread(ctx context.Context, accountID, threadID string, current *database.ConversationThread) *database.ConversationThread {
+	refreshed, err := s.GetConversation(ctx, accountID, threadID)
+	if err != nil {
+		return current
+	}
+	return refreshed
+}
+
 func (s *ConversationService) ListMessages(ctx context.Context, accountID, threadID string, input ListInput) ([]database.ConversationMessage, int64, error) {
 	if _, err := s.GetConversation(ctx, accountID, threadID); err != nil {
 		return nil, 0, err
@@ -740,6 +751,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		return nil, err
 	}
 	s.recordBilling(ctx, run, agentDef, billingUsage)
+	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, responseContent, requestMessage.ID, run.ID); err != nil {
 			return nil, err
@@ -982,6 +994,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		return nil, err
 	}
 	s.recordBilling(ctx, run, agentDef, billingUsage)
+	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, builder.String(), requestMessage.ID, run.ID); err != nil {
 			return nil, err

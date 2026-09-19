@@ -858,8 +858,75 @@ POST /api/web/search
 |--------|---------|
 | 200 | Results returned. |
 | 400 | `query` is empty or `freshness` is not a supported window. |
+| 402 | The account cannot pay for a billed engine: blacklisted, over its golds limit, or without a payment wallet. |
 | 502 | Every engine failed and the local index had nothing to answer with. |
 | 503 | Web search is not configured (`webSearch.enabled = false` or no engines). |
+
+**Billing**
+
+Engines configured with a `price` (the API-backed `exa` and `tavily`) cost that
+amount in golds per query they answered, charged to the authenticated account.
+The response reports what was charged:
+
+```json
+"charges": [{"engine": "exa", "amount": "1.5"}]
+```
+
+`charges` is omitted when the answer came from a free engine, from the response
+cache, or from the local index — a search only costs golds when it actually
+reached a priced engine. Charges land in the same ledger as model usage (with
+`web_search/<engine>` as the model column), count toward the hourly and daily
+golds limits, and settle on the normal billing cycle.
+
+### Running the search on the client
+
+Search engines challenge datacenter egresses, so a client on a residential
+connection can search where the server cannot. The hybrid tool path already
+supports this: any tool the server does not own is handed back to the caller
+instead of being executed.
+
+Declare the tool on `POST /api/openai/chat/completions` (or the Responses API,
+which resumes through `tool_outputs`):
+
+```json
+{
+  "model": "server-maid",
+  "messages": [{"role": "user", "content": "What changed in PostgreSQL 18?"}],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "web_search",
+        "description": "Search the public web. Returns ranked results with a title, URL, and snippet for each hit.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {"type": "string", "description": "The search query."},
+            "limit": {"type": "integer", "description": "Maximum number of results to return."},
+            "freshness": {"type": "string", "enum": ["day", "week", "month", "year"]},
+            "domains": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ]
+}
+```
+
+When the model calls it, the response carries the call in `tool_calls` and the
+server does **not** execute it. Run the search locally (for example against
+`https://html.duckduckgo.com/html/?q=…`), then send the result back as a
+`role: "tool"` message and continue.
+
+Two rules apply:
+
+- The tool name must not collide with a server tool. Do not declare
+  `web_search` for an agent that has the `web_search` ability, or the request is
+  rejected with `client tool "web_search" conflicts with a server tool`. Those
+  agents already search server-side.
+- `limit`, `freshness`, and `domains` are advisory for a client implementation;
+  return whatever shape the model can read as text.
 
 ---
 

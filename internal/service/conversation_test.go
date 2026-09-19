@@ -1517,9 +1517,11 @@ func TestEnsureSolarRoomBindingRefreshesActiveWindowOnOutboundReply(t *testing.T
 }
 
 func TestSolarInboundBatcherCoalescesMessages(t *testing.T) {
-	var flushed [][]ExternalInboundMessage
+	// The batcher flushes from its own goroutine, so batches arrive over a
+	// channel instead of a slice the test would have to synchronize itself.
+	flushed := make(chan []ExternalInboundMessage, 8)
 	batcher := newSnInboundBatcher(20*time.Millisecond, func(_ context.Context, _ string, items []ExternalInboundMessage) error {
-		flushed = append(flushed, append([]ExternalInboundMessage(nil), items...))
+		flushed <- append([]ExternalInboundMessage(nil), items...)
 		return nil
 	})
 
@@ -1545,16 +1547,24 @@ func TestSolarInboundBatcherCoalescesMessages(t *testing.T) {
 		t.Fatalf("enqueue second message: %v", err)
 	}
 
-	time.Sleep(150 * time.Millisecond)
+	var batch []ExternalInboundMessage
+	select {
+	case batch = <-flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a flushed batch")
+	}
 
-	if len(flushed) != 1 {
-		t.Fatalf("expected 1 flushed batch, got %d", len(flushed))
+	if len(batch) != 2 {
+		t.Fatalf("expected 2 batched messages, got %d", len(batch))
 	}
-	if len(flushed[0]) != 2 {
-		t.Fatalf("expected 2 batched messages, got %d", len(flushed[0]))
+	if batch[0].Content != "hello" || batch[1].Content != "world" {
+		t.Fatalf("expected batched messages to preserve order, got %#v", batch)
 	}
-	if flushed[0][0].Content != "hello" || flushed[0][1].Content != "world" {
-		t.Fatalf("expected batched messages to preserve order, got %#v", flushed[0])
+
+	select {
+	case extra := <-flushed:
+		t.Fatalf("expected 1 flushed batch, got an extra one: %#v", extra)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,9 +31,10 @@ import (
 type searchStack struct {
 	*httptest.Server
 
-	mu      sync.Mutex
-	failing bool
-	queries []string
+	mu         sync.Mutex
+	failing    bool
+	queries    []string
+	exaQueries []string
 }
 
 func newSearchStack(t *testing.T) *searchStack {
@@ -56,6 +58,12 @@ func newSearchStack(t *testing.T) *searchStack {
 			fmt.Fprintf(w, `<html><body><ol id="b_results"><li class="b_algo">
 				<h2><a href="%s/article">Upgrading to PostgreSQL 18</a></h2>
 				<div class="b_caption"><p>%s</p></div></li></ol></body></html>`, stack.URL, "Short.")
+		case "/exa-search":
+			stack.mu.Lock()
+			stack.exaQueries = append(stack.exaQueries, r.URL.Path)
+			stack.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"results":[{"title":"PostgreSQL 18 AIO","url":"%s/article","text":"An asynchronous I/O subsystem that improves sequential scans."}]}`, stack.URL)
 		case "/article":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, `<html><head><title>Upgrading to PostgreSQL 18</title></head><body>
@@ -78,6 +86,12 @@ func (s *searchStack) setFailing(failing bool) {
 	s.failing = failing
 }
 
+func (s *searchStack) exaQueryCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.exaQueries)
+}
+
 func (s *searchStack) searchedQueries() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,6 +99,12 @@ func (s *searchStack) searchedQueries() []string {
 }
 
 func newWebSearchRouter(t *testing.T, cfg *config.Config) *gin.Engine {
+	t.Helper()
+	router, _, _ := newWebSearchRouterWithService(t, cfg)
+	return router
+}
+
+func newWebSearchRouterWithService(t *testing.T, cfg *config.Config) (*gin.Engine, *service.ConversationService, *database.DB) {
 	t.Helper()
 	registry, err := agent.NewRegistry(nil)
 	if err != nil {
@@ -100,7 +120,13 @@ func newWebSearchRouter(t *testing.T, cfg *config.Config) *gin.Engine {
 		t.Fatalf("migrate: %v", err)
 	}
 	conversations := service.NewConversationService(db, cfg, registry, nil)
-	return NewRouter(cfg, conversations)
+	return NewRouter(cfg, conversations), conversations, db
+}
+
+type testWalletChecker struct{ exists bool }
+
+func (c testWalletChecker) CheckWalletExists(context.Context, string) (bool, error) {
+	return c.exists, nil
 }
 
 func webSearchConfig(stack *searchStack) *config.Config {
@@ -300,5 +326,79 @@ func TestWebSearchFixtureStillMatchesParser(t *testing.T) {
 		if !strings.Contains(string(body), marker) {
 			t.Fatalf("fixture %s no longer contains %q", fixture, marker)
 		}
+	}
+}
+
+// billedWebSearchConfig charges golds for one API-backed engine.
+func billedWebSearchConfig(stack *searchStack) *config.Config {
+	cfg := &config.Config{
+		Auth:    config.AuthConfig{Offline: true, OfflineAccountID: "local-dev"},
+		Billing: config.BillingConfig{Enabled: true, Currency: "golds"},
+		WebSearch: config.WebSearchConfig{
+			Enabled: true, DefaultLimit: 5, MaxLimit: 10, CacheTTL: 0,
+			Engines: []config.WebSearchEngineConfig{{
+				ID: "exa", Type: "exa", APIKey: "exa-key", Price: "1.5",
+				BaseURL: stack.URL + "/exa-search",
+			}},
+		},
+	}
+	return cfg
+}
+
+func TestWebSearchEndpointChargesGoldsForPaidEngine(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stack := newSearchStack(t)
+	router, conversations, db := newWebSearchRouterWithService(t, billedWebSearchConfig(stack))
+	conversations.Billing().SetWalletChecker(testWalletChecker{exists: true})
+
+	response := postSearch(t, router, `{"query":"postgres 18 asynchronous io"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var payload struct {
+		Charges []struct {
+			Engine string `json:"engine"`
+			Amount string `json:"amount"`
+		} `json:"charges"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Charges) != 1 || payload.Charges[0].Engine != "exa" || payload.Charges[0].Amount != "1.5" {
+		t.Fatalf("response charges = %#v, want the exa price", payload.Charges)
+	}
+
+	var rows []database.BillingUsage
+	if err := db.Where("model = ?", "web_search/exa").Find(&rows).Error; err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d ledger rows, want 1: %#v", len(rows), rows)
+	}
+	if rows[0].AccountID != "local-dev" || rows[0].Currency != "golds" || rows[0].Amount != "1.50000000" {
+		t.Fatalf("unexpected charge: %#v", rows[0])
+	}
+}
+
+func TestWebSearchEndpointRefusesBilledEngineWithoutPaymentWallet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stack := newSearchStack(t)
+	router, conversations, db := newWebSearchRouterWithService(t, billedWebSearchConfig(stack))
+	conversations.Billing().SetWalletChecker(testWalletChecker{exists: false})
+
+	response := postSearch(t, router, `{"query":"postgres 18 asynchronous io"}`)
+	if response.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402: %s", response.Code, response.Body.String())
+	}
+	if stack.exaQueryCount() != 0 {
+		t.Fatal("a search the caller cannot pay for must not reach the paid engine")
+	}
+	var rows []database.BillingUsage
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a refused search must not be charged: %#v", rows)
 	}
 }

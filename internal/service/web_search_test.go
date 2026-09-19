@@ -11,12 +11,14 @@ import (
 
 	"src.solsynth.dev/sosys/persona/internal/agent"
 	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
 	"src.solsynth.dev/sosys/persona/internal/websearch"
 )
 
 type stubWebSearchEngine struct {
 	response  *websearch.Response
 	err       error
+	billed    bool
 	lastQuery websearch.Query
 }
 
@@ -27,6 +29,8 @@ func (e *stubWebSearchEngine) Search(_ context.Context, query websearch.Query) (
 	}
 	return e.response, nil
 }
+
+func (e *stubWebSearchEngine) Billed() bool { return e.billed }
 
 func webSearchCall(arguments string) schema.ToolCall {
 	return schema.ToolCall{
@@ -49,7 +53,7 @@ func toolNamesOf(tools []*schema.ToolInfo) map[string]int {
 func TestSearchWebRequiresConfiguredEngine(t *testing.T) {
 	svc := newTestConversationService(t)
 
-	_, err := svc.SearchWeb(context.Background(), WebSearchInput{Query: "postgres 18"})
+	_, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"})
 	if !errors.Is(err, websearch.ErrNotConfigured) {
 		t.Fatalf("error = %v, want ErrNotConfigured", err)
 	}
@@ -59,7 +63,7 @@ func TestSearchWebForwardsRequestFields(t *testing.T) {
 	engine := &stubWebSearchEngine{response: &websearch.Response{Query: "postgres 18"}}
 	svc := &ConversationService{cfg: &config.Config{}, webSearch: engine}
 
-	if _, err := svc.SearchWeb(context.Background(), WebSearchInput{
+	if _, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{
 		Query:     "  postgres 18  ",
 		Limit:     4,
 		Freshness: "Week",
@@ -155,7 +159,7 @@ func TestExecuteWebSearchToolCallReturnsResults(t *testing.T) {
 	}}
 	svc := &ConversationService{cfg: &config.Config{}, webSearch: engine}
 
-	result, err := svc.executeWebSearchToolCall(context.Background(), webSearchCall(
+	result, err := svc.executeWebSearchToolCall(context.Background(), "acct-1", webSearchCall(
 		`{"query":"postgres 18","limit":3,"freshness":"month","domains":["postgresql.org"]}`,
 	))
 	if err != nil {
@@ -188,7 +192,7 @@ func TestExecuteWebSearchToolCallReportsFailureToTheModel(t *testing.T) {
 	engine := &stubWebSearchEngine{err: errors.New("all web search engines failed: bing: engine returned 503")}
 	svc := &ConversationService{cfg: &config.Config{}, webSearch: engine}
 
-	result, err := svc.executeWebSearchToolCall(context.Background(), webSearchCall(`{"query":"postgres 18"}`))
+	result, err := svc.executeWebSearchToolCall(context.Background(), "acct-1", webSearchCall(`{"query":"postgres 18"}`))
 	if err != nil {
 		t.Fatalf("a failed search must not abort the run: %v", err)
 	}
@@ -200,7 +204,7 @@ func TestExecuteWebSearchToolCallReportsFailureToTheModel(t *testing.T) {
 func TestExecuteWebSearchToolCallRejectsBadArguments(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}, webSearch: &stubWebSearchEngine{}}
 
-	result, err := svc.executeWebSearchToolCall(context.Background(), webSearchCall(`{"query":`))
+	result, err := svc.executeWebSearchToolCall(context.Background(), "acct-1", webSearchCall(`{"query":`))
 	if err != nil {
 		t.Fatalf("executeWebSearchToolCall() error = %v", err)
 	}
@@ -215,5 +219,140 @@ func TestIsWebSearchToolName(t *testing.T) {
 	}
 	if isWebSearchToolName("read_webpage") || isWebSearchToolName("search_accounts") {
 		t.Fatal("unrelated tools must not dispatch to web search")
+	}
+}
+
+// newBilledTestService is a service with billing enabled in golds so charges can
+// be inspected on the ledger.
+func newBilledTestService(t *testing.T, engine WebSearchEngine) (*ConversationService, *database.DB) {
+	t.Helper()
+	registry, err := agent.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	db := openTestDB(t)
+	cfg := &config.Config{Billing: config.BillingConfig{Enabled: true, Currency: "golds"}}
+	svc := NewConversationService(db, cfg, registry, nil)
+	svc.billing.SetWalletChecker(openAICompatibleTestWalletChecker{})
+	svc.webSearch = engine
+	return svc, db
+}
+
+func ledgerRows(t *testing.T, db *database.DB) []database.BillingUsage {
+	t.Helper()
+	var rows []database.BillingUsage
+	if err := db.Where("model LIKE ?", "web_search/%").Find(&rows).Error; err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	return rows
+}
+
+func TestSearchWebChargesGoldsForPaidEngine(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		billed:   true,
+		response: &websearch.Response{Query: "postgres 18", Charges: []websearch.Charge{{Engine: "exa", Amount: "1.5"}}},
+	}
+	svc, db := newBilledTestService(t, engine)
+
+	if _, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+
+	rows := ledgerRows(t, db)
+	if len(rows) != 1 {
+		t.Fatalf("got %d ledger rows, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.AccountID != "acct-1" || row.Model != "web_search/exa" {
+		t.Fatalf("unexpected ledger row: %#v", row)
+	}
+	if row.Currency != "golds" || row.Amount != "1.50000000" || row.OriginalAmount != "1.50000000" {
+		t.Fatalf("unexpected charge: %#v", row)
+	}
+	if row.RunID != nil {
+		t.Fatalf("an action charge is not a run and must not claim a run id: %#v", row.RunID)
+	}
+}
+
+func TestSearchWebChargesEveryBilledEngine(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		billed: true,
+		response: &websearch.Response{Charges: []websearch.Charge{
+			{Engine: "exa", Amount: "1.5"},
+			{Engine: "tavily", Amount: "0.5"},
+		}},
+	}
+	svc, db := newBilledTestService(t, engine)
+
+	if _, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	rows := ledgerRows(t, db)
+	if len(rows) != 2 {
+		t.Fatalf("got %d ledger rows, want 2: %#v", len(rows), rows)
+	}
+}
+
+func TestSearchWebDoesNotChargeFreeOrCachedAnswers(t *testing.T) {
+	scraped := &stubWebSearchEngine{response: &websearch.Response{Query: "postgres 18"}}
+	svc, db := newBilledTestService(t, scraped)
+
+	if _, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if rows := ledgerRows(t, db); len(rows) != 0 {
+		t.Fatalf("a scraped search must stay free, got %#v", rows)
+	}
+
+	// A cache hit made no upstream call, so it carries no charges to record.
+	cached := &stubWebSearchEngine{
+		billed:   true,
+		response: &websearch.Response{Query: "postgres 18", Cached: true},
+	}
+	svc.webSearch = cached
+	if _, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if rows := ledgerRows(t, db); len(rows) != 0 {
+		t.Fatalf("a cached search must stay free, got %#v", rows)
+	}
+}
+
+func TestSearchWebRefusesBilledSearchForBlacklistedAccount(t *testing.T) {
+	engine := &stubWebSearchEngine{billed: true, response: &websearch.Response{}}
+	svc, db := newBilledTestService(t, engine)
+	if err := svc.billing.Blacklist(context.Background(), "acct-1", "unpaid"); err != nil {
+		t.Fatalf("Blacklist() error = %v", err)
+	}
+
+	_, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"})
+	if !errors.Is(err, ErrBillingBlacklisted) {
+		t.Fatalf("error = %v, want ErrBillingBlacklisted", err)
+	}
+	if engine.lastQuery.Text != "" {
+		t.Fatal("a refused search must not reach the engine")
+	}
+	if rows := ledgerRows(t, db); len(rows) != 0 {
+		t.Fatalf("a refused search must not be charged, got %#v", rows)
+	}
+}
+
+func TestWebSearchToolCallChargesTheCaller(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		billed:   true,
+		response: &websearch.Response{Query: "postgres 18", Charges: []websearch.Charge{{Engine: "exa", Amount: "2"}}},
+	}
+	svc, db := newBilledTestService(t, engine)
+
+	result, err := svc.executeWebSearchToolCall(context.Background(), "acct-7", webSearchCall(`{"query":"postgres 18"}`))
+	if err != nil {
+		t.Fatalf("executeWebSearchToolCall() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"ok":true`) {
+		t.Fatalf("unexpected tool output: %s", result.Content)
+	}
+	rows := ledgerRows(t, db)
+	if len(rows) != 1 || rows[0].AccountID != "acct-7" || rows[0].Amount != "2.00000000" {
+		t.Fatalf("unexpected ledger rows: %#v", rows)
 	}
 }

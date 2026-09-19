@@ -45,27 +45,39 @@ type OAuthConfig struct {
 // Agents reach it through the "web_search" ability; the HTTP endpoint is
 // available whenever the feature is enabled.
 type WebSearchConfig struct {
-	Enabled      bool                    `mapstructure:"enabled"`
-	DefaultLimit int                     `mapstructure:"defaultLimit"`
-	MaxLimit     int                     `mapstructure:"maxLimit"`
-	Timeout      time.Duration           `mapstructure:"timeout"`
-	CacheTTL     time.Duration           `mapstructure:"cacheTTL"`
-	Language     string                  `mapstructure:"language"`
-	UserAgent    string                  `mapstructure:"userAgent"`
-	Engines      []WebSearchEngineConfig `mapstructure:"engines"`
-	Crawl        WebSearchCrawlConfig    `mapstructure:"crawl"`
+	Enabled      bool          `mapstructure:"enabled"`
+	DefaultLimit int           `mapstructure:"defaultLimit"`
+	MaxLimit     int           `mapstructure:"maxLimit"`
+	Timeout      time.Duration `mapstructure:"timeout"`
+	CacheTTL     time.Duration `mapstructure:"cacheTTL"`
+	Language     string        `mapstructure:"language"`
+	UserAgent    string        `mapstructure:"userAgent"`
+	// Mode decides how engines are queried: "parallel" (default) queries every
+	// engine at once and merges the results, "prefer" walks them in configured
+	// order and stops at the first that answers, which keeps a paid API from
+	// being billed on every query.
+	Mode    string                  `mapstructure:"mode"`
+	Engines []WebSearchEngineConfig `mapstructure:"engines"`
+	Crawl   WebSearchCrawlConfig    `mapstructure:"crawl"`
 }
 
-// WebSearchEngineConfig is one search engine front end. Type selects the parser
-// and the request shape; baseUrl overrides the engine's public host, which is
-// useful behind a proxy or in tests.
+// WebSearchEngineConfig is one search engine. Type selects the parser and the
+// request shape; scraped engines need only a type, API-backed engines need
+// apiKey, and baseUrl overrides the endpoint for proxies, self-hosted mirrors,
+// and tests.
 type WebSearchEngineConfig struct {
 	ID      string        `mapstructure:"id"`
 	Type    string        `mapstructure:"type"`
 	Enabled *bool         `mapstructure:"enabled"`
+	APIKey  string        `mapstructure:"apiKey"`
 	BaseURL string        `mapstructure:"baseUrl"`
 	Region  string        `mapstructure:"region"`
 	Timeout time.Duration `mapstructure:"timeout"`
+	// Price is what one query through this engine costs the caller, in the
+	// billing currency (normally golds). Empty or "0" means the engine is free.
+	// API-backed engines are required to state it so a paid call is never
+	// silently free.
+	Price string `mapstructure:"price"`
 }
 
 // WebSearchCrawlConfig controls how pages discovered by the engines are read
@@ -355,6 +367,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webSearch.cacheTTL", 5*time.Minute)
 	v.SetDefault("webSearch.language", "")
 	v.SetDefault("webSearch.userAgent", "")
+	v.SetDefault("webSearch.mode", "parallel")
 	v.SetDefault("webSearch.engines", []WebSearchEngineConfig{})
 	v.SetDefault("webSearch.crawl.enabled", true)
 	v.SetDefault("webSearch.crawl.maxPagesPerQuery", 3)
@@ -506,6 +519,27 @@ func validateOAuthConfig(cfg *Config) error {
 	return nil
 }
 
+// validAmount reports whether v is a non-negative decimal amount, the shape the
+// billing ledger stores for a charge.
+func validAmount(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	digits, dot := false, false
+	for _, r := range v {
+		switch {
+		case r >= '0' && r <= '9':
+			digits = true
+		case r == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits
+}
+
 func hasAbility(abilities []string, want string) bool {
 	normalizedWant := strings.TrimSpace(strings.ToLower(want))
 	for _, ability := range abilities {
@@ -538,6 +572,10 @@ func normalizeWebSearchConfig(cfg *Config) {
 	}
 	if cfg.WebSearch.CacheTTL < 0 {
 		cfg.WebSearch.CacheTTL = 0
+	}
+	cfg.WebSearch.Mode = strings.ToLower(strings.TrimSpace(cfg.WebSearch.Mode))
+	if cfg.WebSearch.Mode == "" {
+		cfg.WebSearch.Mode = "parallel"
 	}
 
 	if cfg.WebSearch.Enabled {
@@ -612,9 +650,27 @@ func validateWebSearchConfig(cfg *Config) error {
 
 		switch engineType {
 		case "duckduckgo", "bing", "google":
+		case "exa", "tavily":
+			// API-backed engines answer from any egress, which is what makes web
+			// search usable from a datacenter IP that scraped engines block.
+			if strings.TrimSpace(engine.APIKey) == "" {
+				return fmt.Errorf("web search engine %q requires apiKey", id)
+			}
+			if !validAmount(engine.Price) {
+				return fmt.Errorf("web search engine %q requires price, the amount one query costs in the billing currency (use \"0\" for a free engine)", id)
+			}
 		default:
 			return fmt.Errorf("web search engine %q uses unsupported type %q", id, engine.Type)
 		}
+		if strings.TrimSpace(engine.Price) != "" && !validAmount(engine.Price) {
+			return fmt.Errorf("web search engine %q has an invalid price %q", id, engine.Price)
+		}
+	}
+
+	switch cfg.WebSearch.Mode {
+	case "parallel", "prefer":
+	default:
+		return fmt.Errorf("webSearch.mode must be %q or %q, got %q", "parallel", "prefer", cfg.WebSearch.Mode)
 	}
 
 	return nil

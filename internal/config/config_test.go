@@ -678,3 +678,158 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return content
 }
+
+func TestLoad_WebSearchEngineMode(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+mode = "prefer"
+
+[[webSearch.engines]]
+type = "exa"
+apiKey = "exa-key"
+price = "1.5"
+
+[[webSearch.engines]]
+type = "duckduckgo"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebSearch.Mode != "prefer" {
+		t.Fatalf("mode = %q, want prefer", cfg.WebSearch.Mode)
+	}
+	if cfg.WebSearch.Engines[0].APIKey != "exa-key" || cfg.WebSearch.Engines[0].Price != "1.5" {
+		t.Fatalf("engine credentials not parsed: %#v", cfg.WebSearch.Engines[0])
+	}
+}
+
+func TestLoad_WebSearchModeDefaultsToParallel(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebSearch.Mode != "parallel" {
+		t.Fatalf("mode = %q, want parallel", cfg.WebSearch.Mode)
+	}
+}
+
+func TestLoad_WebSearchValidationRejectsModeAndMissingKey(t *testing.T) {
+	cases := map[string]string{
+		"unknown mode": `
+[webSearch]
+enabled = true
+mode = "sequential"
+
+[[webSearch.engines]]
+type = "duckduckgo"
+`,
+		"api engine without key": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "exa"
+`,
+	}
+	for name, block := range cases {
+		dir := t.TempDir()
+		mainFile := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(mainFile, []byte("[database]\ndsn = \"postgres://example\"\n"+block), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(mainFile); err == nil {
+			t.Fatalf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestLoad_WebSearchAPIEnginePriceRules(t *testing.T) {
+	cases := map[string]string{
+		"api engine without price": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "tavily"
+apiKey = "tvly-key"
+`,
+		"malformed price": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "tavily"
+apiKey = "tvly-key"
+price = "1,5"
+`,
+		"negative price": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "duckduckgo"
+price = "-1"
+`,
+	}
+	for name, block := range cases {
+		dir := t.TempDir()
+		mainFile := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(mainFile, []byte("[database]\ndsn = \"postgres://example\"\n"+block), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(mainFile); err == nil {
+			t.Fatalf("%s: expected a price validation error", name)
+		}
+	}
+
+	// A scraped engine may be priced too, and an API engine may be free.
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "tavily"
+apiKey = "tvly-key"
+price = "0"
+
+[[webSearch.engines]]
+type = "duckduckgo"
+price = "0.25"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebSearch.Engines[1].Price != "0.25" {
+		t.Fatalf("scraped engine price not parsed: %#v", cfg.WebSearch.Engines[1])
+	}
+}

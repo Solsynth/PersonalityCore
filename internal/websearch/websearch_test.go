@@ -323,3 +323,125 @@ func TestCleanTextStripsMarkup(t *testing.T) {
 		}
 	}
 }
+
+func TestPreferModeStopsAtTheFirstEngineThatAnswers(t *testing.T) {
+	paid := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/paid")}}
+	scraper := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/scraped")}}
+	searcher := newTestSearcher(0, paid, scraper)
+	searcher.mode = ModePrefer
+
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Provider != "exa" {
+		t.Fatalf("unexpected results: %#v", response.Results)
+	}
+	if scraper.callCount() != 0 {
+		t.Fatalf("the scraped engine ran %d times despite a paid answer", scraper.callCount())
+	}
+	if len(response.Engines) != 1 || response.Engines[0].Name != "exa" {
+		t.Fatalf("only the engines that ran may be reported: %#v", response.Engines)
+	}
+}
+
+func TestPreferModeFallsThroughWhenAnEngineFails(t *testing.T) {
+	paid := &stubEngine{name: "exa", err: errors.New("engine returned 401")}
+	scraper := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/scraped")}}
+	searcher := newTestSearcher(0, paid, scraper)
+	searcher.mode = ModePrefer
+
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Provider != "duckduckgo" {
+		t.Fatalf("unexpected results: %#v", response.Results)
+	}
+	if len(response.Engines) != 2 || response.Engines[0].Error == "" {
+		t.Fatalf("both attempted engines must be reported: %#v", response.Engines)
+	}
+}
+
+func TestSearcherChargesOnlyPricedEnginesThatAnswered(t *testing.T) {
+	paid := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/paid")}}
+	free := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/free")}}
+	broken := &stubEngine{name: "tavily", err: errors.New("engine returned 401")}
+	searcher := newTestSearcher(0, paid, free, broken)
+	searcher.prices = map[string]string{"exa": "1.5", "tavily": "0.5"}
+
+	if !searcher.Billed() {
+		t.Fatal("a searcher with priced engines must report itself as billed")
+	}
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if len(response.Charges) != 1 {
+		t.Fatalf("charges = %#v, want only the priced engine that answered", response.Charges)
+	}
+	if response.Charges[0].Engine != "exa" || response.Charges[0].Amount != "1.5" {
+		t.Fatalf("unexpected charge: %#v", response.Charges[0])
+	}
+}
+
+func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
+	engine := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/1")}}
+	searcher := newTestSearcher(time.Minute, engine)
+	searcher.prices = map[string]string{"exa": "1"}
+
+	first, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(first.Charges) != 1 {
+		t.Fatalf("a live paid search must be charged: %#v", first.Charges)
+	}
+
+	second, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !second.Cached || len(second.Charges) != 0 {
+		t.Fatalf("a cached search makes no upstream call and must not be charged: %#v", second)
+	}
+
+	// The index fallback answers without calling any engine either.
+	indexSearcher := newTestSearcher(0, &stubEngine{name: "exa", err: errors.New("boom")})
+	indexSearcher.prices = map[string]string{"exa": "1"}
+	indexSearcher.store = &stubStore{hits: []Result{{Title: "stored", URL: "https://example.com/stored", Provider: "index"}}}
+	fallback, err := indexSearcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !fallback.Fallback || len(fallback.Charges) != 0 {
+		t.Fatalf("an index fallback must not be charged: %#v", fallback)
+	}
+}
+
+func TestNewReportsBilledFromConfiguredPrices(t *testing.T) {
+	free := config.WebSearchConfig{
+		Enabled: true,
+		Engines: []config.WebSearchEngineConfig{{Type: "duckduckgo"}, {Type: "bing", Price: "0"}},
+	}
+	searcher, err := New(free, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if searcher.Billed() {
+		t.Fatal("engines without a price must not make search billed")
+	}
+
+	paid := config.WebSearchConfig{
+		Enabled: true,
+		Engines: []config.WebSearchEngineConfig{{Type: "exa", APIKey: "k", Price: "2"}},
+	}
+	searcher, err = New(paid, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !searcher.Billed() {
+		t.Fatal("a priced engine must mark the searcher as billed")
+	}
+}

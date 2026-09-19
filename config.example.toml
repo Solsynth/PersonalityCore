@@ -175,6 +175,9 @@ timeout = "15s"                # per engine request
 cacheTTL = "5m"                # 0 disables the response cache
 language = "en"
 # userAgent = ""               # defaults to a browser identity; engines block bots
+# mode = "parallel"            # "prefer" walks engines in order and stops at the
+                               # first that answers, so a paid API listed first is
+                               # not billed on every query
 
 # Defaults to duckduckgo's no-JavaScript endpoint when omitted. "bing" and
 # "google" are supported but opt-in: Bing answers longer queries with results
@@ -182,6 +185,21 @@ language = "en"
 # server-side clients unless the egress renders it.
 [[webSearch.engines]]
 type = "duckduckgo"
+
+# API-backed engines for datacenter egresses that scraped engines block. List
+# one first with mode = "prefer" above. `price` is what one query through that
+# engine charges the caller, in [billing].currency (normally golds); scraped
+# engines can be priced too, or left free by omitting price.
+# [[webSearch.engines]]
+# type = "exa"
+# apiKey = "YOUR_EXA_KEY"
+# price = "1.5"
+# timeout = "20s"
+
+# [[webSearch.engines]]
+# type = "tavily"
+# apiKey = "YOUR_TAVILY_KEY"
+# price = "0.5"
 
 # [[webSearch.engines]]
 # type = "bing"

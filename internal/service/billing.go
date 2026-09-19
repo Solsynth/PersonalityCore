@@ -177,15 +177,23 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 	if err := s.db.WithContext(ctx).First(&record, "id = ?", usageID).Error; err != nil {
 		return err
 	}
-	policy, err := s.AccountPolicy(ctx, record.AccountID)
+	return s.applyInstantWall(ctx, record.AccountID, record.Currency)
+}
+
+// applyInstantWall settles everything outstanding for a currency once the
+// account has crossed its instant billing wall. Only the configured default
+// currency has a wall: other currencies settle at UTC midnight unless a future
+// policy supplies a currency-specific wall.
+func (s *BillingService) applyInstantWall(ctx context.Context, accountID, currency string) error {
+	if !s.enabled() {
+		return nil
+	}
+	if currency != s.defaultCurrency() {
+		return nil
+	}
+	policy, err := s.AccountPolicy(ctx, accountID)
 	if err != nil {
 		return err
-	}
-	// The legacy/global wall applies to the configured default currency only.
-	// Other currencies settle at UTC midnight unless a future policy supplies a
-	// currency-specific wall.
-	if record.Currency != s.defaultCurrency() {
-		return nil
 	}
 	wall := normalizedDecimal(s.cfg.InstantBillingWall)
 	if policy.InstantBillingWall != nil {
@@ -194,17 +202,78 @@ func (s *BillingService) RecordUsage(ctx context.Context, usageID, runID string,
 	if wall == "0" {
 		return nil
 	}
-	total, err := s.unpaidAmount(ctx, record.AccountID, record.Currency, time.Time{})
+	total, err := s.unpaidAmount(ctx, accountID, currency, time.Time{})
 	if err != nil {
 		return err
 	}
 	if decimalCmp(total, wall) < 0 {
 		return nil
 	}
-	if err := s.chargeAccount(ctx, record.AccountID, record.Currency, "instant billing wall", time.Time{}, time.Time{}); err != nil {
+	return s.chargeAccount(ctx, accountID, currency, "instant billing wall", time.Time{}, time.Time{})
+}
+
+// AuthorizeAction enforces the blacklist, payment wallet, and usage thresholds
+// before a billable action that is not a model generation, such as an
+// API-backed web search. It reserves no ledger row: the caller records the
+// charge with ChargeAction once the action succeeded.
+func (s *BillingService) AuthorizeAction(ctx context.Context, accountID string) error {
+	if s == nil || s.db == nil || strings.TrimSpace(accountID) == "" {
+		return nil
+	}
+	policy, err := s.AccountPolicy(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if policy.Blacklisted {
+		return ErrBillingBlacklisted
+	}
+	if !s.enabled() {
+		return nil
+	}
+	if err := s.requirePaymentWallet(ctx, accountID); err != nil {
+		return err
+	}
+	currency := s.defaultCurrency()
+	now := time.Now().UTC()
+	if err := s.checkUsageLimit(ctx, accountID, currency, now.Truncate(time.Hour), s.usageLimits(policy, true)); err != nil {
+		return err
+	}
+	if err := s.checkUsageLimit(ctx, accountID, currency, utcDay(now), s.usageLimits(policy, false)); err != nil {
 		return err
 	}
 	return nil
+}
+
+// ChargeAction writes one completed billable action to the account ledger.
+// The amount is charged in the configured billing currency and settles through
+// the normal daily or instant-wall path. It is intentionally not tied to a run:
+// the ledger's unique run_id index allows one row per run, so actions such as a
+// web search keep run_id NULL and are only attributed by their action name.
+func (s *BillingService) ChargeAction(ctx context.Context, accountID, action, amount string) error {
+	if !s.enabled() || strings.TrimSpace(accountID) == "" {
+		return nil
+	}
+	value, err := decimal(amount)
+	if err != nil {
+		return fmt.Errorf("charge %s: %w", action, err)
+	}
+	if value.Sign() <= 0 {
+		return nil
+	}
+	currency := s.defaultCurrency()
+	record := &database.BillingUsage{
+		ID:             newID(),
+		AccountID:      accountID,
+		Model:          action,
+		Currency:       currency,
+		Amount:         normalizedDecimal(amount),
+		OriginalAmount: normalizedDecimal(amount),
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
+		return err
+	}
+	return s.applyInstantWall(ctx, accountID, currency)
 }
 
 // nullIfEmpty returns a *string for non-empty values so the unique run_id

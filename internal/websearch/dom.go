@@ -226,7 +226,7 @@ func decodeBingTarget(encoded string) string {
 // results even when an engine returns them.
 var skipHosts = []string{
 	"duckduckgo.com", "google.com", "googleusercontent.com", "gstatic.com",
-	"bing.com", "microsoft.com", "msn.com",
+	"bing.com", "microsoft.com", "msn.com", "exa.ai",
 }
 
 func isSkippableURL(raw string) bool {

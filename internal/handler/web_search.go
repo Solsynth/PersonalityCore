@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"src.solsynth.dev/sosys/persona/internal/identity"
 	"src.solsynth.dev/sosys/persona/internal/service"
 	"src.solsynth.dev/sosys/persona/internal/websearch"
 )
@@ -28,16 +29,25 @@ func webSearch(c *gin.Context, conversations *service.ConversationService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "query is required"})
 		return
 	}
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
 
-	response, err := conversations.SearchWeb(c.Request.Context(), input)
+	response, err := conversations.SearchWeb(c.Request.Context(), accountID, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, websearch.ErrNotConfigured):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		case errors.Is(err, websearch.ErrInvalidQuery):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, service.ErrBillingBlacklisted),
+			errors.Is(err, service.ErrBillingQuotaExceeded),
+			errors.Is(err, service.ErrPaymentWalletRequired):
+			// API-backed search costs golds, so the account must be able to pay.
+			c.JSON(http.StatusPaymentRequired, gin.H{"error": err.Error()})
 		default:
-			// Every provider failed; the upstream is the faulting party.
+			// Every engine failed; the upstream is the faulting party.
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		}
 		return

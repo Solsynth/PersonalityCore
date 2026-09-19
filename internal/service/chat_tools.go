@@ -437,7 +437,7 @@ func (s *ConversationService) runWithChatTools(
 					return "", err
 				}
 			} else if isWebSearchToolName(call.Function.Name) {
-				result, err = s.executeWebSearchToolCall(ctx, call)
+				result, err = s.executeWebSearchToolCall(ctx, accountID, call)
 				if err != nil {
 					return "", err
 				}
@@ -570,7 +570,7 @@ func (s *ConversationService) runWithGeneralTools(
 					return "", err
 				}
 			} else if isWebSearchToolName(call.Function.Name) {
-				result, err = s.executeWebSearchToolCall(ctx, call)
+				result, err = s.executeWebSearchToolCall(ctx, accountID, call)
 				if err != nil {
 					return "", err
 				}
@@ -812,7 +812,7 @@ func (s *ConversationService) streamWithGeneralTools(
 					return "", nil, err
 				}
 			} else if isWebSearchToolName(call.Function.Name) {
-				result, err = s.executeWebSearchToolCall(ctx, call)
+				result, err = s.executeWebSearchToolCall(ctx, accountID, call)
 				if err != nil {
 					return "", nil, err
 				}

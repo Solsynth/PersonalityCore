@@ -28,6 +28,14 @@ const (
 	FreshnessYear  Freshness = "year"
 )
 
+// Engine query modes. ModePrefer keeps a paid API from being billed on every
+// query by only falling through to the remaining engines when it answers
+// nothing.
+const (
+	ModeParallel = "parallel"
+	ModePrefer   = "prefer"
+)
+
 // ErrNotConfigured is returned when the feature has no usable engines.
 var ErrNotConfigured = errors.New("web search is not configured")
 
@@ -60,12 +68,23 @@ type EngineReport struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// Charge is what one engine chargeable per query cost for this search. A search
+// billed through several engines reports one entry each.
+type Charge struct {
+	Engine string `json:"engine"`
+	Amount string `json:"amount"`
+}
+
 // Response is the normalized result set for one query.
 type Response struct {
 	Query   string         `json:"query"`
 	Results []Result       `json:"results"`
 	Engines []EngineReport `json:"engines,omitempty"`
 	Cached  bool           `json:"cached"`
+	// Charges lists the engines this search is billed for, omitted when every
+	// engine that answered is free and when the answer came from the cache or
+	// the local index.
+	Charges []Charge `json:"charges,omitempty"`
 	// Fallback marks a response served from the local page index because every
 	// live engine failed.
 	Fallback bool `json:"fallback,omitempty"`
@@ -96,7 +115,11 @@ type PageStore interface {
 // Searcher queries every configured engine in parallel, merges the results, and
 // optionally crawls the pages it surfaces. It is safe for concurrent use.
 type Searcher struct {
-	engines      []Engine
+	engines []Engine
+	mode    string
+	// prices holds the per-query price of every engine that charges for one,
+	// keyed by engine id. Engines absent from the map are free.
+	prices       map[string]string
 	defaultLimit int
 	maxLimit     int
 	language     string
@@ -124,8 +147,20 @@ func New(cfg config.WebSearchConfig, store PageStore) (*Searcher, error) {
 	if len(engines) == 0 {
 		return nil, fmt.Errorf("%w: no engines configured", ErrNotConfigured)
 	}
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if mode != ModePrefer {
+		mode = ModeParallel
+	}
+	prices := make(map[string]string, len(cfg.Engines))
+	for _, engineCfg := range cfg.Engines {
+		if amount := strings.TrimSpace(engineCfg.Price); amount != "" && amount != "0" {
+			prices[strings.TrimSpace(engineCfg.ID)] = amount
+		}
+	}
 	searcher := &Searcher{
 		engines:      engines,
+		mode:         mode,
+		prices:       prices,
 		defaultLimit: cfg.DefaultLimit,
 		maxLimit:     cfg.MaxLimit,
 		language:     strings.TrimSpace(cfg.Language),
@@ -145,6 +180,12 @@ func (s *Searcher) EngineNames() []string {
 		names = append(names, engine.Name())
 	}
 	return names
+}
+
+// Billed reports whether any configured engine charges per query. Callers use it
+// to decide whether a search needs authorization and a ledger entry.
+func (s *Searcher) Billed() bool {
+	return s != nil && len(s.prices) > 0
 }
 
 // Search runs one query. An engine failure is reported per engine and does not
@@ -168,10 +209,12 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 	key := cacheKey(query, s.engines)
 	if cached, ok := s.cache.get(key); ok {
 		cached.Cached = true
+		// A cached answer made no upstream call, so it is never billed.
+		cached.Charges = nil
 		return &cached, nil
 	}
 
-	outcomes := s.fanOut(ctx, query)
+	outcomes := s.query(ctx, query)
 	perEngine := make([][]Result, 0, len(outcomes))
 	reports := make([]EngineReport, 0, len(outcomes))
 	failures := make([]string, 0, len(outcomes))
@@ -205,7 +248,7 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 	}
 
 	results := mergeResults(perEngine, query.Limit)
-	response := &Response{Query: query.Text, Results: results, Engines: reports}
+	response := &Response{Query: query.Text, Results: results, Engines: reports, Charges: s.chargesFor(outcomes)}
 
 	if s.crawler != nil && len(results) > 0 {
 		crawled, pages := s.crawler.enrich(ctx, results)
@@ -242,6 +285,45 @@ type outcome struct {
 	name    string
 	results []Result
 	err     error
+}
+
+// chargesFor lists what this search owes: every engine that answered without
+// error and is configured with a price. Engines that failed or were never asked
+// are not charged.
+func (s *Searcher) chargesFor(outcomes []outcome) []Charge {
+	var charges []Charge
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
+			continue
+		}
+		if amount, ok := s.prices[outcome.name]; ok {
+			charges = append(charges, Charge{Engine: outcome.name, Amount: amount})
+		}
+	}
+	return charges
+}
+
+// query runs the configured engines according to the configured mode.
+func (s *Searcher) query(ctx context.Context, query Query) []outcome {
+	if s.mode == ModePrefer {
+		return s.queryInOrder(ctx, query)
+	}
+	return s.fanOut(ctx, query)
+}
+
+// queryInOrder asks each engine in configured order and stops at the first one
+// that answers. Engines that were never asked are absent from the outcome list,
+// so a response only reports the engines that actually ran.
+func (s *Searcher) queryInOrder(ctx context.Context, query Query) []outcome {
+	outcomes := make([]outcome, 0, len(s.engines))
+	for _, engine := range s.engines {
+		results, err := engine.Search(ctx, query)
+		outcomes = append(outcomes, outcome{name: engine.Name(), results: results, err: err})
+		if err == nil && len(results) > 0 {
+			break
+		}
+	}
+	return outcomes
 }
 
 func (s *Searcher) fanOut(ctx context.Context, query Query) []outcome {

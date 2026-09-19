@@ -69,6 +69,24 @@ func newEngine(cfg config.WebSearchEngineConfig, root config.WebSearchConfig) (E
 			base = "https://www.google.com"
 		}
 		return &googleEngine{id: id, baseURL: base, region: region, userAgent: userAgent, language: language, client: client}, nil
+	case "tavily":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("web search engine %q requires apiKey", id)
+		}
+		baseURL := strings.TrimSpace(cfg.BaseURL)
+		if baseURL == "" {
+			baseURL = "https://api.tavily.com/search"
+		}
+		return &tavilyEngine{id: id, apiKey: strings.TrimSpace(cfg.APIKey), baseURL: baseURL, client: client}, nil
+	case "exa":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("web search engine %q requires apiKey", id)
+		}
+		baseURL := strings.TrimSpace(cfg.BaseURL)
+		if baseURL == "" {
+			baseURL = "https://api.exa.ai/search"
+		}
+		return &exaEngine{id: id, apiKey: strings.TrimSpace(cfg.APIKey), baseURL: baseURL, client: client}, nil
 	default:
 		return nil, fmt.Errorf("web search engine %q uses unsupported type %q", id, cfg.Type)
 	}

@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"src.solsynth.dev/sosys/personality/internal/tui"
+	"src.solsynth.dev/sosys/persona/internal/tui"
 )
 
 func main() {

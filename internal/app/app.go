@@ -13,14 +13,14 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/grpcsvc"
-	"src.solsynth.dev/sosys/personality/internal/logging"
-	"src.solsynth.dev/sosys/personality/internal/server"
-	"src.solsynth.dev/sosys/personality/internal/service"
-	"src.solsynth.dev/sosys/personality/internal/solar_network"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/grpcsvc"
+	"src.solsynth.dev/sosys/persona/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/server"
+	"src.solsynth.dev/sosys/persona/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/solar_network"
 
 	gen "src.solsynth.dev/sosys/go/proto"
 )

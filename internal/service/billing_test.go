@@ -5,8 +5,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 func TestFloorCurrencyAmountRetainsSubCentRemainder(t *testing.T) {

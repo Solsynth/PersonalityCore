@@ -7,11 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 	sharedauth "src.solsynth.dev/sosys/go/pkg/auth"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/handler"
-	"src.solsynth.dev/sosys/personality/internal/identity"
-	"src.solsynth.dev/sosys/personality/internal/logging"
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/handler"
+	"src.solsynth.dev/sosys/persona/internal/identity"
+	"src.solsynth.dev/sosys/persona/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func NewRouter(cfg *config.Config, conversations *service.ConversationService) *gin.Engine {

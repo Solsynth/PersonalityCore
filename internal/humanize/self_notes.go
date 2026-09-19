@@ -7,7 +7,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/database"
 )
 
 const maxAgentSelfNotes = 12

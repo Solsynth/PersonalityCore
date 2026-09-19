@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/oklog/ulid/v2"
 
-	"src.solsynth.dev/sosys/personality/internal/solar_network"
+	"src.solsynth.dev/sosys/persona/internal/solar_network"
 )
 
 // ─── Tool name constants ───────────────────────────────────────────

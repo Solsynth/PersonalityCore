@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
 
-	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/database"
 )
 
 // ResponseInput describes one native, stateful response turn. A response can

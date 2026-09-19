@@ -12,8 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 
-	"src.solsynth.dev/sosys/personality/internal/identity"
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/identity"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 // RegisterOpenAICompatibleRoutes exposes a stateless OpenAI Chat Completions

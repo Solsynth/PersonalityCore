@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"src.solsynth.dev/sosys/personality/internal/identity"
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/identity"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func RegisterOpenAICredentialRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {

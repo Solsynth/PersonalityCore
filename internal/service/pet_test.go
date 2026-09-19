@@ -11,10 +11,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
 )
 
 func newPetTestService(t *testing.T) *ConversationService {

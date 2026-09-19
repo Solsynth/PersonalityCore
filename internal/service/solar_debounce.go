@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/logging"
 )
 
 type snInboundBatcher struct {

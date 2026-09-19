@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 type Definition struct {

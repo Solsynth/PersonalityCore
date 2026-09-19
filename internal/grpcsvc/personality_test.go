@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func TestMapError(t *testing.T) {

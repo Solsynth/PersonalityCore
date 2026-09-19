@@ -9,9 +9,9 @@ import (
 	"github.com/oklog/ulid/v2"
 	"gorm.io/gorm"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
 )
 
 const petThreadKind = "pet"

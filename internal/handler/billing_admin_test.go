@@ -11,10 +11,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/identity"
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/identity"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func newBillingAdminTestService(t *testing.T) *service.ConversationService {

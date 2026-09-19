@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/database"
 )
 
 var ErrOpenAICredentialUnauthorized = errors.New("invalid AI credential")

@@ -1,4 +1,4 @@
-module src.solsynth.dev/sosys/personality
+module src.solsynth.dev/sosys/persona
 
 go 1.26.3
 

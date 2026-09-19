@@ -3,7 +3,7 @@ package database
 import (
 	"fmt"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

@@ -13,9 +13,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
 )
 
 const PermissionBillingManage = "personality.billing.manage"

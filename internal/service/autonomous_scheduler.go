@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/logging"
 )
 
 type AutonomousWakeScheduler struct {

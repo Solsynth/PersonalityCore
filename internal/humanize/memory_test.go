@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/agent"
 )
 
 func TestStructuredMemorySupersedesChangedFacts(t *testing.T) {

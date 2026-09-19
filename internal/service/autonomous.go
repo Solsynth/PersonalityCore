@@ -8,9 +8,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/logging"
 )
 
 const autonomousAbility = "autonomous"

@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	goopenai "github.com/meguminnnnnnnnn/go-openai"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 type RunRequest struct {

@@ -13,8 +13,8 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/database"
 )
 
 type Manager struct {

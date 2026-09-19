@@ -3,7 +3,7 @@ package service
 import (
 	"strings"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 // PerkLimits holds the resolved global-tier limits for a given perk level.

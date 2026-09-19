@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func TestParseOpenAIRequestSupportsToolHistoryAndJSONSchema(t *testing.T) {

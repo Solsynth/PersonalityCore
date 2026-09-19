@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 func TestAuthMiddleware_OfflineUsesDefaultAccountID(t *testing.T) {

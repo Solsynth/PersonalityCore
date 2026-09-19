@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 func RegisterImageSummaryRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {

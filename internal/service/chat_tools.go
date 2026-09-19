@@ -13,11 +13,11 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
-	"src.solsynth.dev/sosys/personality/internal/logging"
-	"src.solsynth.dev/sosys/personality/internal/solar_network"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/solar_network"
 )
 
 const sendChatToolName = "send_chat_message"

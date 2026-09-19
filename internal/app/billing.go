@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/logging"
 )
 
 // runBillingSettlement catches up any completed UTC days at startup, then

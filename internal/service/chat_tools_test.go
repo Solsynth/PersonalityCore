@@ -8,11 +8,11 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
-	"src.solsynth.dev/sosys/personality/internal/solar_network"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/solar_network"
 )
 
 type stubSolarBridge struct {

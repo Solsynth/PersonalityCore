@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
-	"src.solsynth.dev/sosys/personality/internal/agent"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
 )
 
 func TestMemoryToolsSaveAndSearchUseAccountScopedStore(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"src.solsynth.dev/sosys/personality/internal/app"
-	"src.solsynth.dev/sosys/personality/internal/config"
-	"src.solsynth.dev/sosys/personality/internal/logging"
+	"src.solsynth.dev/sosys/persona/internal/app"
+	"src.solsynth.dev/sosys/persona/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/logging"
 )
 
 func main() {

@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 
-	"src.solsynth.dev/sosys/personality/internal/database"
-	"src.solsynth.dev/sosys/personality/internal/humanize"
+	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
 )
 
 type MemoryInput = humanize.MemoryInput

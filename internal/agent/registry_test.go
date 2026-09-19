@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"src.solsynth.dev/sosys/personality/internal/config"
+	"src.solsynth.dev/sosys/persona/internal/config"
 )
 
 func TestNewRegistry_RejectsDuplicateIDs(t *testing.T) {

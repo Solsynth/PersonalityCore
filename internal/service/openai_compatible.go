@@ -8,7 +8,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/agent"
 )
 
 // OpenAICompletionInput is intentionally stateless: no conversation, message,

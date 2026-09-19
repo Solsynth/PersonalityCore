@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	gen "src.solsynth.dev/sosys/go/proto"
-	"src.solsynth.dev/sosys/personality/internal/service"
+	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
 type EmbeddingService struct {

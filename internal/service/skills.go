@@ -6,7 +6,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"src.solsynth.dev/sosys/personality/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/agent"
 )
 
 func decodeToolCallArgs(call schema.ToolCall, out any) error {

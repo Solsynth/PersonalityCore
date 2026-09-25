@@ -24,6 +24,11 @@ type OpenAICompletionInput struct {
 	Messages           []*schema.Message
 	ClientTools        []*schema.ToolInfo
 	IncludeServerTools bool
+	// Overrides names the server-owned tools the caller runs itself. They
+	// leave the server's list before the collision check, which is what lets
+	// a caller name its replacement exactly as the server named the original:
+	// one name, one owner, and the owner is the caller.
+	Overrides []string
 	// AccountName and AccountNick carry the authenticated caller's identity
 	// from the request context so the model can address the user.
 	AccountName string
@@ -115,7 +120,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 	activeSkills := map[string]bool{}
 	serverTools := []*schema.ToolInfo(nil)
 	if input.IncludeServerTools {
-		serverTools = s.buildToolInfos(def, activeSkills, 0)
+		serverTools = s.callerServerTools(def, activeSkills, callerOverrides(input.Overrides))
 	}
 	if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
 		return nil, err
@@ -176,7 +181,7 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 			}
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
 			if call.Function.Name == "activate_skill" {
-				serverTools = s.buildToolInfos(def, activeSkills, 0)
+				serverTools = s.callerServerTools(def, activeSkills, callerOverrides(input.Overrides))
 				if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
 					return nil, err
 				}
@@ -221,6 +226,20 @@ func resolveOpenAIAgentModel(rawAgentID, rawModel string) (agentID, modelOverrid
 	return parts[0], parts[1] + "/" + parts[2], nil
 }
 
+// callerServerTools is the server's own tool list with the tools this caller
+// has taken over removed.
+//
+// Every place on this path builds the server's tools and then checks them
+// against the caller's, so the filter belongs here rather than at each call
+// site: a collision check that ran against an unfiltered list would reject the
+// caller's replacement for a tool it had already been promised.
+func (s *ConversationService) callerServerTools(def agent.Definition, activeSkills map[string]bool, overrides map[string]bool) []*schema.ToolInfo {
+	if len(overrides) == 0 {
+		return s.buildToolInfos(def, activeSkills, 0)
+	}
+	return s.applyCallerOverrides(s.buildToolInfos(def, activeSkills, 0), overrides)
+}
+
 func rejectToolNameCollisions(server, client []*schema.ToolInfo) error {
 	names := toolNames(server)
 	for _, tool := range client {
@@ -247,7 +266,7 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		// No caller catalogue on the stateless path: there is no conversation
 		// to remember an activation in, and no channel to ask the caller to
 		// load one, so only the server's own skills are advertised.
-		return s.executeListSkillsToolCall(def, activeSkills, 0, nil), nil
+		return s.executeListSkillsToolCall(def, activeSkills, 0, nil, nil), nil
 	case "activate_skill":
 		result, _ := s.executeActivateSkillToolCall(call, activeSkills, def, nil)
 		return result, nil
@@ -356,7 +375,7 @@ func (s *ConversationService) StreamOpenAICompletion(ctx context.Context, input 
 	activeSkills := map[string]bool{}
 	serverTools := []*schema.ToolInfo(nil)
 	if input.IncludeServerTools {
-		serverTools = s.buildToolInfos(def, activeSkills, 0)
+		serverTools = s.callerServerTools(def, activeSkills, callerOverrides(input.Overrides))
 	}
 	if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
 		return nil, err
@@ -477,7 +496,7 @@ func (s *ConversationService) StreamOpenAICompletion(ctx context.Context, input 
 			}
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))
 			if call.Function.Name == "activate_skill" {
-				serverTools = s.buildToolInfos(def, activeSkills, 0)
+				serverTools = s.callerServerTools(def, activeSkills, callerOverrides(input.Overrides))
 				if err := rejectToolNameCollisions(serverTools, input.ClientTools); err != nil {
 					return nil, err
 				}

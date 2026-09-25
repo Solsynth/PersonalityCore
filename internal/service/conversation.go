@@ -85,6 +85,7 @@ type ConversationService struct {
 type clientToolResolution struct {
 	result     string
 	extraTools []*schema.ToolInfo
+	overrides  []string
 }
 
 type CreateConversationInput struct {
@@ -117,6 +118,16 @@ type RunInput struct {
 	// `list_skills` can offer them beside the server's own. Names only: the
 	// tools behind one stay on the caller until the model loads it.
 	ClientSkills []ClientSkill `json:"client_skills,omitempty"`
+	// Overrides names the server-owned tools the caller runs itself, so the
+	// server stops offering its own copies. The caller's reason is its own —
+	// in this app it is that the request then leaves from the user's address
+	// rather than the deployment's — but the effect is the server's to apply:
+	// one tool per job, and the one that stays is the caller's.
+	//
+	// Only names the server actually offers are honoured, so an override can
+	// only ever move a capability the caller has already replaced, never
+	// remove one it has not.
+	Overrides []string `json:"overrides,omitempty"`
 	// Context is system prompt text the caller contributes for this run. It is
 	// appended after the agent's own prompt, and is how a client-side
 	// capability explains itself without the deployment knowing it exists.
@@ -777,7 +788,9 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			return nil, err
 		}
 	} else {
-		tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
+		// No caller channel on this path, so nothing it runs can have been
+		// handed to the caller and nothing can have been replaced.
+		tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), nil)
 		if len(tools) > 0 {
 			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent, activeSkills)
 		} else {
@@ -934,10 +947,10 @@ func clientToolWaiterKey(accountID, runID, toolCallID string) string {
 	return accountID + "\x00" + runID + "\x00" + toolCallID
 }
 
-// SubmitClientToolResult resumes a paused client-owned tool call. [extraTools]
+// SubmitClientToolResult resumes a paused client-owned tool call. [overrides]
 // are tools the call loaded, added to the run before it continues. It reports
 // whether a matching waiter existed; it never blocks.
-func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountID, runID, toolCallID, result string, extraTools []*schema.ToolInfo) (bool, error) {
+func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountID, runID, toolCallID, result string, extraTools []*schema.ToolInfo, overrides []string) (bool, error) {
 	s.clientToolsMu.Lock()
 	defer s.clientToolsMu.Unlock()
 	waiter, ok := s.clientToolWaiters[clientToolWaiterKey(accountID, runID, toolCallID)]
@@ -945,7 +958,11 @@ func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountI
 		return false, nil
 	}
 	select {
-	case waiter <- clientToolResolution{result: result, extraTools: extraTools}:
+	case waiter <- clientToolResolution{
+		result:     result,
+		extraTools: extraTools,
+		overrides:  overrides,
+	}:
 		return true, nil
 	default:
 		// Already resumed or timed out; nothing to deliver.
@@ -1023,7 +1040,10 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		agentDef = effectiveChatAgentDefinition(agentDef)
 	}
 
-	tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
+	// What the caller has taken over. Applied to the server's own list before
+	// the caller's tools join it, so the model is offered one tool per job.
+	overrides := callerOverrides(input.Overrides)
+	tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), overrides)
 	// Everything the caller owns is named through the client namespace before
 	// the model sees it, so a caller-owned name can never shadow a server one.
 	clientTools := namespaceClientTools(input.ClientTools)
@@ -1038,7 +1058,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	}
 	if len(tools) > 0 || len(clientTools) > 0 {
 		streamed, usage, toolErr := s.streamWithGeneralTools(
-			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, clientTools, input.ClientSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent, activeSkills,
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, clientTools, input.ClientSkills, overrides, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent, activeSkills,
 		)
 		if toolErr != nil {
 			_ = s.FailRun(ctx, run, toolErr)

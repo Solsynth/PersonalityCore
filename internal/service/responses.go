@@ -20,7 +20,11 @@ type ResponseInput struct {
 	PreviousResponseID string
 	Message            string
 	ClientTools        []*schema.ToolInfo
-	ToolOutputs        []ResponseToolOutput
+	// Overrides names the server-owned tools the caller runs itself. They
+	// leave the server's list before the collision check, so the caller's
+	// replacement is accepted under the server's own name for it.
+	Overrides   []string
+	ToolOutputs []ResponseToolOutput
 	// AccountName and AccountNick carry the authenticated caller's identity
 	// from the request context so the model can address the user.
 	AccountName string
@@ -137,6 +141,7 @@ func (s *ConversationService) ExecuteResponse(ctx context.Context, accountID str
 		AccountID:          accountID,
 		Messages:           modelMessages,
 		ClientTools:        input.ClientTools,
+		Overrides:          input.Overrides,
 		IncludeServerTools: true,
 		BillingUsageID:     run.BillingUsageID,
 		BillingRunID:       run.ID,

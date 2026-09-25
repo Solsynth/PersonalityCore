@@ -108,7 +108,7 @@ func TestWebSearchSkillIsNotAdvertised(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}}
 
 	// An agent without the ability never sees the skill: it cannot activate it.
-	plain := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0, nil)
+	plain := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0, nil, nil)
 	if strings.Contains(plain.Content, `"web_search"`) {
 		t.Fatalf("agent without the ability was offered the skill: %s", plain.Content)
 	}
@@ -116,7 +116,7 @@ func TestWebSearchSkillIsNotAdvertised(t *testing.T) {
 	// An agent with the ability already holds the tool, so the skill stays out
 	// of the list as well: activating it would add a duplicate tool name.
 	capable := agent.Definition{ID: "researcher", Abilities: []string{"web_search"}}
-	listed := svc.executeListSkillsToolCall(capable, map[string]bool{}, 0, nil)
+	listed := svc.executeListSkillsToolCall(capable, map[string]bool{}, 0, nil, nil)
 	if strings.Contains(listed.Content, `"web_search"`) {
 		t.Fatalf("an already-loaded skill must not be advertised: %s", listed.Content)
 	}

@@ -30,6 +30,10 @@ type openAIChatCompletionRequest struct {
 	Tools       []openAITool    `json:"tools"`
 	ServerTools bool            `json:"server_tools"`
 	Stream      bool            `json:"stream"`
+	// Overrides names the server-owned tools the caller runs itself, so the
+	// caller may name its replacement exactly as the server named the
+	// original without being turned away as a conflict.
+	Overrides []string `json:"overrides"`
 }
 
 type openAIMessage struct {
@@ -94,6 +98,7 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 	input := service.OpenAICompletionInput{
 		AgentID: request.AgentID, AccountID: accountID, CredentialID: credentialID, Model: request.Model, Messages: messages,
 		ClientTools: tools, IncludeServerTools: request.ServerTools && credentialID == "",
+		Overrides:   request.Overrides,
 		AccountName: accountName, AccountNick: accountNick,
 	}
 	if request.Stream {

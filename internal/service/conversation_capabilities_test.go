@@ -134,7 +134,7 @@ func TestActivatedSkillsRoundTripThroughThread(t *testing.T) {
 		t.Fatal("agent missing from the registry")
 	}
 	// The next run must offer the activated skill's tools from its first round.
-	activated := toolNamesOf(svc.conversationToolInfos(def, activatedSkills(&reloaded), 0, false))
+	activated := toolNamesOf(svc.conversationToolInfos(def, activatedSkills(&reloaded), 0, false, nil))
 	for _, name := range []string{memorySearchToolName, memorySaveToolName} {
 		if activated[name] == 0 {
 			t.Fatalf("an activated skill's tools must be built into the run, got %#v", activated)
@@ -142,7 +142,7 @@ func TestActivatedSkillsRoundTripThroughThread(t *testing.T) {
 	}
 	// A conversation that activated nothing gets none of them: the record is
 	// what carries the activation, not the skill's mere existence.
-	fresh := toolNamesOf(svc.conversationToolInfos(def, map[string]bool{}, 0, false))
+	fresh := toolNamesOf(svc.conversationToolInfos(def, map[string]bool{}, 0, false, nil))
 	for _, name := range []string{memorySearchToolName, memorySaveToolName} {
 		if fresh[name] != 0 {
 			t.Fatalf("an unactivated skill's tools leaked into the run, got %#v", fresh)
@@ -273,6 +273,7 @@ func TestStreamRunAddsClientToolsLoadedMidRun(t *testing.T) {
 			context.Background(), "acct-1", got.runID, got.call.ID,
 			`{"ok":true,"skill":"local_device"}`,
 			[]*schema.ToolInfo{clientToolInfo("discount")},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("SubmitClientToolResult() error = %v", err)
@@ -325,7 +326,7 @@ func TestActivateSkillRefusesCallerOwnedSkill(t *testing.T) {
 
 	// The catalogue the model reads offers both routes, each with the tool
 	// that loads it.
-	listed := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0, clientSkills)
+	listed := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0, clientSkills, nil)
 	if !strings.Contains(listed.Content, `"name":"local_device"`) {
 		t.Fatalf("the caller's capability was not listed: %s", listed.Content)
 	}
@@ -347,4 +348,263 @@ func toolNamesInRequest(body map[string]any) map[string]bool {
 		}
 	}
 	return names
+}
+
+// TestCallerOverridesDropOnlyWhatTheServerHas is the safety property of the
+// whole mechanism: an override moves a capability the caller has already
+// replaced, and can never remove one it has not. A name the server does not
+// offer leaves the tool list exactly as it was.
+func TestCallerOverridesDropOnlyWhatTheServerHas(t *testing.T) {
+	svc := &ConversationService{}
+	tools := []*schema.ToolInfo{
+		{Name: listNotificationsToolName},
+		{Name: listFeedToolName},
+		{Name: createPostToolName},
+	}
+
+	kept := toolNamesOf(svc.applyCallerOverrides(tools, callerOverrides([]string{
+		listNotificationsToolName, "not_a_server_tool", "   ",
+	})))
+	if kept[listNotificationsToolName] != 0 {
+		t.Fatalf("an overridden tool was still offered: %#v", kept)
+	}
+	for _, name := range []string{listFeedToolName, createPostToolName} {
+		if kept[name] != 1 {
+			t.Fatalf("%s must survive an unrelated override, got %#v", name, kept)
+		}
+	}
+
+	// Nothing declared, nothing dropped.
+	if got := len(svc.applyCallerOverrides(tools, nil)); got != len(tools) {
+		t.Fatalf("no overrides changed the list: %d tools, want %d", got, len(tools))
+	}
+}
+
+// TestOnlyAFullyReplacedSkillLeavesTheCatalogue keeps a part-replaced skill
+// listed: activating it still adds the tools the caller did not claim, and
+// hiding it would take those away.
+func TestOnlyAFullyReplacedSkillLeavesTheCatalogue(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{}}
+	notifications := skillRegistry["notifications"]
+
+	if svc.skillFullyReplaced(notifications, nil) {
+		t.Fatal("a skill is not replaced when nothing was declared")
+	}
+	if !svc.skillFullyReplaced(notifications, callerOverrides([]string{
+		listNotificationsToolName,
+		getUnreadNotificationCountToolName,
+		markAllNotificationsReadToolName,
+	})) {
+		t.Fatal("a skill whose every tool was replaced must not be advertised")
+	}
+	if svc.skillFullyReplaced(notifications, callerOverrides([]string{
+		listNotificationsToolName,
+	})) {
+		t.Fatal("a part-replaced skill still has tools to add")
+	}
+}
+
+// TestListSkillsHidesFullyReplacedSkillsAndKeepsTheRest is the same property
+// seen from the model's side: the catalogue it reads must not offer to load
+// something the caller already runs, and must go on offering everything else.
+func TestListSkillsHidesFullyReplacedSkillsAndKeepsTheRest(t *testing.T) {
+	def := agent.Definition{Abilities: []string{"chat"}}
+	// The memory skill needs no OAuth session, so it is in this catalogue
+	// either way — which is what makes the claim below testable.
+	svc := &ConversationService{cfg: &config.Config{}}
+
+	listed := func(result *executedChatToolResult) map[string]bool {
+		var payload struct {
+			Skills []struct {
+				Name string `json:"name"`
+			} `json:"skills"`
+		}
+		if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+			t.Fatalf("list_skills answered unreadable JSON: %v (%s)", err, result.Content)
+		}
+		names := make(map[string]bool, len(payload.Skills))
+		for _, skill := range payload.Skills {
+			names[skill.Name] = true
+		}
+		return names
+	}
+
+	if !listed(svc.executeListSkillsToolCall(def, nil, 0, nil, nil))["memory"] {
+		t.Fatal("an unclaimed skill must be listed")
+	}
+
+	replaced := svc.executeListSkillsToolCall(def, nil, 0, nil, callerOverrides([]string{
+		memorySearchToolName,
+		memorySaveToolName,
+		memoryForgetToolName,
+	}))
+	if listed(replaced)["memory"] {
+		t.Fatalf("a fully replaced skill was still offered: %s", replaced.Content)
+	}
+
+	// One tool left unclaimed is enough to keep it listed: activating it still
+	// adds something.
+	partial := svc.executeListSkillsToolCall(def, nil, 0, nil, callerOverrides([]string{
+		memorySearchToolName,
+	}))
+	if !listed(partial)["memory"] {
+		t.Fatalf("a part-replaced skill must stay listed: %s", partial.Content)
+	}
+}
+
+// TestStreamRunAppliesOverridesCarriedByTheResume is the mid-run half of the
+// promise: a capability the caller loads mid-turn takes over its server tools
+// in the same step, so the model's next round sees one tool per job rather
+// than two.
+func TestStreamRunAppliesOverridesCarriedByTheResume(t *testing.T) {
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush := func(payload string) {
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Fatalf("write sse: %v", err)
+			}
+			w.(http.Flusher).Flush()
+		}
+		switch len(requestBodies) {
+		case 1:
+			// The first round is the only one that may still see the server's
+			// copy of the tool the caller is about to take over.
+			if !toolNamesInRequest(body)[memorySearchToolName] {
+				t.Fatalf("the server's own tool was not offered to begin with: %#v", body["tools"])
+			}
+			flush(sseData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-load", "type": "function",
+							"function": map[string]any{
+								"name":      clientToolNamespace + "load_skill",
+								"arguments": `{"skill":"local_memory"}`,
+							},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}))
+			flush(sseData(map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}},
+			}))
+		case 2:
+			names := toolNamesInRequest(body)
+			if names[memorySearchToolName] {
+				t.Fatalf("the server's copy outlived the takeover: %#v", body["tools"])
+			}
+			if !names[clientToolNamespace+"lookup"] {
+				t.Fatalf("the caller's replacement was not offered: %#v", body["tools"])
+			}
+			flush(sseData(map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{"role": "assistant", "content": "Taken over."}, "finish_reason": nil,
+				}},
+			}))
+			flush(sseData(map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+			}))
+		default:
+			t.Fatalf("unexpected model round %d", len(requestBodies))
+		}
+	}))
+	t.Cleanup(modelServer.Close)
+
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:        "server-maid",
+		Name:      "Server Maid",
+		Model:     "openai/model",
+		Abilities: []string{"chat"},
+		Enabled:   true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	svc := NewConversationService(openTestDB(t), cfg, registry, executor)
+	thread := capabilityTestThread(t, svc, "thread-takeover")
+
+	type handoff struct {
+		runID string
+		call  schema.ToolCall
+	}
+	handed := make(chan handoff, 1)
+	runResult := make(chan *RunResult, 1)
+	runErr := make(chan error, 1)
+
+	go func() {
+		result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+			Message:     "look something up",
+			Stream:      true,
+			ClientTools: []*schema.ToolInfo{clientToolInfo("load_skill")},
+		}, StreamCallbacks{
+			OnClientTool: func(runID string, call schema.ToolCall) error {
+				handed <- handoff{runID: runID, call: call}
+				return nil
+			},
+		})
+		if err != nil {
+			runErr <- err
+			return
+		}
+		runResult <- result
+	}()
+
+	select {
+	case got := <-handed:
+		resumed, err := svc.SubmitClientToolResult(
+			context.Background(), "acct-1", got.runID, got.call.ID,
+			`{"ok":true,"skill":"local_memory"}`,
+			[]*schema.ToolInfo{clientToolInfo("lookup")},
+			[]string{memorySearchToolName},
+		)
+		if err != nil {
+			t.Fatalf("SubmitClientToolResult() error = %v", err)
+		}
+		if !resumed {
+			t.Fatal("SubmitClientToolResult() did not find the waiter")
+		}
+	case err := <-runErr:
+		t.Fatalf("StreamRun() error = %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never handed the loading call back")
+	}
+
+	select {
+	case result := <-runResult:
+		if result.ResponseContent != "Taken over." {
+			t.Fatalf("response content = %q", result.ResponseContent)
+		}
+	case err := <-runErr:
+		t.Fatalf("StreamRun() error = %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never finished after the tool result")
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("model rounds = %d, want 2", len(requestBodies))
+	}
 }

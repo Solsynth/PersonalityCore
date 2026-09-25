@@ -333,7 +333,7 @@ func (s *ConversationService) skillAllowedForAgent(def agent.Definition, name st
 	return !gated || agent.HasAbility(def, ability)
 }
 
-func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32) []Skill {
+func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32, overrides map[string]bool) []Skill {
 	var skills []Skill
 	loaded := s.autoLoadedSkills(def, perkLevel)
 	oauthReady := s.oauthReady()
@@ -341,6 +341,12 @@ func (s *ConversationService) availableSkills(def agent.Definition, activeSkills
 		// Skills whose tools this agent already has must not be advertised:
 		// activating them would be a no-op the model cannot observe.
 		if loaded[name] || activeSkills[name] {
+			continue
+		}
+		// Neither must a skill the caller has replaced outright: its tools are
+		// the caller's now, and offering to load it would promise the model
+		// something this side cannot deliver.
+		if s.skillFullyReplaced(skill, overrides) {
 			continue
 		}
 		if !s.isSkillAllowed(perkLevel, name) {
@@ -398,10 +404,10 @@ type listedSkill struct {
 	ActivateWith string `json:"activate_with"`
 }
 
-func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, activeSkills map[string]bool, perkLevel int32, clientSkills []ClientSkill) *executedChatToolResult {
+func (s *ConversationService) executeListSkillsToolCall(def agent.Definition, activeSkills map[string]bool, perkLevel int32, clientSkills []ClientSkill, overrides map[string]bool) *executedChatToolResult {
 	clientSkills = namespaceClientSkills(clientSkills)
 	listed := make([]listedSkill, 0, len(clientSkills)+4)
-	for _, sk := range s.availableSkills(def, activeSkills, perkLevel) {
+	for _, sk := range s.availableSkills(def, activeSkills, perkLevel, overrides) {
 		listed = append(listed, listedSkill{
 			Name:         sk.Name,
 			Description:  sk.Description,

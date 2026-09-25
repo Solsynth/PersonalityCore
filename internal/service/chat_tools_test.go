@@ -640,7 +640,7 @@ func TestAvailableSkillsOmitsAutoLoadedSkills(t *testing.T) {
 	}
 
 	names := make(map[string]bool)
-	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0) {
+	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0, nil) {
 		names[skill.Name] = true
 	}
 	for _, name := range []string{"chat", "self_notes", "stickers"} {
@@ -660,7 +660,7 @@ func TestAvailableSkillsOmitsUserSkillsWithoutOAuth(t *testing.T) {
 	def := agent.Definition{ID: "mochi", Model: "openai/test", Abilities: []string{"stickers"}}
 
 	names := make(map[string]bool)
-	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0) {
+	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0, nil) {
 		names[skill.Name] = true
 	}
 	if names["stickers"] {
@@ -674,7 +674,7 @@ func TestConversationToolInfosFiltersSolarOutboundTools(t *testing.T) {
 	}}
 	def := agent.Definition{ID: "michan", Abilities: []string{"chat", "pet"}}
 
-	ordinary := svc.conversationToolInfos(def, nil, 0, false)
+	ordinary := svc.conversationToolInfos(def, nil, 0, false, nil)
 	ordinaryNames := make(map[string]bool, len(ordinary))
 	for _, tool := range ordinary {
 		ordinaryNames[tool.Name] = true
@@ -688,7 +688,7 @@ func TestConversationToolInfosFiltersSolarOutboundTools(t *testing.T) {
 		t.Fatal("ordinary conversation lost non-Solar agent tool")
 	}
 
-	solar := svc.conversationToolInfos(def, nil, 0, true)
+	solar := svc.conversationToolInfos(def, nil, 0, true, nil)
 	solarNames := make(map[string]bool, len(solar))
 	for _, tool := range solar {
 		solarNames[tool.Name] = true
@@ -720,7 +720,7 @@ func TestConversationToolInfosAlwaysIncludesTitleTool(t *testing.T) {
 		def := agent.Definition{ID: "michan", Model: "openai/test", Abilities: []string{}}
 
 		for _, solarBound := range []bool{false, true} {
-			tools := svc.conversationToolInfos(def, nil, 0, solarBound)
+			tools := svc.conversationToolInfos(def, nil, 0, solarBound, nil)
 			if got := countToolName(tools, setConversationTitleToolName); got != 1 {
 				t.Fatalf("dynamicSkills=%v solarBound=%v: set_conversation_title appears %d times, want once", dynamic, solarBound, got)
 			}

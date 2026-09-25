@@ -30,6 +30,7 @@ type responseRequest struct {
 	Input              json.RawMessage      `json:"input"`
 	Tools              []responseTool       `json:"tools"`
 	ToolOutputs        []responseToolOutput `json:"tool_outputs"`
+	Overrides          []string             `json:"overrides"`
 }
 
 type responseTool struct {
@@ -174,6 +175,7 @@ func writeResponse(c *gin.Context, conversations *service.ConversationService, a
 		PreviousResponseID: request.PreviousResponseID,
 		Message:            message,
 		ClientTools:        clientTools,
+		Overrides:          request.Overrides,
 		ToolOutputs:        toolOutputs,
 		AccountName:        accountName,
 		AccountNick:        accountNick,

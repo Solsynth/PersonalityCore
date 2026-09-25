@@ -183,7 +183,7 @@ func TestStreamRunHandsClientToolToCaller(t *testing.T) {
 		if call.call.ID != "call-local" {
 			t.Fatalf("tool call id = %q", call.call.ID)
 		}
-		resumed, err := svc.SubmitClientToolResult(context.Background(), "acct-1", call.runID, call.call.ID, "device result for duckdb", nil)
+		resumed, err := svc.SubmitClientToolResult(context.Background(), "acct-1", call.runID, call.call.ID, "device result for duckdb", nil, nil)
 		if err != nil {
 			t.Fatalf("SubmitClientToolResult() error = %v", err)
 		}
@@ -235,7 +235,7 @@ func TestStreamRunHandsClientToolToCaller(t *testing.T) {
 // or erroring, and an unknown caller cannot resume someone else's run.
 func TestSubmitClientToolResultWithoutWaiter(t *testing.T) {
 	svc, _, _ := clientToolTestSetup(t)
-	resumed, err := svc.SubmitClientToolResult(context.Background(), "acct-1", "run-x", "call-y", "result", nil)
+	resumed, err := svc.SubmitClientToolResult(context.Background(), "acct-1", "run-x", "call-y", "result", nil, nil)
 	if err != nil {
 		t.Fatalf("SubmitClientToolResult() error = %v", err)
 	}

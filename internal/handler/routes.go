@@ -185,6 +185,10 @@ func submitRunToolResult(c *gin.Context, conversations *service.ConversationServ
 		ToolCallID  string       `json:"tool_call_id"`
 		Result      string       `json:"result"`
 		ClientTools []openAITool `json:"client_tools"`
+		// Overrides are the server tools the caller has taken over. A
+		// capability the caller just loaded brings its replacements with it,
+		// so they travel with the same resume.
+		Overrides []string `json:"overrides"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -203,7 +207,7 @@ func submitRunToolResult(c *gin.Context, conversations *service.ConversationServ
 		}
 		extraTools = converted
 	}
-	resumed, err := conversations.SubmitClientToolResult(c.Request.Context(), accountID, c.Param("runId"), strings.TrimSpace(input.ToolCallID), input.Result, extraTools)
+	resumed, err := conversations.SubmitClientToolResult(c.Request.Context(), accountID, c.Param("runId"), strings.TrimSpace(input.ToolCallID), input.Result, extraTools, input.Overrides)
 	if err != nil {
 		renderServiceError(c, err)
 		return

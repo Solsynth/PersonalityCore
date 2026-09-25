@@ -112,9 +112,9 @@ func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int3
 // exposes it so the agent can name the thread it is running in. The stateless
 // OpenAI-compatible path builds from buildToolInfos directly, so it never
 // advertises a title tool it could not persist.
-func (s *ConversationService) conversationToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32, solarBound bool) []*schema.ToolInfo {
+func (s *ConversationService) conversationToolInfos(def agent.Definition, activeSkills map[string]bool, perkLevel int32, solarBound bool, overrides map[string]bool) []*schema.ToolInfo {
 	tools := s.filterSolarOutboundTools(s.buildToolInfos(def, activeSkills, perkLevel), solarBound)
-	return uniqueToolInfos(append(tools, s.setConversationTitleToolInfo()))
+	return s.applyCallerOverrides(uniqueToolInfos(append(tools, s.setConversationTitleToolInfo())), overrides)
 }
 
 func isSolarOutboundToolName(name string) bool {
@@ -124,6 +124,65 @@ func isSolarOutboundToolName(name string) bool {
 	default:
 		return false
 	}
+}
+
+// callerOverrides is the set of server tool names a caller runs itself.
+func callerOverrides(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+// applyCallerOverrides drops the server tools a caller has replaced with its
+// own.
+//
+// The caller runs the same capability on its own connection, so offering the
+// server's copy as well would put two tools for one job in front of the model
+// and leave it to pick between them. Only names the server actually has are
+// dropped, which is what keeps an override from removing a capability: a name
+// with no server tool behind it changes nothing here.
+func (s *ConversationService) applyCallerOverrides(tools []*schema.ToolInfo, overrides map[string]bool) []*schema.ToolInfo {
+	if len(overrides) == 0 {
+		return tools
+	}
+	filtered := make([]*schema.ToolInfo, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil || overrides[tool.Name] {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
+// skillFullyReplaced reports whether every tool a skill would add is one the
+// caller runs itself.
+//
+// A skill the caller replaced only in part stays available: activating it
+// still adds the tools that were not claimed, and hiding it would take away
+// capabilities the model could still have loaded.
+func (s *ConversationService) skillFullyReplaced(skill Skill, overrides map[string]bool) bool {
+	if len(overrides) == 0 {
+		return false
+	}
+	tools := skill.Tools(s)
+	if len(tools) == 0 {
+		return false
+	}
+	for _, tool := range tools {
+		if tool == nil || overrides[tool.Name] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *ConversationService) filterSolarOutboundTools(tools []*schema.ToolInfo, solarBound bool) []*schema.ToolInfo {
@@ -398,7 +457,7 @@ func (s *ConversationService) runWithChatTools(
 			} else if call.Function.Name == "list_skills" {
 				// No caller catalogue: this path has no channel to hand a
 				// caller-owned skill to, so it must not advertise one.
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil, nil)
 			} else if call.Function.Name == "activate_skill" {
 				var activated bool
 				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, nil)
@@ -535,14 +594,14 @@ func (s *ConversationService) runWithGeneralTools(
 		for _, call := range response.ToolCalls {
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil, nil)
 			} else if call.Function.Name == "activate_skill" {
 				var activated bool
 				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, nil)
 				if activated {
 					s.persistActivatedSkills(ctx, thread, activeSkills)
 				}
-				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
+				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound, nil)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
 					return "", err
@@ -708,6 +767,7 @@ func (s *ConversationService) streamWithGeneralTools(
 	tools []*schema.ToolInfo,
 	clientTools []*schema.ToolInfo,
 	clientSkills []ClientSkill,
+	overrides map[string]bool,
 	perkLevel int32,
 	solarBound bool,
 	callbacks StreamCallbacks,
@@ -808,21 +868,35 @@ func (s *ConversationService) streamWithGeneralTools(
 					return "", nil, clientErr
 				}
 				clientResult := resolution.result
-				if len(resolution.extraTools) > 0 {
-					// The caller loaded a capability: add its tools to the run,
-					// so loading one mid-turn is worth something in that same
-					// turn. They arrive as the caller names them and go through
-					// the client namespace like the rest. A name that shadows a
-					// server tool is rejected here exactly as it would have been
-					// with the run.
-					clientTools = uniqueToolInfos(append(
-						append([]*schema.ToolInfo(nil), clientTools...),
-						namespaceClientTools(resolution.extraTools)...,
-					))
-					if err := rejectToolNameCollisions(tools, clientTools); err != nil {
-						return "", nil, err
+				if len(resolution.extraTools) > 0 || len(resolution.overrides) > 0 {
+					// The caller loaded a capability, and the two halves of
+					// that arrive together: the tools it now runs, and the
+					// server tools it has taken over. Applying them in one
+					// rebuild is what keeps the promise the caller made — one
+					// tool per job — true from the moment the load lands.
+					if len(resolution.overrides) > 0 {
+						if overrides == nil {
+							overrides = make(map[string]bool, len(resolution.overrides))
+						}
+						for name := range callerOverrides(resolution.overrides) {
+							overrides[name] = true
+						}
+						tools = s.applyCallerOverrides(tools, overrides)
 					}
-					clientNames = toolNames(clientTools)
+					if len(resolution.extraTools) > 0 {
+						// They arrive as the caller names them and go through
+						// the client namespace like the rest. A name that
+						// shadows a server tool is rejected here exactly as it
+						// would have been with the run.
+						clientTools = uniqueToolInfos(append(
+							append([]*schema.ToolInfo(nil), clientTools...),
+							namespaceClientTools(resolution.extraTools)...,
+						))
+						if err := rejectToolNameCollisions(tools, clientTools); err != nil {
+							return "", nil, err
+						}
+						clientNames = toolNames(clientTools)
+					}
 					toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, append(
 						append([]*schema.ToolInfo(nil), tools...),
 						clientTools...,
@@ -847,7 +921,7 @@ func (s *ConversationService) streamWithGeneralTools(
 			}
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, clientSkills)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, clientSkills, overrides)
 			} else if call.Function.Name == "activate_skill" {
 				var activated bool
 				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, clientSkills)
@@ -856,7 +930,7 @@ func (s *ConversationService) streamWithGeneralTools(
 				}
 				// Rebuilt with the caller's tools still in place: the server
 				// adding its own is no reason to drop them.
-				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
+				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound, overrides)
 				allTools := uniqueToolInfos(append(
 					append([]*schema.ToolInfo(nil), tools...),
 					clientTools...,

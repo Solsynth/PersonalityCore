@@ -196,3 +196,109 @@ func TestCompleteOpenAIRecordsBillingUsage(t *testing.T) {
 		t.Fatal("billing usage run ID is empty")
 	}
 }
+
+// openAIToolsProbe answers one completion and reports the tools it was offered,
+// keyed by name to the description of each — which is how a test can tell the
+// caller's tool from the server's when both would answer to the same name.
+func openAIToolsProbe(t *testing.T) (*httptest.Server, *map[string]string) {
+	t.Helper()
+	offered := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Tools []struct {
+				Function struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode completion request: %v", err)
+		}
+		for _, tool := range request.Tools {
+			offered[tool.Function.Name] = tool.Function.Description
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &offered
+}
+
+func openAIProbeService(t *testing.T, modelServer *httptest.Server) *ConversationService {
+	t.Helper()
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			ID:      "openai",
+			Type:    "openai-compatible",
+			APIKey:  "test",
+			BaseURL: modelServer.URL + "/v1",
+			Timeout: time.Second,
+			Models:  []config.ModelConfig{{Name: "model"}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID: "assistant", Name: "Assistant", Model: "openai/model", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error: %v", err)
+	}
+	return NewConversationService(openTestDB(t), cfg, registry, executor)
+}
+
+// TestCompleteOpenAIRejectsAClientToolThatShadowsAServerTool is the guard the
+// whole collision check exists for: one name, one owner. A caller that names
+// its tool after a server tool, without saying it is taking that tool over, is
+// turned away rather than allowed to shadow it.
+func TestCompleteOpenAIRejectsAClientToolThatShadowsAServerTool(t *testing.T) {
+	modelServer, _ := openAIToolsProbe(t)
+	svc := openAIProbeService(t, modelServer)
+
+	_, err := svc.CompleteOpenAI(t.Context(), OpenAICompletionInput{
+		AccountID:          "account-1",
+		Model:              "assistant",
+		Messages:           []*schema.Message{schema.UserMessage("hi")},
+		IncludeServerTools: true,
+		ClientTools:        []*schema.ToolInfo{{Name: memorySearchToolName, Desc: "the caller's own lookup"}},
+	})
+	if err == nil {
+		t.Fatal("a client tool named after a server tool must be refused")
+	}
+	if !strings.Contains(err.Error(), "conflicts with a server tool") {
+		t.Fatalf("refusal did not name the conflict: %v", err)
+	}
+}
+
+// TestCompleteOpenAIAcceptsTheReplacementItWasToldAbout is the other half: the
+// same name is accepted once the caller declares it is taking that tool over,
+// and the tool the model is offered under that name is the caller's — not the
+// server's, and not both.
+func TestCompleteOpenAIAcceptsTheReplacementItWasToldAbout(t *testing.T) {
+	modelServer, offered := openAIToolsProbe(t)
+	svc := openAIProbeService(t, modelServer)
+
+	_, err := svc.CompleteOpenAI(t.Context(), OpenAICompletionInput{
+		AccountID:          "account-1",
+		Model:              "assistant",
+		Messages:           []*schema.Message{schema.UserMessage("hi")},
+		IncludeServerTools: true,
+		Overrides:          []string{memorySearchToolName},
+		ClientTools:        []*schema.ToolInfo{{Name: memorySearchToolName, Desc: "the caller's own lookup"}},
+	})
+	if err != nil {
+		t.Fatalf("a declared replacement must be accepted: %v", err)
+	}
+
+	if got := (*offered)[memorySearchToolName]; got != "the caller's own lookup" {
+		t.Fatalf("the name is the caller's, so the tool under it must be too: %q", got)
+	}
+	// The rest of the skill is untouched: an override takes one tool, not the
+	// set it belonged to.
+	if _, ok := (*offered)[memorySaveToolName]; !ok {
+		t.Fatalf("an override took more than the tool it named: %v", *offered)
+	}
+}

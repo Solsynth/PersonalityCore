@@ -8,19 +8,25 @@ import (
 )
 
 type ConversationThread struct {
-	ID             string         `gorm:"primaryKey;size:26" json:"id"`
-	AccountID      string         `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
-	AgentID        string         `gorm:"size:64;index" json:"agent_id"`
-	Kind           string         `gorm:"size:32;index" json:"-"`
-	Title          string         `gorm:"size:255" json:"title"`
-	PerkLevel      int32          `gorm:"default:0" json:"perk_level"`
-	ContextSummary string         `gorm:"type:text" json:"context_summary"`
-	SummarySeq     int64          `json:"summary_seq"`
-	SummaryAt      *time.Time     `json:"summary_at"`
-	LastMessageAt  *time.Time     `json:"last_message_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ID             string `gorm:"primaryKey;size:26" json:"id"`
+	AccountID      string `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
+	AgentID        string `gorm:"size:64;index" json:"agent_id"`
+	Kind           string `gorm:"size:32;index" json:"-"`
+	Title          string `gorm:"size:255" json:"title"`
+	PerkLevel      int32  `gorm:"default:0" json:"perk_level"`
+	ContextSummary string `gorm:"type:text" json:"context_summary"`
+	// ActivatedSkills names the server-owned skills this conversation has
+	// switched on, so a run rebuilds the same tool set it had last time
+	// instead of making the model ask again. Caller-owned capabilities are
+	// not stored here: only their client holds their definitions, and it
+	// declares the ones it has loaded on every run.
+	ActivatedSkills datatypes.JSON `gorm:"type:jsonb" json:"activated_skills"`
+	SummarySeq      int64          `json:"summary_seq"`
+	SummaryAt       *time.Time     `json:"summary_at"`
+	LastMessageAt   *time.Time     `json:"last_message_at"`
+	DeletedAt       gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 }
 
 type PetSession struct {

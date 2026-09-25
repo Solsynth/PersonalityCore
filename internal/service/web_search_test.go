@@ -108,7 +108,7 @@ func TestWebSearchSkillIsNotAdvertised(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}}
 
 	// An agent without the ability never sees the skill: it cannot activate it.
-	plain := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0)
+	plain := svc.executeListSkillsToolCall(agent.Definition{ID: "plain"}, map[string]bool{}, 0, nil)
 	if strings.Contains(plain.Content, `"web_search"`) {
 		t.Fatalf("agent without the ability was offered the skill: %s", plain.Content)
 	}
@@ -116,7 +116,7 @@ func TestWebSearchSkillIsNotAdvertised(t *testing.T) {
 	// An agent with the ability already holds the tool, so the skill stays out
 	// of the list as well: activating it would add a duplicate tool name.
 	capable := agent.Definition{ID: "researcher", Abilities: []string{"web_search"}}
-	listed := svc.executeListSkillsToolCall(capable, map[string]bool{}, 0)
+	listed := svc.executeListSkillsToolCall(capable, map[string]bool{}, 0, nil)
 	if strings.Contains(listed.Content, `"web_search"`) {
 		t.Fatalf("an already-loaded skill must not be advertised: %s", listed.Content)
 	}
@@ -133,7 +133,7 @@ func TestActivateSkillRefusesWebSearchWithoutAbility(t *testing.T) {
 	}
 
 	active := map[string]bool{}
-	result := svc.executeActivateSkillToolCall(call, active, agent.Definition{ID: "plain"})
+	result, _ := svc.executeActivateSkillToolCall(call, active, agent.Definition{ID: "plain"}, nil)
 	if !strings.Contains(result.Content, "skill not available") {
 		t.Fatalf("activation must be refused: %s", result.Content)
 	}
@@ -141,7 +141,7 @@ func TestActivateSkillRefusesWebSearchWithoutAbility(t *testing.T) {
 		t.Fatal("a refused skill must not be marked active")
 	}
 
-	capable := svc.executeActivateSkillToolCall(call, active, agent.Definition{ID: "researcher", Abilities: []string{"web_search"}})
+	capable, _ := svc.executeActivateSkillToolCall(call, active, agent.Definition{ID: "researcher", Abilities: []string{"web_search"}}, nil)
 	if !strings.Contains(capable.Content, `"ok":true`) || !active["web_search"] {
 		t.Fatalf("capable agent must be able to activate the skill: %s", capable.Content)
 	}

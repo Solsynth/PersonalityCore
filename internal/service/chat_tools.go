@@ -107,13 +107,6 @@ func (s *ConversationService) ToolsForAgent(def agent.Definition, perkLevel int3
 	return s.buildToolInfos(def, nil, perkLevel)
 }
 
-// ToolsForConversation returns tools for a persisted conversation. Solar
-// outbound tools are only meaningful for synthetic Solar-bound threads; a
-// normal REST conversation must not encourage the agent to message elsewhere.
-func (s *ConversationService) ToolsForConversation(def agent.Definition, perkLevel int32, solarBound bool) []*schema.ToolInfo {
-	return s.conversationToolInfos(def, nil, perkLevel, solarBound)
-}
-
 // conversationToolInfos builds the tool set for the persisted conversation run
 // path. set_conversation_title is not ability-gated: every conversation run
 // exposes it so the agent can name the thread it is running in. The stateless
@@ -286,8 +279,8 @@ func (s *ConversationService) runWithChatTools(
 	modelMessages []*schema.Message,
 	agentDef agent.Definition,
 	perkLevel int32,
+	activeSkills map[string]bool,
 ) (string, error) {
-	activeSkills := map[string]bool{}
 	tools := s.buildToolInfos(agentDef, activeSkills, perkLevel)
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
@@ -403,9 +396,15 @@ func (s *ConversationService) runWithChatTools(
 					ToolCallID: call.ID,
 				}
 			} else if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
+				// No caller catalogue: this path has no channel to hand a
+				// caller-owned skill to, so it must not advertise one.
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
+				var activated bool
+				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, nil)
+				if activated {
+					s.persistActivatedSkills(ctx, thread, activeSkills)
+				}
 				tools = s.buildToolInfos(agentDef, activeSkills, perkLevel)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
@@ -490,8 +489,8 @@ func (s *ConversationService) runWithGeneralTools(
 	perkLevel int32,
 	solarBound bool,
 	finalReasoning *strings.Builder,
+	activeSkills map[string]bool,
 ) (string, error) {
-	activeSkills := map[string]bool{}
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
 		return "", err
@@ -536,9 +535,13 @@ func (s *ConversationService) runWithGeneralTools(
 		for _, call := range response.ToolCalls {
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, nil)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
+				var activated bool
+				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, nil)
+				if activated {
+					s.persistActivatedSkills(ctx, thread, activeSkills)
+				}
 				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
 				if err != nil {
@@ -704,12 +707,13 @@ func (s *ConversationService) streamWithGeneralTools(
 	agentDef agent.Definition,
 	tools []*schema.ToolInfo,
 	clientTools []*schema.ToolInfo,
+	clientSkills []ClientSkill,
 	perkLevel int32,
 	solarBound bool,
 	callbacks StreamCallbacks,
 	finalReasoning *strings.Builder,
+	activeSkills map[string]bool,
 ) (string, *schema.TokenUsage, error) {
-	activeSkills := map[string]bool{}
 	// Client tools ride alongside the server tools so the model can call them;
 	// only the server-owned subset is executed here.
 	allTools := append(append([]*schema.ToolInfo(nil), tools...), clientTools...)
@@ -799,9 +803,33 @@ func (s *ConversationService) streamWithGeneralTools(
 						return "", nil, err
 					}
 				}
-				clientResult, clientErr := s.awaitClientToolResult(ctx, accountID, runID, call)
+				resolution, clientErr := s.awaitClientToolResult(ctx, accountID, runID, call)
 				if clientErr != nil {
 					return "", nil, clientErr
+				}
+				clientResult := resolution.result
+				if len(resolution.extraTools) > 0 {
+					// The caller loaded a capability: add its tools to the run,
+					// so loading one mid-turn is worth something in that same
+					// turn. They arrive as the caller names them and go through
+					// the client namespace like the rest. A name that shadows a
+					// server tool is rejected here exactly as it would have been
+					// with the run.
+					clientTools = uniqueToolInfos(append(
+						append([]*schema.ToolInfo(nil), clientTools...),
+						namespaceClientTools(resolution.extraTools)...,
+					))
+					if err := rejectToolNameCollisions(tools, clientTools); err != nil {
+						return "", nil, err
+					}
+					clientNames = toolNames(clientTools)
+					toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, append(
+						append([]*schema.ToolInfo(nil), tools...),
+						clientTools...,
+					))
+					if err != nil {
+						return "", nil, err
+					}
 				}
 				if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", clientResult, nil, map[string]any{
 					"tool_call_id": call.ID,
@@ -819,11 +847,21 @@ func (s *ConversationService) streamWithGeneralTools(
 			}
 			var result *executedChatToolResult
 			if call.Function.Name == "list_skills" {
-				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel)
+				result = s.executeListSkillsToolCall(agentDef, activeSkills, perkLevel, clientSkills)
 			} else if call.Function.Name == "activate_skill" {
-				result = s.executeActivateSkillToolCall(call, activeSkills, agentDef)
+				var activated bool
+				result, activated = s.executeActivateSkillToolCall(call, activeSkills, agentDef, clientSkills)
+				if activated {
+					s.persistActivatedSkills(ctx, thread, activeSkills)
+				}
+				// Rebuilt with the caller's tools still in place: the server
+				// adding its own is no reason to drop them.
 				tools = s.conversationToolInfos(agentDef, activeSkills, perkLevel, solarBound)
-				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, tools)
+				allTools := uniqueToolInfos(append(
+					append([]*schema.ToolInfo(nil), tools...),
+					clientTools...,
+				))
+				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, allTools)
 				if err != nil {
 					return "", nil, err
 				}

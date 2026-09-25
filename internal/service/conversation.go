@@ -72,7 +72,19 @@ type ConversationService struct {
 	// clientToolWaiters resolves a paused run's pending client-owned tool
 	// calls: key is accountID + "\x00" + runID + "\x00" + toolCallID.
 	clientToolsMu     sync.Mutex
-	clientToolWaiters map[string]chan string
+	clientToolWaiters map[string]chan clientToolResolution
+}
+
+// clientToolResolution is one resumed client-owned tool call: the caller's
+// answer, plus any tools answering it made callable.
+//
+// The tools ride here because loading a capability is itself a tool call — the
+// model asks for one by name, and the caller is the only party that holds its
+// definitions. Adding them to the run is what makes a capability loaded
+// mid-turn usable in that same turn.
+type clientToolResolution struct {
+	result     string
+	extraTools []*schema.ToolInfo
 }
 
 type CreateConversationInput struct {
@@ -92,16 +104,25 @@ type userMessageInputPart struct {
 }
 
 type RunInput struct {
-	Message         string                 `json:"message"`
-	AttachmentIDs   []string               `json:"attachment_ids,omitempty"`
-	InputParts      []userMessageInputPart `json:"input_parts"`
-	Stream          bool                   `json:"stream"`
+	Message       string                 `json:"message"`
+	AttachmentIDs []string               `json:"attachment_ids,omitempty"`
+	InputParts    []userMessageInputPart `json:"input_parts"`
+	Stream        bool                   `json:"stream"`
 	// ClientTools are tools the caller executes itself. They are handed to the
 	// caller over the run stream (`tool_call.client`) instead of running on
 	// the server; the caller resumes the run with the result. Streamed runs
 	// only: there is no channel to the caller on the non-streaming path.
-	ClientTools     []*schema.ToolInfo     `json:"client_tools,omitempty"`
-	RequestMetadata map[string]any         `json:"-"`
+	ClientTools []*schema.ToolInfo `json:"client_tools,omitempty"`
+	// ClientSkills names the capabilities the caller could still load, so
+	// `list_skills` can offer them beside the server's own. Names only: the
+	// tools behind one stay on the caller until the model loads it.
+	ClientSkills []ClientSkill `json:"client_skills,omitempty"`
+	// Context is system prompt text the caller contributes for this run. It is
+	// appended after the agent's own prompt, and is how a client-side
+	// capability explains itself without the deployment knowing it exists.
+	// Never persisted: the caller sends it again whenever it still applies.
+	Context         []string       `json:"context,omitempty"`
+	RequestMetadata map[string]any `json:"-"`
 	// AccountName and AccountNick carry the authenticated caller's identity
 	// from the request context; they are never accepted from the body.
 	AccountName string `json:"-"`
@@ -424,6 +445,17 @@ func (s *ConversationService) recordBilling(ctx context.Context, run *database.C
 }
 
 func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32, accountName, accountNick string) ([]*schema.Message, agent.Definition, error) {
+	return s.buildModelMessages(ctx, accountID, threadID, perkLevel, accountName, accountNick, nil)
+}
+
+// buildModelMessages assembles the prompt for one run.
+//
+// callerContext is system prompt text the caller contributed for this run. It
+// goes directly after the agent's own prompt, before the overlays: it
+// describes capabilities the caller supplies, so it belongs with the
+// instructions rather than among the text the server derives about the
+// character, the thread or the user.
+func (s *ConversationService) buildModelMessages(ctx context.Context, accountID, threadID string, perkLevel int32, accountName, accountNick string, callerContext []string) ([]*schema.Message, agent.Definition, error) {
 	thread, err := s.GetConversation(ctx, accountID, threadID)
 	if err != nil {
 		return nil, agent.Definition{}, err
@@ -467,6 +499,11 @@ func (s *ConversationService) BuildModelMessages(ctx context.Context, accountID,
 	supportsVision := s.supportsVisionForAgent(def)
 	if strings.TrimSpace(def.SystemPrompt) != "" {
 		messages = append(messages, schema.SystemMessage(def.SystemPrompt))
+	}
+	for _, fragment := range callerContext {
+		if text := strings.TrimSpace(fragment); text != "" {
+			messages = append(messages, schema.SystemMessage(text))
+		}
 	}
 	messages = append(messages, schema.SystemMessage(renderCharacterConsistencyOverlay()))
 	if strings.TrimSpace(thread.ContextSummary) != "" {
@@ -702,7 +739,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Str("agent_id", thread.AgentID).
 		Msg("starting non-streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick)
+	modelMessages, agentDef, err := s.buildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick, input.Context)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
@@ -721,6 +758,9 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		Str("model", run.Model).
 		Int("message_count", len(modelMessages)).
 		Msg("invoking model")
+	// What this conversation has already switched on. Server-owned skills come
+	// from its own record; the caller declares its own with each run.
+	activeSkills := activatedSkills(thread)
 	responseContent := ""
 	var reasoningContent strings.Builder
 	var billingUsage *schema.TokenUsage
@@ -731,15 +771,15 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			Str("run_id", run.ID).
 			Str("agent_id", agentDef.ID).
 			Msg("routing run through chat tool execution path")
-		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, thread.PerkLevel)
+		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, thread.PerkLevel, activeSkills)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
 	} else {
-		tools := s.ToolsForConversation(agentDef, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
+		tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
 		if len(tools) > 0 {
-			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent)
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent, activeSkills)
 		} else {
 			var response *schema.Message
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
@@ -894,9 +934,10 @@ func clientToolWaiterKey(accountID, runID, toolCallID string) string {
 	return accountID + "\x00" + runID + "\x00" + toolCallID
 }
 
-// SubmitClientToolResult resumes a paused client-owned tool call. It reports
+// SubmitClientToolResult resumes a paused client-owned tool call. [extraTools]
+// are tools the call loaded, added to the run before it continues. It reports
 // whether a matching waiter existed; it never blocks.
-func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountID, runID, toolCallID, result string) (bool, error) {
+func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountID, runID, toolCallID, result string, extraTools []*schema.ToolInfo) (bool, error) {
 	s.clientToolsMu.Lock()
 	defer s.clientToolsMu.Unlock()
 	waiter, ok := s.clientToolWaiters[clientToolWaiterKey(accountID, runID, toolCallID)]
@@ -904,7 +945,7 @@ func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountI
 		return false, nil
 	}
 	select {
-	case waiter <- result:
+	case waiter <- clientToolResolution{result: result, extraTools: extraTools}:
 		return true, nil
 	default:
 		// Already resumed or timed out; nothing to deliver.
@@ -915,12 +956,12 @@ func (s *ConversationService) SubmitClientToolResult(_ context.Context, accountI
 // awaitClientToolResult pauses a streamed run on one client-owned call until
 // the caller resumes it. A timeout keeps the run moving with an error result;
 // a cancelled context aborts the run.
-func (s *ConversationService) awaitClientToolResult(ctx context.Context, accountID, runID string, call schema.ToolCall) (string, error) {
+func (s *ConversationService) awaitClientToolResult(ctx context.Context, accountID, runID string, call schema.ToolCall) (clientToolResolution, error) {
 	key := clientToolWaiterKey(accountID, runID, call.ID)
-	waiter := make(chan string, 1)
+	waiter := make(chan clientToolResolution, 1)
 	s.clientToolsMu.Lock()
 	if s.clientToolWaiters == nil {
-		s.clientToolWaiters = map[string]chan string{}
+		s.clientToolWaiters = map[string]chan clientToolResolution{}
 	}
 	s.clientToolWaiters[key] = waiter
 	s.clientToolsMu.Unlock()
@@ -931,12 +972,12 @@ func (s *ConversationService) awaitClientToolResult(ctx context.Context, account
 	}()
 
 	select {
-	case result := <-waiter:
-		return result, nil
+	case resolution := <-waiter:
+		return resolution, nil
 	case <-time.After(clientToolResultTimeout):
-		return fmt.Sprintf("Error: client tool %q timed out waiting for a result.", call.Function.Name), nil
+		return clientToolResolution{result: fmt.Sprintf("Error: client tool %q timed out waiting for a result.", call.Function.Name)}, nil
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return clientToolResolution{}, ctx.Err()
 	}
 }
 
@@ -951,7 +992,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Str("agent_id", thread.AgentID).
 		Msg("starting streaming generation")
 
-	modelMessages, agentDef, err := s.BuildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick)
+	modelMessages, agentDef, err := s.buildModelMessages(ctx, accountID, threadID, thread.PerkLevel, input.AccountName, input.AccountNick, input.Context)
 	if err != nil {
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
@@ -970,6 +1011,10 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		Str("model", run.Model).
 		Int("message_count", len(modelMessages)).
 		Msg("opening model stream")
+	// What this conversation has already switched on. Carried into the tool
+	// loop so a skill the model activated last time is still loaded, and into
+	// the tool set so its tools are offered from the first round.
+	activeSkills := activatedSkills(thread)
 	var builder strings.Builder
 	var reasoningContent strings.Builder
 	chunkCount := 0
@@ -978,16 +1023,22 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		agentDef = effectiveChatAgentDefinition(agentDef)
 	}
 
-	tools := s.ToolsForConversation(agentDef, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
-	if len(input.ClientTools) > 0 {
-		if err := rejectToolNameCollisions(tools, input.ClientTools); err != nil {
+	tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"))
+	// Everything the caller owns is named through the client namespace before
+	// the model sees it, so a caller-owned name can never shadow a server one.
+	clientTools := namespaceClientTools(input.ClientTools)
+	if len(clientTools) > 0 {
+		// Unreachable while every caller-owned name is namespaced, and kept as
+		// the assertion of exactly that: a caller-owned tool must never shadow
+		// a server-owned one.
+		if err := rejectToolNameCollisions(tools, clientTools); err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
 		}
 	}
-	if len(tools) > 0 || len(input.ClientTools) > 0 {
+	if len(tools) > 0 || len(clientTools) > 0 {
 		streamed, usage, toolErr := s.streamWithGeneralTools(
-			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, input.ClientTools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent,
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, clientTools, input.ClientSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent, activeSkills,
 		)
 		if toolErr != nil {
 			_ = s.FailRun(ctx, run, toolErr)

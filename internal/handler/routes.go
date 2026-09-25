@@ -171,14 +171,20 @@ func addMessage(c *gin.Context, conversations *service.ConversationService) {
 // call: the run loop is waiting on the waiter keyed by this call, and the
 // result is fed back exactly like a server tool result (persisted + replayed
 // as tool_call.completed on the stream).
+//
+// client_tools carries tools the call loaded — a capability activated by name
+// lives on the caller, so this is the only moment its definitions can reach
+// the run. They arrive in the same OpenAI function shape as the run's own
+// client_tools and are added before the model is called again.
 func submitRunToolResult(c *gin.Context, conversations *service.ConversationService) {
 	accountID, ok := identity.RequireAccountID(c)
 	if !ok {
 		return
 	}
 	var input struct {
-		ToolCallID string `json:"tool_call_id"`
-		Result     string `json:"result"`
+		ToolCallID  string       `json:"tool_call_id"`
+		Result      string       `json:"result"`
+		ClientTools []openAITool `json:"client_tools"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -188,7 +194,16 @@ func submitRunToolResult(c *gin.Context, conversations *service.ConversationServ
 		c.JSON(http.StatusBadRequest, gin.H{"error": "tool_call_id and result are required"})
 		return
 	}
-	resumed, err := conversations.SubmitClientToolResult(c.Request.Context(), accountID, c.Param("runId"), strings.TrimSpace(input.ToolCallID), input.Result)
+	var extraTools []*schema.ToolInfo
+	if len(input.ClientTools) > 0 {
+		converted, err := parseOpenAITools(input.ClientTools)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		extraTools = converted
+	}
+	resumed, err := conversations.SubmitClientToolResult(c.Request.Context(), accountID, c.Param("runId"), strings.TrimSpace(input.ToolCallID), input.Result, extraTools)
 	if err != nil {
 		renderServiceError(c, err)
 		return

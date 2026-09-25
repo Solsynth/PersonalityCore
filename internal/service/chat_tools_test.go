@@ -668,13 +668,13 @@ func TestAvailableSkillsOmitsUserSkillsWithoutOAuth(t *testing.T) {
 	}
 }
 
-func TestToolsForConversationFiltersSolarOutboundTools(t *testing.T) {
+func TestConversationToolInfosFiltersSolarOutboundTools(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{
 		Personality: config.PersonalityConfig{DynamicSkills: true},
 	}}
 	def := agent.Definition{ID: "michan", Abilities: []string{"chat", "pet"}}
 
-	ordinary := svc.ToolsForConversation(def, 0, false)
+	ordinary := svc.conversationToolInfos(def, nil, 0, false)
 	ordinaryNames := make(map[string]bool, len(ordinary))
 	for _, tool := range ordinary {
 		ordinaryNames[tool.Name] = true
@@ -688,7 +688,7 @@ func TestToolsForConversationFiltersSolarOutboundTools(t *testing.T) {
 		t.Fatal("ordinary conversation lost non-Solar agent tool")
 	}
 
-	solar := svc.ToolsForConversation(def, 0, true)
+	solar := svc.conversationToolInfos(def, nil, 0, true)
 	solarNames := make(map[string]bool, len(solar))
 	for _, tool := range solar {
 		solarNames[tool.Name] = true
@@ -710,7 +710,7 @@ func countToolName(tools []*schema.ToolInfo, name string) int {
 	return count
 }
 
-func TestToolsForConversationAlwaysIncludesTitleTool(t *testing.T) {
+func TestConversationToolInfosAlwaysIncludesTitleTool(t *testing.T) {
 	// The title tool is not ability-gated: every conversation run gets exactly
 	// one copy, in both skill modes.
 	for _, dynamic := range []bool{false, true} {
@@ -720,7 +720,7 @@ func TestToolsForConversationAlwaysIncludesTitleTool(t *testing.T) {
 		def := agent.Definition{ID: "michan", Model: "openai/test", Abilities: []string{}}
 
 		for _, solarBound := range []bool{false, true} {
-			tools := svc.ToolsForConversation(def, 0, solarBound)
+			tools := svc.conversationToolInfos(def, nil, 0, solarBound)
 			if got := countToolName(tools, setConversationTitleToolName); got != 1 {
 				t.Fatalf("dynamicSkills=%v solarBound=%v: set_conversation_title appears %d times, want once", dynamic, solarBound, got)
 			}

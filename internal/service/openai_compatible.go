@@ -244,9 +244,13 @@ func toolNames(tools []*schema.ToolInfo) map[string]bool {
 func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def agent.Definition, accountID string, call schema.ToolCall, activeSkills map[string]bool) (*executedChatToolResult, error) {
 	switch call.Function.Name {
 	case "list_skills":
-		return s.executeListSkillsToolCall(def, activeSkills, 0), nil
+		// No caller catalogue on the stateless path: there is no conversation
+		// to remember an activation in, and no channel to ask the caller to
+		// load one, so only the server's own skills are advertised.
+		return s.executeListSkillsToolCall(def, activeSkills, 0, nil), nil
 	case "activate_skill":
-		return s.executeActivateSkillToolCall(call, activeSkills, def), nil
+		result, _ := s.executeActivateSkillToolCall(call, activeSkills, def, nil)
+		return result, nil
 	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
 		return s.executeMemoryToolCall(ctx, def, accountID, call)
 	}

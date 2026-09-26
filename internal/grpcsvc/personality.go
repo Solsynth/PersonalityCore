@@ -155,6 +155,12 @@ func mapError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, service.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, service.ErrBillingBlacklisted):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, service.ErrBillingQuotaExceeded):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, service.ErrPaymentWalletRequired):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	case errors.Is(err, context.Canceled):

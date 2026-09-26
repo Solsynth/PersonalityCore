@@ -862,11 +862,6 @@ type GenerateEmbeddingsResult struct {
 }
 
 func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOnceInput) (*CompleteOnceResult, error) {
-	if s.billing != nil {
-		if err := s.billing.CheckAccess(ctx, input.AccountID); err != nil {
-			return nil, err
-		}
-	}
 	def, ok := s.registry.Get(input.AgentID)
 	if !ok {
 		return nil, fmt.Errorf("agent %q is unavailable", input.AgentID)
@@ -878,6 +873,8 @@ func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOn
 	}
 	messages = append(messages, schema.UserMessage(input.Message))
 
+	// Overrides apply before authorization: the effective model decides the
+	// price, the currency, and whether a payment wallet is required.
 	if input.Model != "" {
 		def.Model = input.Model
 	}
@@ -894,9 +891,45 @@ func (s *ConversationService) CompleteOnce(ctx context.Context, input CompleteOn
 		def.MaxCompletionTokens = &v
 	}
 
+	// Complete is metered exactly like the chat path: it enforces the blacklist
+	// and the configured UTC usage thresholds, reserves a ledger row so
+	// simultaneous calls count even on free models, and settles priced usage to
+	// the account that asked for the completion.
+	billingUsageID := ""
+	if s.billing != nil {
+		var err error
+		billingUsageID, err = s.billing.AuthorizeRun(ctx, input.AccountID, def)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	response, err := s.executor.Generate(ctx, agent.RunRequest{Agent: def, Messages: messages})
 	if err != nil {
+		if s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
 		return nil, fmt.Errorf("generation failed: %w", err)
+	}
+	if response == nil {
+		if s.billing != nil {
+			s.billing.CancelAuthorization(ctx, billingUsageID)
+		}
+		return nil, fmt.Errorf("generation returned no message")
+	}
+
+	if s.billing != nil {
+		var usage *schema.TokenUsage
+		if response.ResponseMeta != nil {
+			usage = response.ResponseMeta.Usage
+		}
+		if err := s.billing.RecordUsage(ctx, billingUsageID, "", def, usage); err != nil {
+			logging.Log.Error().
+				Err(err).
+				Str("account_id", input.AccountID).
+				Str("agent_id", def.ID).
+				Msg("billing usage recording failed")
+		}
 	}
 
 	return &CompleteOnceResult{

@@ -20,6 +20,9 @@ func TestMapError(t *testing.T) {
 	}{
 		{"not found", service.ErrNotFound, codes.NotFound},
 		{"forbidden", service.ErrForbidden, codes.PermissionDenied},
+		{"billing blacklist", service.ErrBillingBlacklisted, codes.PermissionDenied},
+		{"usage limit", fmt.Errorf("authorize run: %w", service.ErrBillingQuotaExceeded), codes.ResourceExhausted},
+		{"payment wallet", service.ErrPaymentWalletRequired, codes.FailedPrecondition},
 		{"deadline exceeded", context.DeadlineExceeded, codes.DeadlineExceeded},
 		{"wrapped deadline exceeded", fmt.Errorf("generation failed: %w", context.DeadlineExceeded), codes.DeadlineExceeded},
 		{"canceled", context.Canceled, codes.Canceled},

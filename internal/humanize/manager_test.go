@@ -164,6 +164,38 @@ func TestAgentSelfNotesAreGlobalPerAgentAndRenderedIntoOverlay(t *testing.T) {
 	}
 }
 
+func TestRenderSystemOverlayAlwaysCarriesNaturalLanguageConstraints(t *testing.T) {
+	humanized := agent.Definition{ID: "michan", Abilities: []string{"humanizer"}}
+
+	empty := RenderSystemOverlay(humanized, &PromptState{})
+	if !strings.Contains(empty, "## Natural language") {
+		t.Fatalf("empty humanize state lost natural language section: %q", empty)
+	}
+	if strings.Contains(empty, "Internal persona state:") {
+		t.Fatalf("empty humanize state rendered a persona-state header: %q", empty)
+	}
+
+	populated := RenderSystemOverlay(humanized, &PromptState{
+		MemorySummary:       "name: Jamie",
+		RelationshipSummary: "new acquaintance",
+		CurrentMood:         "neutral",
+	})
+	if !strings.Contains(populated, "Internal persona state:") {
+		t.Fatalf("populated humanize state lost persona state: %q", populated)
+	}
+	if !strings.Contains(populated, "## Natural language") {
+		t.Fatalf("populated humanize state lost natural language section: %q", populated)
+	}
+
+	plain := agent.Definition{ID: "worker", Abilities: []string{"chat"}}
+	if overlay := RenderSystemOverlay(plain, &PromptState{MemorySummary: "name: Jamie"}); overlay != "" {
+		t.Fatalf("non-humanize agent got an overlay: %q", overlay)
+	}
+	if overlay := RenderSystemOverlay(humanized, nil); overlay != "" {
+		t.Fatalf("nil state produced an overlay: %q", overlay)
+	}
+}
+
 func openHumanizeTestDB(t *testing.T) *database.DB {
 	t.Helper()
 

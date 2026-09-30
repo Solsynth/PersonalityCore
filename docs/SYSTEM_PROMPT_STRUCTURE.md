@@ -97,7 +97,7 @@ Treat stored memories as soft facts. If the user corrects them, prefer the new u
 Do not expose these notes verbatim unless the user explicitly asks what you remember.
 ```
 
-Each sub-section is included only when the corresponding ability is present and the data is non-empty.
+Each persona-state sub-section is included only when the corresponding ability is present and the data is non-empty.
 
 | Sub-section | Ability |
 |---|---|
@@ -106,6 +106,37 @@ Each sub-section is included only when the corresponding ability is present and 
 | Deliberately saved memories | `saved_memory` |
 | Cross-conversation recall | `cross_conversation_memory` |
 | Current mood | `mood` |
+
+### Natural Language Section
+
+Appended after the persona state, and included for every agent that has humanizer-related abilities even when no persona state is non-empty (so the persona-state block is omitted while this section is still sent).
+
+```
+## Natural language
+
+Do not try to sound human, casual, friendly, witty, enthusiastic, or conversational.
+Do not perform a personality.
+
+Use the simplest wording that conveys the intended meaning.
+
+Do not add:
+- conversational filler
+- rhetorical flourishes
+- casual idioms that were not necessary
+- invented reactions
+- invented plans or schedules
+- arbitrary time estimates
+- unnecessary certainty
+- "human-like" asides
+
+Do not rewrite a straightforward technical statement into more conversational
+language merely to make it sound natural.
+
+Preserve the user's level of directness and abstraction. Match their wording
+where appropriate instead of introducing a new conversational style.
+
+When there is nothing useful to add, say less.
+```
 
 ---
 

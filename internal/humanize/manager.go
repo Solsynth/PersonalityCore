@@ -139,6 +139,7 @@ func RenderSystemOverlay(def agent.Definition, state *PromptState) string {
 		return ""
 	}
 
+	parts := make([]string, 0, 2)
 	var sections []string
 	if hasAbility(def, abilityRelationship) && state.RelationshipSummary != "" {
 		sections = append(sections, "Relationship context:\n"+state.RelationshipSummary)
@@ -152,18 +153,46 @@ func RenderSystemOverlay(def agent.Definition, state *PromptState) string {
 	if hasAbility(def, abilityCrossConversationMemory) && state.CrossConversation != "" {
 		sections = append(sections, "Cross-conversation recall:\n"+state.CrossConversation)
 	}
-	if len(sections) == 0 {
-		return ""
+	if len(sections) > 0 {
+		parts = append(parts, strings.Join([]string{
+			"Internal persona state:",
+			strings.Join(sections, "\n\n"),
+			"Use this state to stay emotionally and biographically consistent.",
+			"Treat stored memories as soft facts. If the user corrects them, prefer the new user input.",
+			"Do not expose these notes verbatim unless the user explicitly asks what you remember.",
+		}, "\n\n"))
 	}
 
-	return strings.Join([]string{
-		"Internal persona state:",
-		strings.Join(sections, "\n\n"),
-		"Use this state to stay emotionally and biographically consistent.",
-		"Treat stored memories as soft facts. If the user corrects them, prefer the new user input.",
-		"Do not expose these notes verbatim unless the user explicitly asks what you remember.",
-	}, "\n\n")
+	return strings.Join(append(parts, naturalLanguageOverlay), "\n\n")
 }
+
+// naturalLanguageOverlay constrains prose style for humanize-enabled agents.
+// The natural-language section is attached even when there is no persona state
+// to render, so the constraint applies to every run of those agents.
+const naturalLanguageOverlay = `## Natural language
+
+Do not try to sound human, casual, friendly, witty, enthusiastic, or conversational.
+Do not perform a personality.
+
+Use the simplest wording that conveys the intended meaning.
+
+Do not add:
+- conversational filler
+- rhetorical flourishes
+- casual idioms that were not necessary
+- invented reactions
+- invented plans or schedules
+- arbitrary time estimates
+- unnecessary certainty
+- "human-like" asides
+
+Do not rewrite a straightforward technical statement into more conversational
+language merely to make it sound natural.
+
+Preserve the user's level of directness and abstraction. Match their wording
+where appropriate instead of introducing a new conversational style.
+
+When there is nothing useful to add, say less.`
 
 func (m *Manager) getOrCreateState(ctx context.Context, accountID, agentID string) (*database.AgentHumanState, error) {
 	var state database.AgentHumanState

@@ -71,7 +71,7 @@ func TestParseResponseToolsAndOutputs(t *testing.T) {
 	}
 }
 
-func TestRegisterResponseRoutesIncludesPetEndpoints(t *testing.T) {
+func TestRegisterResponseRoutesRegistersNativeEndpoint(t *testing.T) {
 	router := gin.New()
 	RegisterResponseRoutes(router.Group("/api"), nil)
 
@@ -79,43 +79,7 @@ func TestRegisterResponseRoutesIncludesPetEndpoints(t *testing.T) {
 	for _, route := range router.Routes() {
 		paths[route.Method+" "+route.Path] = true
 	}
-	for _, path := range []string{
-		"POST /api/responses",
-		"POST /api/pet/responses",
-		"POST /api/pet/reset",
-		"GET /api/pet/affection",
-	} {
-		if !paths[path] {
-			t.Fatalf("missing route %s", path)
-		}
-	}
-}
-
-func TestBindPetSessionRequestPreservesPreviousResponseContinuation(t *testing.T) {
-	request := responseRequest{
-		AgentID:            "mochi",
-		PreviousResponseID: "run-1",
-	}
-	if err := bindPetSessionRequest(&request, "thread-1"); err != nil {
-		t.Fatal(err)
-	}
-	if request.ConversationID != "" {
-		t.Fatalf("continuation unexpectedly bound conversation_id %q", request.ConversationID)
-	}
-
-	first := responseRequest{AgentID: "mochi", Input: json.RawMessage(`"hello"`)}
-	if err := bindPetSessionRequest(&first, "thread-1"); err != nil {
-		t.Fatal(err)
-	}
-	if first.ConversationID != "thread-1" {
-		t.Fatalf("first request conversation_id = %q", first.ConversationID)
-	}
-
-	conflicting := responseRequest{
-		ConversationID:     "thread-1",
-		PreviousResponseID: "run-1",
-	}
-	if err := bindPetSessionRequest(&conflicting, "thread-1"); err == nil {
-		t.Fatal("expected conversation and previous response IDs to conflict")
+	if !paths["POST /api/responses"] {
+		t.Fatal("missing route POST /api/responses")
 	}
 }

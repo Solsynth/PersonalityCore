@@ -17,9 +17,6 @@ import (
 // contract. It intentionally does not use the OpenAI compatibility surface.
 func RegisterResponseRoutes(r *gin.RouterGroup, conversations *service.ConversationService) {
 	r.POST("/responses", func(c *gin.Context) { createResponse(c, conversations) })
-	r.POST("/pet/responses", func(c *gin.Context) { createPetResponse(c, conversations) })
-	r.POST("/pet/reset", func(c *gin.Context) { resetPetResponse(c, conversations) })
-	r.GET("/pet/affection", func(c *gin.Context) { getPetAffection(c, conversations) })
 }
 
 type responseRequest struct {
@@ -62,82 +59,6 @@ func createResponse(c *gin.Context, conversations *service.ConversationService) 
 		return
 	}
 	writeResponse(c, conversations, accountID, request)
-}
-
-func createPetResponse(c *gin.Context, conversations *service.ConversationService) {
-	accountID, ok := identity.RequireAccountID(c)
-	if !ok {
-		return
-	}
-	var request responseRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	agentID := strings.TrimSpace(request.AgentID)
-	if agentID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
-		return
-	}
-	thread, err := conversations.GetOrCreatePetThread(c.Request.Context(), accountID, agentID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := bindPetSessionRequest(&request, thread.ID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	writeResponse(c, conversations, accountID, request)
-}
-
-func bindPetSessionRequest(request *responseRequest, threadID string) error {
-	if strings.TrimSpace(request.PreviousResponseID) != "" {
-		if strings.TrimSpace(request.ConversationID) != "" {
-			return fmt.Errorf("conversation_id and previous_response_id are mutually exclusive")
-		}
-		return nil
-	}
-	if request.ConversationID != "" && request.ConversationID != threadID {
-		return fmt.Errorf("conversation_id does not match the pet session")
-	}
-	request.ConversationID = threadID
-	return nil
-}
-
-func resetPetResponse(c *gin.Context, conversations *service.ConversationService) {
-	accountID, ok := identity.RequireAccountID(c)
-	if !ok {
-		return
-	}
-	agentID := strings.TrimSpace(c.Query("agent_id"))
-	if agentID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
-		return
-	}
-	if err := conversations.ResetPetThread(c.Request.Context(), accountID, agentID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-func getPetAffection(c *gin.Context, conversations *service.ConversationService) {
-	accountID, ok := identity.RequireAccountID(c)
-	if !ok {
-		return
-	}
-	agentID := strings.TrimSpace(c.Query("agent_id"))
-	if agentID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
-		return
-	}
-	affection, err := conversations.GetPetAffection(c.Request.Context(), accountID, agentID)
-	if err != nil {
-		renderServiceError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, affection)
 }
 
 func writeResponse(c *gin.Context, conversations *service.ConversationService, accountID string, request responseRequest) {

@@ -11,7 +11,6 @@ type ConversationThread struct {
 	ID             string `gorm:"primaryKey;size:26" json:"id"`
 	AccountID      string `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
 	AgentID        string `gorm:"size:64;index" json:"agent_id"`
-	Kind           string `gorm:"size:32;index" json:"-"`
 	Title          string `gorm:"size:255" json:"title"`
 	PerkLevel      int32  `gorm:"default:0" json:"perk_level"`
 	ContextSummary string `gorm:"type:text" json:"context_summary"`
@@ -27,17 +26,6 @@ type ConversationThread struct {
 	DeletedAt       gorm.DeletedAt `gorm:"index:idx_threads_account_deleted,priority:2" json:"deleted_at"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
-}
-
-type PetSession struct {
-	ID              string    `gorm:"primaryKey;size:26" json:"id"`
-	AccountID       string    `gorm:"size:128;uniqueIndex:idx_pet_sessions_account_agent,priority:1" json:"account_id"`
-	AgentID         string    `gorm:"size:64;uniqueIndex:idx_pet_sessions_account_agent,priority:2" json:"agent_id"`
-	ThreadID        string    `gorm:"size:26;uniqueIndex" json:"thread_id"`
-	Affection       int       `gorm:"default:50" json:"affection"`
-	AffectionReason string    `gorm:"type:text" json:"affection_reason"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ConversationMessage struct {
@@ -194,17 +182,6 @@ type AgentMemory struct {
 	LastObservedAt  *time.Time `json:"last_observed_at"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
-}
-
-type AgentSelfNote struct {
-	ID        string         `gorm:"primaryKey;size:26" json:"id"`
-	AgentID   string         `gorm:"size:64;uniqueIndex:idx_agent_self_notes_agent_key,priority:1;index:idx_agent_self_notes_agent_deleted,priority:1" json:"agent_id"`
-	Key       string         `gorm:"size:128;uniqueIndex:idx_agent_self_notes_agent_key,priority:2" json:"key"`
-	Category  string         `gorm:"size:64;index:idx_agent_self_notes_agent_deleted,priority:2" json:"category"`
-	Content   string         `gorm:"type:text" json:"content"`
-	DeletedAt gorm.DeletedAt `gorm:"index:idx_agent_self_notes_agent_deleted,priority:3" json:"deleted_at"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 type ExternalChatBinding struct {

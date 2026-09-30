@@ -29,3 +29,20 @@ func (s *ConversationService) ForgetMemory(ctx context.Context, accountID, agent
 	}
 	return s.humanize.ForgetMemory(ctx, accountID, agentID, memoryID)
 }
+
+// ListSelfNotes returns the agent's own persistent notes. They are not tied to
+// an account, so any conversation of the agent sees the same set.
+func (s *ConversationService) ListSelfNotes(ctx context.Context, agentID, query string, limit int) ([]database.AgentMemory, error) {
+	if s == nil || s.humanize == nil {
+		return nil, nil
+	}
+	return s.humanize.ListSelfNotes(ctx, agentID, query, limit)
+}
+
+// SaveSelfNote writes one of the agent's own persistent notes.
+func (s *ConversationService) SaveSelfNote(ctx context.Context, agentID string, input MemoryInput) (*database.AgentMemory, error) {
+	if s == nil || s.humanize == nil {
+		return nil, nil
+	}
+	return s.humanize.SaveSelfNote(ctx, agentID, input)
+}

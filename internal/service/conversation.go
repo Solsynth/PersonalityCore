@@ -214,18 +214,9 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 func (s *ConversationService) Billing() *BillingService { return s.billing }
 
 func (s *ConversationService) ListAgents() []agent.Definition {
-	return s.ListPetAgents(false)
-}
-
-// ListPetAgents returns enabled pet-capable agents when petOnly is true,
-// otherwise the full agent list. System prompts are stripped from responses.
-func (s *ConversationService) ListPetAgents(petOnly bool) []agent.Definition {
 	items := s.registry.List()
 	result := make([]agent.Definition, 0, len(items))
 	for _, def := range items {
-		if petOnly && !agent.HasAbility(def, "pet") {
-			continue
-		}
 		def.SystemPrompt = ""
 		result = append(result, def)
 	}
@@ -268,7 +259,7 @@ func (s *ConversationService) CreateConversation(ctx context.Context, accountID 
 func (s *ConversationService) ListConversations(ctx context.Context, accountID string, input ListInput) ([]database.ConversationThread, int64, error) {
 	var total int64
 	query := s.db.WithContext(ctx).Model(&database.ConversationThread{}).
-		Where("account_id = ? AND (kind IS NULL OR kind <> ?)", accountID, petThreadKind)
+		Where("account_id = ?", accountID)
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -485,9 +476,6 @@ func (s *ConversationService) buildModelMessages(ctx context.Context, accountID,
 	limit := s.cfg.Personality.MaxHistoryMessages
 	if limit < 1 {
 		limit = 24
-	}
-	if agent.HasAbility(def, "pet") {
-		limit = min(limit, 12)
 	}
 	perkLimits := s.resolvePerkLimits(perkLevel)
 	if perkLimits.MaxHistoryMessages > 0 {
@@ -1604,7 +1592,7 @@ func renderCurrentDateTimeContext(now time.Time, loc *time.Location) string {
 
 // renderUserIdentityOverlay tells the model who the authenticated caller is.
 // It is the fallback used whenever the Solar Network passport lookup is
-// unavailable (pet agents, offline mode, lookup failures).
+// unavailable (offline mode, lookup failures).
 func renderUserIdentityOverlay(name, nick string) string {
 	display := strings.TrimSpace(nick)
 	handle := strings.TrimSpace(name)
@@ -1938,11 +1926,7 @@ func (s *ConversationService) ensureThreadContextCompaction(ctx context.Context,
 		newSummary = s.buildRawSnippetSummary(records, prevSummary)
 	}
 
-	summaryLimit := 5000
-	if def, ok := s.registry.Get(thread.AgentID); ok && agent.HasAbility(def, "pet") {
-		summaryLimit = 3000
-	}
-	thread.ContextSummary = trimCompactedSummary(newSummary, summaryLimit)
+	thread.ContextSummary = trimCompactedSummary(newSummary, 5000)
 	thread.SummarySeq = cutoffSeq
 	now := time.Now()
 	thread.SummaryAt = &now

@@ -50,11 +50,7 @@ func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.Conversat
 }
 
 func listAgents(c *gin.Context, conversations *service.ConversationService) {
-	petOnly := false
-	if v, ok := c.GetQuery("pet"); ok {
-		petOnly = strings.EqualFold(strings.TrimSpace(v), "true")
-	}
-	c.JSON(http.StatusOK, conversations.ListPetAgents(petOnly))
+	c.JSON(http.StatusOK, conversations.ListAgents())
 }
 
 func listModels(c *gin.Context, conversations *service.ConversationService) {

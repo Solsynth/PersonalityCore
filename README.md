@@ -35,7 +35,7 @@ Abilities are part of the agent definition.
 
 Current humanization-related abilities:
 - `humanizer`: composite ability that enables all humanization features below
-- `memory`: passive fact extraction and long-term remembered facts
+- `memory`: passive fact extraction and long-term remembered facts about the user, plus the agent's own persistent identity notes
 - `saved_memory`: agent-owned deliberately saved memories
 - `cross_conversation_memory`: recall from other recent conversations for the same user account + agent
 - `mood`: rolling emotional tone
@@ -52,12 +52,12 @@ For humanization, the current server behavior includes:
 - passive fact extraction from user messages
 - cross-conversation recall from other recent threads for the same user account + agent
 - a distinct agent-owned saved-memory bucket for messages like `remember that ...`, `please remember ...`, or `don't forget ...`
-- a separate agent-global self-note bucket keyed only by `agent_id`, shared across every conversation that uses the same agent
+- a separate agent-global note bucket stored as agent-scope memories, keyed by `agent_id` with no account, shared across every conversation that uses the same agent
 
 For Solar chat, humanizer state is keyed by the inbound sender's `account_id`, not the per-room synthetic conversation account. That lets impressions and memory carry across rooms and the direct run API when the same user account is involved.
 
 The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
-Agent-global self notes are different: they represent the agent's own stable identity, preferences, lore, and ongoing projects. Those notes are injected into the system prompt for every run of that agent.
+Agent-global notes are different: they represent the agent's own stable identity, preferences, lore, and ongoing projects. They are stored as `agent`-scope rows in the same memory table (`scope = "agent"`, no `account_id`) and are injected into the system prompt for every run of that agent.
 
 ## Project Layout
 
@@ -171,7 +171,7 @@ accessToken = "..."
 The integration block is server-only: public HTTP and gRPC agent metadata expose `abilities`, but never return the bot credentials.
 Each enabled integrated agent maintains one websocket connection to `{solarNetwork.baseUrl}/ws`.
 When a chat-linked Solar conversation is active, outbound remote messages should be sent by `send_chat_message` or `send_chat_message_batch`; `NO_REPLY` is the explicit silence token, and plain assistant text is forwarded as a fallback when the model skips tool calling.
-Chat tool-calling also exposes `list_self_notes`, `save_self_note`, and `delete_self_note` so an agent can inspect and update its own persistent identity notes shared across all conversations.
+Chat tool-calling also exposes `memory_search`, `memory_save`, and `memory_forget`; with `scope: "agent"` they read and update the agent's own persistent identity notes, which are shared across all conversations, while the default `scope: "user"` covers memories about the person talking.
 Inbound Solar chat image attachments are passed to the model as multimodal image inputs using `{solarNetwork.baseUrl}/drive/files/{file_id}`.
 When the agent replies in plain assistant text for a Solar chat conversation, each non-empty newline-delimited line is sent as a separate outbound chat message. In streaming mode, completed lines are sent immediately when the newline arrives.
 For live inbound handling, a direct mention or reply to the bot opens a 5-minute active follow-up window so the bot can continue the current group-chat exchange.

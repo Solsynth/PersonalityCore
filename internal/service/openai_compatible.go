@@ -279,9 +279,6 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 	if isTaskToolName(call.Function.Name) {
 		return s.executeTaskToolCall(ctx, def.ID, accountID, call)
 	}
-	if isPetToolName(call.Function.Name) {
-		return s.executePetToolCall(ctx, accountID, def.ID, call)
-	}
 	if isWebSearchToolName(call.Function.Name) {
 		return s.executeWebSearchToolCall(ctx, accountID, call)
 	}

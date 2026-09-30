@@ -7,8 +7,8 @@ import (
 
 // CallerIdentity carries the authenticated caller's display identity from the
 // HTTP request into service execution. Tools use it to address the user even
-// when no Solar Network lookup is possible (for example pet agents, which have
-// no chat credentials).
+// when no Solar Network lookup is possible (for example agents without chat
+// credentials).
 type CallerIdentity struct {
 	AccountID string
 	Name      string

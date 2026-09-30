@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,7 @@ import (
 	"src.solsynth.dev/sosys/persona/internal/service"
 )
 
-func newPetFilterTestService(t *testing.T) *service.ConversationService {
+func newAgentTestService(t *testing.T) *service.ConversationService {
 	t.Helper()
 	raw, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -29,7 +30,7 @@ func newPetFilterTestService(t *testing.T) *service.ConversationService {
 		t.Fatal(err)
 	}
 	registry, err := agent.NewRegistry([]config.AgentConfig{
-		{ID: "mochi", Name: "Mochi", Model: "test", Abilities: []string{"pet", "memory"}, Enabled: true},
+		{ID: "mochi", Name: "Mochi", Model: "test", SystemPrompt: "You are Mochi.", Abilities: []string{"memory"}, Enabled: true},
 		{ID: "general", Name: "General", Model: "test", Enabled: true},
 	})
 	if err != nil {
@@ -38,7 +39,7 @@ func newPetFilterTestService(t *testing.T) *service.ConversationService {
 	return service.NewConversationService(db, &config.Config{}, registry, nil)
 }
 
-func newPetFilterTestRouter(svc *service.ConversationService, accountID string) *gin.Engine {
+func newAgentTestRouter(svc *service.ConversationService, accountID string) *gin.Engine {
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		identity.SetAccountID(c, accountID)
@@ -48,52 +49,56 @@ func newPetFilterTestRouter(svc *service.ConversationService, accountID string) 
 	return r
 }
 
-func TestListAgentsPetFilter(t *testing.T) {
+func TestListAgentsReturnsEveryEnabledAgentWithoutSystemPrompts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := newPetFilterTestRouter(newPetFilterTestService(t), "acct-1")
+	r := newAgentTestRouter(newAgentTestService(t), "acct-1")
 
 	response := httptest.NewRecorder()
-	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agents?pet=true", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("pet=true status = %d, want 200; body = %s", response.Code, response.Body.String())
-	}
-	var pets []map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &pets); err != nil {
-		t.Fatal(err)
-	}
-	if len(pets) != 1 || pets[0]["id"] != "mochi" {
-		t.Fatalf("pet=true returned %v, want only mochi", pets)
-	}
-
-	response = httptest.NewRecorder()
 	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
 	if response.Code != http.StatusOK {
-		t.Fatalf("unfiltered status = %d, want 200; body = %s", response.Code, response.Body.String())
+		t.Fatalf("status = %d, want 200; body = %s", response.Code, response.Body.String())
 	}
-	var all []map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &all); err != nil {
+	var agents []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &agents); err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("unfiltered returned %d agents, want 2", len(all))
+	if len(agents) != 2 {
+		t.Fatalf("returned %d agents, want 2", len(agents))
+	}
+	if body := response.Body.String(); strings.Contains(body, "You are Mochi.") {
+		t.Fatalf("system prompt leaked into the agent list: %s", body)
 	}
 }
 
 func TestDeleteAgentMemoriesEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	svc := newPetFilterTestService(t)
+	svc := newAgentTestService(t)
 	ctx := t.Context()
-	if _, err := svc.GetOrCreatePetThread(ctx, "acct-1", "mochi"); err != nil {
+	thread, err := svc.CreateConversation(ctx, "acct-1", service.CreateConversationInput{AgentID: "mochi", Title: "Chat"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	r := newPetFilterTestRouter(svc, "acct-1")
+	if _, err := svc.SaveMemory(ctx, "acct-1", "mochi", service.MemoryInput{
+		Scope: "user", Category: "identity", Key: "name", Content: "Mochi knows my name.",
+		Confidence: 1, Confirmed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := newAgentTestRouter(svc, "acct-1")
 
 	response := httptest.NewRecorder()
 	r.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/agents/mochi/memories", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204; body = %s", response.Code, response.Body.String())
 	}
-	if _, err := svc.GetPetAffection(ctx, "acct-1", "mochi"); err != service.ErrNotFound {
+	if _, err := svc.GetConversation(ctx, "acct-1", thread.ID); err != service.ErrNotFound {
 		t.Fatalf("expected ErrNotFound after delete endpoint, got %v", err)
+	}
+	memories, err := svc.ListMemories(ctx, "acct-1", "mochi", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 0 {
+		t.Fatalf("memories survived reset: %#v", memories)
 	}
 }

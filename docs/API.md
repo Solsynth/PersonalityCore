@@ -122,61 +122,6 @@ before a client tool call is returned.
 
 ---
 
-## Pet responses
-
-```
-POST /api/pet/responses
-POST /api/pet/reset?agent_id=mochi
-GET  /api/pet/affection?agent_id=mochi
-```
-
-Pet responses use the native Responses request and response shape, but the
-server resolves one hidden conversation per authenticated account and
-pet-capable agent. The client must send `agent_id` and may continue with the
-returned response `id` as `previous_response_id`; it does not need to store a
-conversation ID.
-
-Pet agents are marked in their configuration with the general-purpose ability
-list:
-
-```toml
-abilities = ["pet", "memory", "mood", "relationship"]
-```
-
-Pet threads are excluded from normal conversation listings. Reset returns
-`204 No Content` and causes the next pet response to start a new hidden
-conversation.
-
-### Affection
-
-Each pet session carries an affection score (0-100, default 50) toward its
-user, adjusted by the pet agent itself. Pet agents are given a
-`pet_adjust_affection` tool; the model calls it after each user message with a
-small delta (-5 to +5, up to +/-10 for major moments) and a one-line reason in
-the pet's voice. The server clamps the score to 0-100, so repeated adjustments
-cannot grow unbounded. The score is also surfaced to the pet in its system
-overlay (`Affection toward the user`) so it stays consistent across turns.
-
-`GET /api/pet/affection?agent_id=mochi` returns the current score:
-
-```json
-{
-  "agent_id": "mochi",
-  "affection": 62,
-  "level": "warm",
-  "reason": "The user gave me a treat."
-}
-```
-
-`level` is a stable bucket derived from the score: `estranged` (0-20),
-`distant` (21-40), `familiar` (41-60), `warm` (61-80), `devoted` (81-100).
-Returns `404` when the account has no pet session for that agent yet (no
-`POST /api/pet/responses` has been made). Resetting the pet thread also resets
-affection to the default 50.
-
-
----
-
 ## OpenAI-compatible chat completions
 
 ```
@@ -332,7 +277,11 @@ OpenAI-compatible error object:
 
 ## User memories
 
-Memories are account-scoped and agent-scoped. Conversation history remains the
+Memories are stored per account and per agent. `scope = "user"` memories
+describe the authenticated account and are private to it. `scope = "agent"`
+memories are the agent's own persistent identity notes: they carry no account,
+are shared across every account and conversation, and are injected into the
+agent's system prompt on every run. Conversation history remains the
 source of truth for a thread; memories are durable, structured, and treated as
 soft facts. Every memory has provenance, confidence, confirmation state, and a
 status. Replacing a fact supersedes the prior record instead of erasing it.
@@ -355,6 +304,7 @@ POST /api/memories
 ```json
 {
   "agent_id": "assistant",
+  "scope": "user",
   "category": "preference",
   "key": "favorite_drink",
   "content": "The user prefers tea.",
@@ -362,6 +312,10 @@ POST /api/memories
   "confirmed": true
 }
 ```
+
+`scope` defaults to `user`. Send `"scope": "agent"` to write one of the
+agent's own persistent notes instead; those ignore the account and are shared
+by every caller.
 
 An active memory with the same account, agent, scope, category, and key is
 updated when its content is unchanged. A changed value supersedes the previous
@@ -400,12 +354,9 @@ to this list; a valid provider/model reference that is not listed is rejected.
 
 ```
 GET /api/agents
-GET /api/agents?pet=true
 ```
 
-Returns all enabled agents. With `pet=true`, only pet-capable agents (those
-with the `pet` ability) are returned — useful for pet pickers that should not
-list general chat agents.
+Returns all enabled agents.
 
 **Response** `200 OK`
 
@@ -430,11 +381,11 @@ DELETE /api/agents/:id/memories
 ```
 
 Purges every trace of the agent for the authenticated account: all
-conversation threads and their messages and runs, the pet session (including
-its affection score), humanizer state, durable and saved memories, self-notes,
-scheduled tasks, and external chat bindings. Rows are hard-deleted, so the
-agent genuinely forgets the account. The agent configuration itself is
-untouched; the next conversation or pet response starts fresh.
+conversation threads and their messages and runs, humanizer state, durable and
+saved memories, the agent's own notes, scheduled tasks, and external chat
+bindings. Rows are hard-deleted, so the agent genuinely forgets the account.
+The agent configuration itself is untouched; the next conversation starts
+fresh.
 
 **Response** `204 No Content`
 **Response** `400 Bad Request` — agent is disabled or does not exist.

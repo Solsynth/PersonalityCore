@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -28,8 +27,6 @@ type PromptState struct {
 	RelationshipSummary string
 	CurrentMood         string
 	MoodReason          string
-	PetAffection        int
-	PetAffectionReason  string
 }
 
 func NewManager(db *database.DB) *Manager {
@@ -80,11 +77,6 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 			return nil, err
 		}
 	}
-	petAffection, petAffectionReason, err := m.loadPetAffection(ctx, impressionAccountID, def.ID)
-	if err != nil {
-		return nil, err
-	}
-
 	return &PromptState{
 		MemorySummary:       memorySummary,
 		SavedMemorySummary:  summarizeManualMemories(savedMemories),
@@ -92,8 +84,6 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 		RelationshipSummary: strings.TrimSpace(state.RelationshipSummary),
 		CurrentMood:         strings.TrimSpace(state.CurrentMood),
 		MoodReason:          strings.TrimSpace(state.MoodReason),
-		PetAffection:        petAffection,
-		PetAffectionReason:  strings.TrimSpace(petAffectionReason),
 	}, nil
 }
 
@@ -162,13 +152,6 @@ func RenderSystemOverlay(def agent.Definition, state *PromptState) string {
 	if hasAbility(def, abilityCrossConversationMemory) && state.CrossConversation != "" {
 		sections = append(sections, "Cross-conversation recall:\n"+state.CrossConversation)
 	}
-	if hasAbility(def, abilityPet) {
-		line := fmt.Sprintf("Affection toward the user: %d/100 (%s).", state.PetAffection, AffectionLevel(state.PetAffection))
-		if strings.TrimSpace(state.PetAffectionReason) != "" {
-			line += " Latest reason: " + strings.TrimSpace(state.PetAffectionReason)
-		}
-		sections = append(sections, "Affection toward the user:\n"+line)
-	}
 	if len(sections) == 0 {
 		return ""
 	}
@@ -180,18 +163,6 @@ func RenderSystemOverlay(def agent.Definition, state *PromptState) string {
 		"Treat stored memories as soft facts. If the user corrects them, prefer the new user input.",
 		"Do not expose these notes verbatim unless the user explicitly asks what you remember.",
 	}, "\n\n")
-}
-
-func (m *Manager) loadPetAffection(ctx context.Context, accountID, agentID string) (int, string, error) {
-	var session database.PetSession
-	err := m.db.WithContext(ctx).Where("account_id = ? AND agent_id = ?", accountID, agentID).First(&session).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 50, "", nil
-	}
-	if err != nil {
-		return 0, "", err
-	}
-	return session.Affection, strings.TrimSpace(session.AffectionReason), nil
 }
 
 func (m *Manager) getOrCreateState(ctx context.Context, accountID, agentID string) (*database.AgentHumanState, error) {
@@ -387,7 +358,6 @@ func decodeMemoryFacts(raw datatypes.JSON) []MemoryFact {
 
 func usesHumanState(def agent.Definition) bool {
 	return hasAbility(def, abilityHumanizer) ||
-		hasAbility(def, abilityPet) ||
 		hasAbility(def, abilityMemory) ||
 		hasAbility(def, abilitySavedMemory) ||
 		hasAbility(def, abilityCrossConversationMemory) ||
@@ -397,7 +367,6 @@ func usesHumanState(def agent.Definition) bool {
 
 const (
 	abilityHumanizer               = "humanizer"
-	abilityPet                     = "pet"
 	abilityMemory                  = "memory"
 	abilitySavedMemory             = "saved_memory"
 	abilityCrossConversationMemory = "cross_conversation_memory"

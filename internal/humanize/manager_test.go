@@ -103,31 +103,56 @@ func TestBuildPromptStateReusesImpressionAcrossSolarRoomsAndDirectRuns(t *testin
 func TestAgentSelfNotesAreGlobalPerAgentAndRenderedIntoOverlay(t *testing.T) {
 	db := openHumanizeTestDB(t)
 	manager := NewManager(db)
+	ctx := context.Background()
 
-	if _, err := manager.SaveAgentSelfNote(context.Background(), "michan", AgentSelfNoteInput{
+	if _, err := manager.SaveSelfNote(ctx, "michan", MemoryInput{
 		Key:      "favorite_drink",
 		Category: "preference",
 		Content:  "I like hojicha lattes.",
 	}); err != nil {
-		t.Fatalf("SaveAgentSelfNote() error = %v", err)
+		t.Fatalf("SaveSelfNote() error = %v", err)
 	}
-	if _, err := manager.SaveAgentSelfNote(context.Background(), "michan", AgentSelfNoteInput{
+	// A note is identified by its key, so saving it again updates it instead
+	// of leaving two notes behind.
+	if _, err := manager.SaveSelfNote(ctx, "michan", MemoryInput{
+		Key:      "favorite_drink",
+		Category: "preference",
+		Content:  "I like hojicha lattes, hot only.",
+	}); err != nil {
+		t.Fatalf("SaveSelfNote() second error = %v", err)
+	}
+	if _, err := manager.SaveSelfNote(ctx, "michan", MemoryInput{
 		Key:      "current_project",
 		Category: "project",
 		Content:  "I'm tinkering with a room mood tracker.",
 	}); err != nil {
-		t.Fatalf("SaveAgentSelfNote() second error = %v", err)
+		t.Fatalf("SaveSelfNote() third error = %v", err)
 	}
 
-	notes, err := manager.ListAgentSelfNotes(context.Background(), "michan", "")
+	notes, err := manager.ListSelfNotes(ctx, "michan", "", 0)
 	if err != nil {
-		t.Fatalf("ListAgentSelfNotes() error = %v", err)
+		t.Fatalf("ListSelfNotes() error = %v", err)
 	}
 	if len(notes) != 2 {
 		t.Fatalf("expected 2 self notes, got %d", len(notes))
 	}
+	for _, note := range notes {
+		if note.Scope != MemoryScopeAgent || note.AccountID != "" {
+			t.Fatalf("self note is not agent-global: %#v", note)
+		}
+	}
 
-	overlay, err := manager.BuildAgentIdentityOverlay(context.Background(), "michan")
+	// Notes belong to the agent rather than to the person talking, so they
+	// must not surface as that account's own memories.
+	userMemories, err := manager.ListMemories(ctx, "acct-1", "michan", "", 10)
+	if err != nil {
+		t.Fatalf("ListMemories() error = %v", err)
+	}
+	if len(userMemories) != 0 {
+		t.Fatalf("agent notes leaked into user memories: %#v", userMemories)
+	}
+
+	overlay, err := manager.BuildAgentIdentityOverlay(ctx, "michan")
 	if err != nil {
 		t.Fatalf("BuildAgentIdentityOverlay() error = %v", err)
 	}

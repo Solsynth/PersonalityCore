@@ -312,7 +312,7 @@ func buildAutonomousWakePrompt(thread *database.ConversationThread, input Autono
 		"Autonomous wake-up triggered.",
 		"You initiated this run yourself. There is no new inbound user message attached to this run.",
 		fmt.Sprintf("Trigger source: %s.", trigger),
-		"Decide whether to stay silent, inspect Solar profile or post context, update self notes, or send proactive outbound chat messages.",
+		"Decide whether to stay silent, inspect Solar profile or post context, update your memory, or send proactive outbound chat messages.",
 	}
 	if thread != nil && strings.TrimSpace(thread.Title) != "" {
 		lines = append(lines, fmt.Sprintf("Current conversation title: %q.", thread.Title))

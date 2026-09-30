@@ -178,20 +178,9 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
-	"self_notes": {
-		Name:        "self_notes",
-		Description: "Remember and recall personal details across conversations",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listSelfNotesToolInfo(),
-				s.saveSelfNoteToolInfo(),
-				s.deleteSelfNoteToolInfo(),
-			}
-		},
-	},
 	"memory": {
 		Name:        "memory",
-		Description: "Search and manage durable user memories",
+		Description: "Remember the user across conversations, and keep your own persistent self notes",
 		Tools: func(s *ConversationService) []*schema.ToolInfo {
 			return []*schema.ToolInfo{
 				s.memorySearchToolInfo(),
@@ -321,8 +310,8 @@ var skillRegistry = map[string]Skill{
 // abilityGatedSkills maps a skill to the agent ability that unlocks it. For
 // these skills the ability is the whole gate: capable agents get the tools
 // auto-loaded, every other agent never sees or activates them. Skills absent
-// from this map are gated by buildToolInfos (chat, solar_network, self_notes)
-// or by their OAuth session requirement (userSkillAbilities).
+// from this map are gated by buildToolInfos (chat, solar_network) or by their
+// OAuth session requirement (userSkillAbilities).
 var abilityGatedSkills = map[string]string{
 	"web_search": "web_search",
 }

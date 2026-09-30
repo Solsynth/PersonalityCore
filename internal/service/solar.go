@@ -520,7 +520,7 @@ func snRoomBehaviorPrompt(roomType *int) string {
 // so the agent knows who it's talking to.
 func (s *ConversationService) buildUserIdentityOverlay(ctx context.Context, agentID, accountID, fallbackName, fallbackNick string) string {
 	// Solar lookup is an enrichment (profile, local time), not a hard
-	// dependency: pet and non-chat agents have no SN connection, so fall
+	// dependency: non-chat agents have no SN connection, so fall
 	// back to the caller identity carried from the authenticated request.
 	if s.sn != nil && strings.TrimSpace(accountID) != "" {
 		account, err := s.sn.GetAccount(ctx, agentID, "", accountID)

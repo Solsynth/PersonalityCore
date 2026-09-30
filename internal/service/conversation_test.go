@@ -531,12 +531,12 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 		Personality: config.PersonalityConfig{MaxHistoryMessages: 4},
 	}, registry, nil)
 
-	if _, err := svc.humanize.SaveAgentSelfNote(context.Background(), "michan", humanize.AgentSelfNoteInput{
+	if _, err := svc.humanize.SaveSelfNote(context.Background(), "michan", humanize.MemoryInput{
 		Key:      "favorite_drink",
 		Category: "preference",
 		Content:  "I like hojicha lattes.",
 	}); err != nil {
-		t.Fatalf("SaveAgentSelfNote() error = %v", err)
+		t.Fatalf("SaveSelfNote() error = %v", err)
 	}
 
 	thread := &database.ConversationThread{
@@ -595,7 +595,7 @@ func TestBuildModelMessagesIncludesAgentIdentityOverlayAndCurrentTime(t *testing
 	}
 }
 
-func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
+func TestBuildModelMessagesIncludesCallerIdentityWithoutChatAbility(t *testing.T) {
 	db := openTestDB(t)
 	registry, err := agent.NewRegistry([]config.AgentConfig{{
 		ID:           "mochi",
@@ -603,7 +603,7 @@ func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
 		Model:        "openai/test",
 		Enabled:      true,
 		SystemPrompt: "You are Mochi.",
-		Abilities:    []string{"pet"},
+		Abilities:    []string{"memory"},
 	}})
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
@@ -614,10 +614,10 @@ func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
 	}, registry, nil)
 
 	thread := &database.ConversationThread{
-		ID:        "thread-pet-1",
+		ID:        "thread-1",
 		AccountID: "acct-1",
 		AgentID:   "mochi",
-		Title:     "Pet chat",
+		Title:     "Chat",
 	}
 	if err := db.Create(thread).Error; err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -633,7 +633,7 @@ func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
 		t.Fatalf("create message: %v", err)
 	}
 
-	// Pet agents have no Solar Network chat connection (no `chat` ability),
+	// An agent without the `chat` ability holds no Solar Network connection,
 	// so caller identity must come from the authenticated request context.
 	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "alice", "Alice")
 	if err != nil {
@@ -647,7 +647,7 @@ func TestBuildModelMessagesIncludesCallerIdentityForPetAgent(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected caller identity overlay for pet agent")
+		t.Fatal("expected caller identity overlay for an agent without the chat ability")
 	}
 
 	messages, _, err = svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
@@ -668,7 +668,7 @@ func TestBuildModelMessagesPrefersUserTimezoneForTimestamps(t *testing.T) {
 		Model:        "openai/test",
 		Enabled:      true,
 		SystemPrompt: "You are Mochi.",
-		Abilities:    []string{"pet"},
+		Abilities:    []string{"memory"},
 	}})
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
@@ -1868,7 +1868,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 						"reasoning_content": "let me check notes",
 						"tool_calls": []any{map[string]any{
 							"index": 0, "id": "call-1", "type": "function",
-							"function": map[string]any{"name": "list_self_notes", "arguments": "{"},
+							"function": map[string]any{"name": "memory_search", "arguments": "{\"query\":\"drink"},
 						}},
 					},
 					"finish_reason": nil,
@@ -1880,7 +1880,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 					"delta": map[string]any{
 						"tool_calls": []any{map[string]any{
 							"index":    0,
-							"function": map[string]any{"arguments": "}"},
+							"function": map[string]any{"arguments": "\"}"},
 						}},
 					},
 					"finish_reason": nil,
@@ -1923,7 +1923,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		ID:           "michan",
 		Name:         "Michan",
 		Model:        "openai/model",
-		Abilities:    []string{"chat", "self_notes"},
+		Abilities:    []string{"chat", "memory"},
 		Enabled:      true,
 		SystemPrompt: "You are Michan.",
 	}})
@@ -1972,10 +1972,10 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 	if !strings.Contains(strings.Join(contents, ""), "Found it.") {
 		t.Fatalf("expected streamed content chunks, got %q", contents)
 	}
-	if len(toolCalls) != 1 || toolCalls[0].ID != "call-1" || toolCalls[0].Function.Name != "list_self_notes" {
+	if len(toolCalls) != 1 || toolCalls[0].ID != "call-1" || toolCalls[0].Function.Name != memorySearchToolName {
 		t.Fatalf("unexpected tool call deltas: %#v", toolCalls)
 	}
-	if len(toolResults) != 1 || !strings.Contains(toolResults[0], `"agent_id"`) {
+	if len(toolResults) != 1 || !strings.Contains(toolResults[0], `"memories"`) {
 		t.Fatalf("unexpected tool results: %#v", toolResults)
 	}
 
@@ -2020,7 +2020,7 @@ func TestStreamRunExecutesStreamedToolCalls(t *testing.T) {
 		if msg.Role == "assistant" && strings.Contains(string(msg.Metadata), `"tool_calls"`) {
 			gotToolCall = true
 		}
-		if msg.Role == "tool" && strings.Contains(string(msg.Metadata), `"tool_name"`) && strings.Contains(msg.Content, `"agent_id"`) {
+		if msg.Role == "tool" && strings.Contains(string(msg.Metadata), `"tool_name"`) && strings.Contains(msg.Content, `"memories"`) {
 			gotToolResult = true
 		}
 		if msg.Role == "assistant" && strings.Contains(string(msg.Metadata), `"reasoning_content":"wrap up"`) {
@@ -2148,132 +2148,4 @@ func TestRenderUserIdentityOverlayIncludesHandle(t *testing.T) {
 		t.Fatalf("empty identity overlay = %q, want empty", got)
 	}
 }
-func TestStreamRunExecutesStreamedPetToolCall(t *testing.T) {
-	var requestBodies []map[string]any
-	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("unexpected completion path %q", r.URL.Path)
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode completion request: %v", err)
-		}
-		requestBodies = append(requestBodies, body)
 
-		flush := func(payload string) {
-			if _, err := w.Write([]byte(payload)); err != nil {
-				t.Fatalf("write sse: %v", err)
-			}
-			w.(http.Flusher).Flush()
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		if len(requestBodies) == 1 {
-			flush(sseStreamData(map[string]any{
-				"choices": []any{map[string]any{
-					"index": 0,
-					"delta": map[string]any{
-						"role": "assistant",
-						"tool_calls": []any{map[string]any{
-							"index": 0, "id": "call-pet", "type": "function",
-							"function": map[string]any{"name": "pet_adjust_affection", "arguments": `{"delta":3,"reason":"playful"}`},
-						}},
-					},
-					"finish_reason": nil,
-				}},
-			}))
-			flush(sseStreamData(map[string]any{
-				"choices": []any{map[string]any{
-					"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls",
-				}},
-			}))
-			return
-		}
-		flush(sseStreamData(map[string]any{
-			"choices": []any{map[string]any{
-				"index": 0, "delta": map[string]any{"role": "assistant", "content": "Yay!"}, "finish_reason": nil,
-			}},
-		}))
-		flush(sseStreamData(map[string]any{
-			"choices": []any{map[string]any{
-				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
-			}},
-		}))
-	}))
-	defer modelServer.Close()
-
-	cfg := &config.Config{
-		Providers: []config.ProviderConfig{{
-			ID:      "openai",
-			Type:    "openai-compatible",
-			APIKey:  "test",
-			BaseURL: modelServer.URL + "/v1",
-			Timeout: time.Second,
-			Models:  []config.ModelConfig{{Name: "model"}},
-		}},
-	}
-	registry, err := agent.NewRegistry([]config.AgentConfig{{
-		ID:           "mochi",
-		Name:         "Mochi",
-		Model:        "openai/model",
-		Abilities:    []string{"pet"},
-		Enabled:      true,
-		SystemPrompt: "You are Mochi.",
-	}})
-	if err != nil {
-		t.Fatalf("NewRegistry() error = %v", err)
-	}
-	executor, err := agent.NewExecutor(cfg)
-	if err != nil {
-		t.Fatalf("NewExecutor() error = %v", err)
-	}
-	db := openTestDB(t)
-	svc := NewConversationService(db, cfg, registry, executor)
-
-	thread, err := svc.GetOrCreatePetThread(context.Background(), "acct-1", "mochi")
-	if err != nil {
-		t.Fatalf("GetOrCreatePetThread() error = %v", err)
-	}
-
-	var toolResults []string
-	result, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
-		Message: "pet me",
-	}, StreamCallbacks{
-		OnToolResult: func(call schema.ToolCall, result string) error {
-			toolResults = append(toolResults, result)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("StreamRun() error = %v", err)
-	}
-	if result.ResponseContent != "Yay!" {
-		t.Fatalf("response content = %q, want %q", result.ResponseContent, "Yay!")
-	}
-	if len(toolResults) != 1 {
-		t.Fatalf("expected one pet tool result, got %#v", toolResults)
-	}
-	if !strings.Contains(toolResults[0], `"affection"`) {
-		t.Fatalf("expected affection payload in tool result, got %s", toolResults[0])
-	}
-
-	if len(requestBodies) != 2 {
-		t.Fatalf("expected 2 model requests, got %d", len(requestBodies))
-	}
-	raw, err := json.Marshal(requestBodies[1]["messages"])
-	if err != nil {
-		t.Fatalf("marshal messages: %v", err)
-	}
-	var secondMessages []map[string]any
-	if err := json.Unmarshal(raw, &secondMessages); err != nil {
-		t.Fatalf("unmarshal messages: %v", err)
-	}
-	foundTool := false
-	for _, msg := range secondMessages {
-		if msg["role"] == "tool" && msg["tool_call_id"] == "call-pet" {
-			foundTool = true
-		}
-	}
-	if !foundTool {
-		t.Fatalf("expected pet tool result message in second request, got %#v", secondMessages)
-	}
-}

@@ -15,7 +15,6 @@ import (
 
 	"src.solsynth.dev/sosys/persona/internal/agent"
 	"src.solsynth.dev/sosys/persona/internal/database"
-	"src.solsynth.dev/sosys/persona/internal/humanize"
 	"src.solsynth.dev/sosys/persona/internal/logging"
 	"src.solsynth.dev/sosys/persona/internal/solar_network"
 )
@@ -30,9 +29,6 @@ const setConversationTitleToolName = "set_conversation_title"
 const listUserPostsToolName = "list_user_posts"
 const getPostToolName = "get_post"
 const listPostRepliesToolName = "list_post_replies"
-const listSelfNotesToolName = "list_self_notes"
-const saveSelfNoteToolName = "save_self_note"
-const deleteSelfNoteToolName = "delete_self_note"
 const sequentialThinkingToolName = "sequentialthinking"
 const endEngagementToolName = "end_engagement"
 const solarOutboundMessageMinGap = 650 * time.Millisecond
@@ -73,20 +69,6 @@ type listPostRepliesToolInput struct {
 	PostID string `json:"post_id"`
 	Offset int    `json:"offset"`
 	Take   int    `json:"take"`
-}
-
-type listSelfNotesToolInput struct {
-	Category string `json:"category"`
-}
-
-type saveSelfNoteToolInput struct {
-	Key      string `json:"key"`
-	Category string `json:"category"`
-	Content  string `json:"content"`
-}
-
-type deleteSelfNoteToolInput struct {
-	Key string `json:"key"`
 }
 
 type endEngagementToolInput struct {
@@ -234,8 +216,8 @@ func (s *ConversationService) autoLoadedSkills(def agent.Definition, perkLevel i
 	if agent.HasAbility(def, "chat") {
 		mark("chat")
 	}
-	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "self_notes") {
-		mark("self_notes")
+	if agent.HasAbility(def, "humanizer") || agent.HasAbility(def, "memory") {
+		mark("memory")
 	}
 	for skillName, ability := range abilityGatedSkills {
 		if agent.HasAbility(def, ability) {
@@ -299,10 +281,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 				if !agent.HasAbility(def, "chat") {
 					continue
 				}
-			case "self_notes":
-				if !agent.HasAbility(def, "humanizer") && !agent.HasAbility(def, "self_notes") {
-					continue
-				}
 			case "files", "wallet", "notifications", "web_reader", "relationships", "search", "stickers", "surveys", "leveling":
 				if s.cfg == nil || !s.cfg.OAuth.Enabled || s.oauth == nil || !agent.HasAbility(def, name) {
 					continue
@@ -316,9 +294,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 		if et := s.endEngagementToolInfo(); et != nil {
 			tools = append(tools, et)
 		}
-	}
-	if agent.HasAbility(def, "pet") {
-		tools = append(tools, s.petAdjustAffectionToolInfo())
 	}
 	if dynamic && activeSkills != nil {
 		for name := range activeSkills {
@@ -489,11 +464,6 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
-			} else if isPetToolName(call.Function.Name) {
-				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
-				if err != nil {
-					return "", err
-				}
 			} else if isWebSearchToolName(call.Function.Name) {
 				result, err = s.executeWebSearchToolCall(ctx, accountID, call)
 				if err != nil {
@@ -628,11 +598,6 @@ func (s *ConversationService) runWithGeneralTools(
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
-				if err != nil {
-					return "", err
-				}
-			} else if isPetToolName(call.Function.Name) {
-				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
 				if err != nil {
 					return "", err
 				}
@@ -956,11 +921,6 @@ func (s *ConversationService) streamWithGeneralTools(
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
-				if err != nil {
-					return "", nil, err
-				}
-			} else if isPetToolName(call.Function.Name) {
-				result, err = s.executePetToolCall(ctx, accountID, agentDef.ID, call)
 				if err != nil {
 					return "", nil, err
 				}
@@ -1474,56 +1434,6 @@ func (s *ConversationService) listPostRepliesToolInfo() *schema.ToolInfo {
 	}
 }
 
-func (s *ConversationService) listSelfNotesToolInfo() *schema.ToolInfo {
-	return &schema.ToolInfo{
-		Name: listSelfNotesToolName,
-		Desc: "List your persistent self notes shared across all conversations for this same agent. Use this before answering questions about your own likes, background, ongoing projects, routines, or other stable self-identity details when consistency matters.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"category": {
-				Type: schema.String,
-				Desc: "Optional category filter such as identity, preference, project, lore, or routine.",
-			},
-		}),
-	}
-}
-
-func (s *ConversationService) saveSelfNoteToolInfo() *schema.ToolInfo {
-	return &schema.ToolInfo{
-		Name: saveSelfNoteToolName,
-		Desc: "Create or update one persistent self note for this agent. Use this when you decide on a stable personal detail about yourself that should stay consistent across future conversations. Prefer concise durable keys like favorite_drink, current_project, speaking_style, or hometown_story.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"key": {
-				Type:     schema.String,
-				Desc:     "Stable identifier for this self note.",
-				Required: true,
-			},
-			"category": {
-				Type: schema.String,
-				Desc: "Optional bucket such as identity, preference, project, lore, or routine.",
-			},
-			"content": {
-				Type:     schema.String,
-				Desc:     "The exact self note content to persist.",
-				Required: true,
-			},
-		}),
-	}
-}
-
-func (s *ConversationService) deleteSelfNoteToolInfo() *schema.ToolInfo {
-	return &schema.ToolInfo{
-		Name: deleteSelfNoteToolName,
-		Desc: "Delete one persistent self note for this agent by key. Use this when a prior self note should no longer be treated as part of your identity or current state.",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-			"key": {
-				Type:     schema.String,
-				Desc:     "Stable identifier for the self note to remove.",
-				Required: true,
-			},
-		}),
-	}
-}
-
 func (s *ConversationService) sequentialThinkingToolInfo() *schema.ToolInfo {
 	st, err := sequentialthinking.NewTool()
 	if err != nil {
@@ -1598,17 +1508,11 @@ func (s *ConversationService) executeEndEngagementToolCall(ctx context.Context, 
 
 func (s *ConversationService) executeChatToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
 	switch call.Function.Name {
-	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, listSelfNotesToolName, saveSelfNoteToolName, deleteSelfNoteToolName, sequentialThinkingToolName, endEngagementToolName:
+	case sendChatToolName, sendChatBatchToolName, noReplyToolName, getChatMessageToolName, getUserProfileToolName, listUserPostsToolName, getPostToolName, listPostRepliesToolName, sequentialThinkingToolName, endEngagementToolName:
 	default:
 		return nil, fmt.Errorf("unsupported tool %q", call.Function.Name)
 	}
 	switch call.Function.Name {
-	case listSelfNotesToolName:
-		return s.executeListSelfNotesToolCall(ctx, agentID, call)
-	case saveSelfNoteToolName:
-		return s.executeSaveSelfNoteToolCall(ctx, agentID, call)
-	case deleteSelfNoteToolName:
-		return s.executeDeleteSelfNoteToolCall(ctx, agentID, call)
 	case sequentialThinkingToolName:
 		return s.executeSequentialThinkingToolCall(ctx, agentID, call)
 	case endEngagementToolName:
@@ -2030,82 +1934,6 @@ func (s *ConversationService) executeListPostRepliesToolCall(ctx context.Context
 		"take":    input.Take,
 		"total":   replies.Total,
 		"items":   replies.Items,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
-}
-
-func (s *ConversationService) executeListSelfNotesToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
-	if s.humanize == nil {
-		return nil, fmt.Errorf("humanize manager is not configured")
-	}
-	var input listSelfNotesToolInput
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
-		return nil, fmt.Errorf("decode %s arguments: %w", listSelfNotesToolName, err)
-	}
-	notes, err := s.humanize.ListAgentSelfNotes(ctx, agentID, strings.TrimSpace(input.Category))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(map[string]any{
-		"agent_id": agentID,
-		"category": strings.TrimSpace(input.Category),
-		"items":    notes,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
-}
-
-func (s *ConversationService) executeSaveSelfNoteToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
-	if s.humanize == nil {
-		return nil, fmt.Errorf("humanize manager is not configured")
-	}
-	var input saveSelfNoteToolInput
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
-		return nil, fmt.Errorf("decode %s arguments: %w", saveSelfNoteToolName, err)
-	}
-	note, err := s.humanize.SaveAgentSelfNote(ctx, agentID, humanize.AgentSelfNoteInput{
-		Key:      input.Key,
-		Category: input.Category,
-		Content:  input.Content,
-	})
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(map[string]any{
-		"ok":       true,
-		"status":   "self_note_saved",
-		"agent_id": agentID,
-		"item":     note,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &executedChatToolResult{Content: string(raw), ToolName: call.Function.Name, ToolCallID: call.ID}, nil
-}
-
-func (s *ConversationService) executeDeleteSelfNoteToolCall(ctx context.Context, agentID string, call schema.ToolCall) (*executedChatToolResult, error) {
-	if s.humanize == nil {
-		return nil, fmt.Errorf("humanize manager is not configured")
-	}
-	var input deleteSelfNoteToolInput
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
-		return nil, fmt.Errorf("decode %s arguments: %w", deleteSelfNoteToolName, err)
-	}
-	deleted, err := s.humanize.DeleteAgentSelfNote(ctx, agentID, input.Key)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(map[string]any{
-		"ok":       true,
-		"status":   "self_note_deleted",
-		"agent_id": agentID,
-		"key":      input.Key,
-		"deleted":  deleted,
 	})
 	if err != nil {
 		return nil, err

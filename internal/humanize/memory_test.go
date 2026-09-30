@@ -53,6 +53,48 @@ func TestStructuredMemorySupersedesChangedFacts(t *testing.T) {
 	}
 }
 
+func TestForgetMemoryStaysInsideItsOwner(t *testing.T) {
+	manager := NewManager(openHumanizeTestDB(t))
+	ctx := context.Background()
+
+	mine, err := manager.SaveMemory(ctx, "acct-1", "michan", MemoryInput{
+		Scope: MemoryScopeUser, Category: "preference", Key: "favorite_drink", Content: "Tea.",
+	})
+	if err != nil {
+		t.Fatalf("SaveMemory() error = %v", err)
+	}
+	theirs, err := manager.SaveMemory(ctx, "acct-2", "michan", MemoryInput{
+		Scope: MemoryScopeUser, Category: "preference", Key: "favorite_drink", Content: "Coffee.",
+	})
+	if err != nil {
+		t.Fatalf("SaveMemory() second error = %v", err)
+	}
+	note, err := manager.SaveSelfNote(ctx, "michan", MemoryInput{
+		Key: "speaking_style", Category: "identity", Content: "I speak in short sentences.",
+	})
+	if err != nil {
+		t.Fatalf("SaveSelfNote() error = %v", err)
+	}
+
+	if err := manager.ForgetMemory(ctx, "acct-1", "michan", theirs.ID); err == nil {
+		t.Fatal("an account must not forget another account's memory")
+	}
+	if err := manager.ForgetMemory(ctx, "acct-1", "michan", note.ID); err != nil {
+		t.Fatalf("an agent note must be forgettable from any conversation: %v", err)
+	}
+	if err := manager.ForgetMemory(ctx, "acct-1", "michan", mine.ID); err != nil {
+		t.Fatalf("ForgetMemory() error = %v", err)
+	}
+
+	remaining, err := manager.ListMemories(ctx, "acct-2", "michan", "", 10)
+	if err != nil {
+		t.Fatalf("ListMemories() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Content != "Coffee." {
+		t.Fatalf("another account's memories were disturbed: %#v", remaining)
+	}
+}
+
 func TestObserveInteractionWritesStructuredFactsAndPromptUsesThem(t *testing.T) {
 	manager := NewManager(openHumanizeTestDB(t))
 	def := agent.Definition{ID: "michan", Abilities: []string{"memory"}}

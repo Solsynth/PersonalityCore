@@ -60,7 +60,7 @@ Sub-sections, in order:
 
 ## 5. Agent Identity Overlay
 
-Included when humanize is enabled. Contains the agent's self-notes from the database, formatted as:
+Included when humanize is enabled. Contains the agent's own notes (`scope = "agent"` memories) from the database, formatted as:
 
 ```
 [category] key: content
@@ -151,7 +151,7 @@ Tools are organized into **skills** — loadable bundles that add capabilities o
 
 **Auto-loaded** (based on agent abilities, not shown in `list_skills`):
 - `chat` ability → `send_chat_message`, `send_chat_message_batch`, `no_reply`
-- `humanizer` / `self_notes` ability → `list_self_notes`, `save_self_note`, `delete_self_note`
+- `humanizer` / `memory` ability → `memory_search`, `memory_save`, `memory_forget`
 - `web_search` ability → `web_search` (skill `web_search`)
 - `files`, `wallet`, `notifications`, `web_reader`, `relationships`, `search`, `stickers`, `surveys`, `leveling` abilities → the matching OAuth-backed skill
 
@@ -161,7 +161,7 @@ Tools are organized into **skills** — loadable bundles that add capabilities o
 |---|---|---|
 | `solar_network` | `get_chat_message`, `get_user_profile`, `list_user_posts`, `get_post`, `list_post_replies` | Look up Solar Network users, posts, profiles, and messages |
 | `chat` | `send_chat_message`, `send_chat_message_batch`, `no_reply` | Send and manage messages in Solar Network chats (non-chat agents only) |
-| `self_notes` | `list_self_notes`, `save_self_note`, `delete_self_note` | Remember and recall personal details (agents without humanizer only) |
+| `memory` | `memory_search`, `memory_save`, `memory_forget` | Remember the user, and keep the agent's own persistent identity notes (`scope: "agent"`) |
 | `tasks` | `create_task`, `list_tasks`, `update_task`, `delete_task` | Create and manage scheduled tasks that run automatically |
 | `surfing` | `list_feed`, `search_posts`, `create_post`, `reply_to_post`, `repost_post`, `get_post`, `get_post_replies`, `list_my_posts` | Browse, search, create, reply to, and repost posts on Solar Network |
 
@@ -190,9 +190,9 @@ Non-chat agents with tools use `runWithGeneralTools` (same tool loop but without
 | `list_user_posts` | List recent public posts by a Solar account. | `account_name` (required), `offset`, `take` |
 | `get_post` | Fetch one Solar post by ID. | `post_id` (required) |
 | `list_post_replies` | List replies for a Solar post. | `post_id` (required), `offset`, `take` |
-| `list_self_notes` | List the agent's persistent self-notes. | `category` (optional) |
-| `save_self_note` | Create or update a persistent self-note. | `key` (required), `content` (required), `category` (optional) |
-| `delete_self_note` | Delete a persistent self-note by key. | `key` (required) |
+| `memory_search` | Search durable memories, either about the user or the agent's own notes. | `query` (required), `scope` (optional: `user`/`agent`), `limit` (optional) |
+| `memory_save` | Save or update one memory. | `category` (required), `key` (required), `content` (required), `scope` (optional: `user`/`agent`) |
+| `memory_forget` | Forget one memory by ID, in either scope. | `memory_id` (required) |
 | `create_task` | Create a scheduled task (one-time or repeating). | `description` (required), `schedule_type` (required: `once`/`interval`), `run_at` (for once), `interval_secs` (for interval) |
 | `list_tasks` | List the agent's scheduled tasks. | *(none)* |
 | `update_task` | Update a scheduled task. | `task_id` (required), `description`, `enabled`, `interval_secs`, `run_at` (all optional) |

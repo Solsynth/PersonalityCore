@@ -225,41 +225,77 @@ func TestExecuteChatToolCallListUserPosts(t *testing.T) {
 	}
 }
 
-func TestExecuteChatToolCallSaveAndListSelfNotes(t *testing.T) {
+func TestExecuteMemoryToolCallKeepsAgentNotesAndUserMemoriesApart(t *testing.T) {
 	db := openTestDB(t)
 	svc := &ConversationService{db: db, humanize: humanize.NewManager(db)}
+	ctx := context.Background()
+	def := agent.Definition{ID: "michan", Model: "openai/test", Abilities: []string{"memory"}}
 
-	if _, err := svc.executeChatToolCall(context.Background(), "michan", schema.ToolCall{
-		ID: "call-save",
-		Function: schema.FunctionCall{
-			Name:      saveSelfNoteToolName,
-			Arguments: `{"key":"favorite_drink","category":"preference","content":"I like hojicha lattes."}`,
-		},
-	}); err != nil {
-		t.Fatalf("save self note error = %v", err)
+	run := func(t *testing.T, id, name, arguments string) string {
+		t.Helper()
+		result, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+			ID:       id,
+			Function: schema.FunctionCall{Name: name, Arguments: arguments},
+		})
+		if err != nil {
+			t.Fatalf("%s(%s) error = %v", name, arguments, err)
+		}
+		return result.Content
 	}
 
-	result, err := svc.executeChatToolCall(context.Background(), "michan", schema.ToolCall{
-		ID: "call-list",
-		Function: schema.FunctionCall{
-			Name:      listSelfNotesToolName,
-			Arguments: `{}`,
-		},
-	})
-	if err != nil {
-		t.Fatalf("list self notes error = %v", err)
+	run(t, "call-agent", memorySaveToolName, `{"key":"favorite_drink","category":"preference","content":"I like hojicha lattes.","scope":"agent"}`)
+	run(t, "call-user", memorySaveToolName, `{"key":"favorite_drink","category":"preference","content":"They drink black coffee."}`)
+
+	var search struct {
+		Scope    string `json:"scope"`
+		Memories []struct {
+			ID      string `json:"id"`
+			Scope   string `json:"scope"`
+			Key     string `json:"key"`
+			Content string `json:"content"`
+		} `json:"memories"`
 	}
-	var payload struct {
-		Items []database.AgentSelfNote `json:"items"`
+
+	// The same key in the two scopes is two different facts: the unscoped
+	// search is about the user, the agent-scoped one about the agent.
+	if err := json.Unmarshal([]byte(run(t, "call-search-user", memorySearchToolName, `{"query":"drink"}`)), &search); err != nil {
+		t.Fatalf("decode user search: %v", err)
 	}
-	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
-		t.Fatalf("decode result payload: %v", err)
+	if search.Scope != humanize.MemoryScopeUser || len(search.Memories) != 1 {
+		t.Fatalf("unscoped search = %#v, want one user memory", search)
 	}
-	if len(payload.Items) != 1 {
-		t.Fatalf("expected 1 self note, got %d", len(payload.Items))
+	if search.Memories[0].Content != "They drink black coffee." {
+		t.Fatalf("unscoped search returned the agent's own note: %#v", search.Memories)
 	}
-	if payload.Items[0].Key != "favorite_drink" {
-		t.Fatalf("unexpected self note key: %q", payload.Items[0].Key)
+	userMemoryID := search.Memories[0].ID
+
+	if err := json.Unmarshal([]byte(run(t, "call-search-agent", memorySearchToolName, `{"query":"drink","scope":"agent"}`)), &search); err != nil {
+		t.Fatalf("decode agent search: %v", err)
+	}
+	if search.Scope != humanize.MemoryScopeAgent || len(search.Memories) != 1 {
+		t.Fatalf("agent search = %#v, want one agent note", search)
+	}
+	if search.Memories[0].Content != "I like hojicha lattes." {
+		t.Fatalf("agent search returned the user's memory: %#v", search.Memories)
+	}
+
+	// Forgetting works by ID for either scope.
+	run(t, "call-forget", memoryForgetToolName, `{"memory_id":"`+userMemoryID+`"}`)
+	var afterForget struct {
+		Memories []struct{} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "call-search-after", memorySearchToolName, `{"query":"drink"}`)), &afterForget); err != nil {
+		t.Fatalf("decode search after forget: %v", err)
+	}
+	if len(afterForget.Memories) != 0 {
+		t.Fatalf("forgotten memory still listed: %#v", afterForget.Memories)
+	}
+
+	if _, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+		ID:       "call-bad-scope",
+		Function: schema.FunctionCall{Name: memorySearchToolName, Arguments: `{"query":"drink","scope":"global"}`},
+	}); err == nil {
+		t.Fatal("expected an unknown scope to be rejected")
 	}
 }
 
@@ -607,7 +643,7 @@ func TestBuildToolInfosKeepsToolNamesUniqueAfterSkillActivation(t *testing.T) {
 	}
 
 	active := map[string]bool{}
-	for _, name := range []string{"chat", "self_notes", "solar_network", "stickers"} {
+	for _, name := range []string{"chat", "memory", "solar_network", "stickers"} {
 		active[name] = true
 	}
 	tools := svc.buildToolInfos(def, active, 0)
@@ -618,7 +654,7 @@ func TestBuildToolInfosKeepsToolNamesUniqueAfterSkillActivation(t *testing.T) {
 		}
 		seen[tool.Name] = true
 	}
-	for _, name := range []string{"send_chat_message", "save_self_note", "list_stickers", "get_post"} {
+	for _, name := range []string{"send_chat_message", "memory_save", "list_stickers", "get_post"} {
 		if !seen[name] {
 			t.Fatalf("expected tool %q in list", name)
 		}
@@ -643,7 +679,7 @@ func TestAvailableSkillsOmitsAutoLoadedSkills(t *testing.T) {
 	for _, skill := range svc.availableSkills(def, map[string]bool{}, 0, nil) {
 		names[skill.Name] = true
 	}
-	for _, name := range []string{"chat", "self_notes", "stickers"} {
+	for _, name := range []string{"chat", "memory", "stickers"} {
 		if names[name] {
 			t.Fatalf("list_skills advertised already-loaded skill %q", name)
 		}
@@ -672,7 +708,7 @@ func TestConversationToolInfosFiltersSolarOutboundTools(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{
 		Personality: config.PersonalityConfig{DynamicSkills: true},
 	}}
-	def := agent.Definition{ID: "michan", Abilities: []string{"chat", "pet"}}
+	def := agent.Definition{ID: "michan", Abilities: []string{"chat"}}
 
 	ordinary := svc.conversationToolInfos(def, nil, 0, false, nil)
 	ordinaryNames := make(map[string]bool, len(ordinary))
@@ -684,8 +720,8 @@ func TestConversationToolInfosFiltersSolarOutboundTools(t *testing.T) {
 			t.Fatalf("ordinary conversation exposed Solar outbound tool %q", name)
 		}
 	}
-	if !ordinaryNames["pet_adjust_affection"] {
-		t.Fatal("ordinary conversation lost non-Solar agent tool")
+	if !ordinaryNames[setConversationTitleToolName] {
+		t.Fatal("ordinary conversation lost the non-Solar set_conversation_title tool")
 	}
 
 	solar := svc.conversationToolInfos(def, nil, 0, true, nil)

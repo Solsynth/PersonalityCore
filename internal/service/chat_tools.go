@@ -314,6 +314,7 @@ func (s *ConversationService) runWithChatTools(
 	agentDef agent.Definition,
 	perkLevel int32,
 	activeSkills map[string]bool,
+	usage *runUsage,
 ) (string, error) {
 	tools := s.buildToolInfos(agentDef, activeSkills, perkLevel)
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
@@ -364,6 +365,7 @@ func (s *ConversationService) runWithChatTools(
 				return "", err
 			}
 		}
+		usage.addMeta(response.ResponseMeta)
 		if len(response.ToolCalls) == 0 {
 			finalContent := strings.TrimSpace(response.Content)
 			// ponytail: plain text without tool calls is now ignored - model must use tools
@@ -518,6 +520,7 @@ func (s *ConversationService) runWithGeneralTools(
 	solarBound bool,
 	finalReasoning *strings.Builder,
 	activeSkills map[string]bool,
+	usage *runUsage,
 ) (string, error) {
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, tools)
 	if err != nil {
@@ -544,6 +547,7 @@ func (s *ConversationService) runWithGeneralTools(
 				return "", err
 			}
 		}
+		usage.addMeta(response.ResponseMeta)
 		if len(response.ToolCalls) == 0 {
 			if finalReasoning != nil && strings.TrimSpace(response.ReasoningContent) != "" {
 				finalReasoning.WriteString(strings.TrimSpace(response.ReasoningContent))
@@ -737,23 +741,23 @@ func (s *ConversationService) streamWithGeneralTools(
 	callbacks StreamCallbacks,
 	finalReasoning *strings.Builder,
 	activeSkills map[string]bool,
-) (string, *schema.TokenUsage, error) {
+	usage *runUsage,
+) (string, error) {
 	// Client tools ride alongside the server tools so the model can call them;
 	// only the server-owned subset is executed here.
 	allTools := append(append([]*schema.ToolInfo(nil), tools...), clientTools...)
 	toolModel, err := s.executor.NewToolCallingModel(ctx, agentDef, allTools)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	clientNames := toolNames(clientTools)
 
 	thread, err := s.GetConversation(ctx, accountID, threadID)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	messages := append([]*schema.Message(nil), modelMessages...)
-	var usage *schema.TokenUsage
 	for {
 		var round *streamedToolRound
 		var roundErr error
@@ -777,16 +781,16 @@ func (s *ConversationService) streamWithGeneralTools(
 			break
 		}
 		if roundErr != nil {
-			return "", nil, roundErr
+			return "", roundErr
 		}
 		if round.usage != nil {
-			usage = round.usage
+			usage.add(round.usage)
 		}
 		if len(round.calls) == 0 {
 			if finalReasoning != nil && round.reasoning != "" {
 				finalReasoning.WriteString(round.reasoning)
 			}
-			return round.content, usage, nil
+			return round.content, nil
 		}
 
 		logging.Log.Info().
@@ -801,7 +805,7 @@ func (s *ConversationService) streamWithGeneralTools(
 			assistantMetadata["reasoning_content"] = round.reasoning
 		}
 		if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "assistant", round.content, stringPtr(agentDef.Model), assistantMetadata); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		messages = append(messages, &schema.Message{
 			Role:             schema.Assistant,
@@ -824,12 +828,12 @@ func (s *ConversationService) streamWithGeneralTools(
 				// tell the caller, and wait for the resumed result.
 				if callbacks.OnClientTool != nil {
 					if err := callbacks.OnClientTool(runID, call); err != nil {
-						return "", nil, err
+						return "", err
 					}
 				}
 				resolution, clientErr := s.awaitClientToolResult(ctx, accountID, runID, call)
 				if clientErr != nil {
-					return "", nil, clientErr
+					return "", clientErr
 				}
 				clientResult := resolution.result
 				if len(resolution.extraTools) > 0 || len(resolution.overrides) > 0 {
@@ -857,7 +861,7 @@ func (s *ConversationService) streamWithGeneralTools(
 							namespaceClientTools(resolution.extraTools)...,
 						))
 						if err := rejectToolNameCollisions(tools, clientTools); err != nil {
-							return "", nil, err
+							return "", err
 						}
 						clientNames = toolNames(clientTools)
 					}
@@ -866,18 +870,18 @@ func (s *ConversationService) streamWithGeneralTools(
 						clientTools...,
 					))
 					if err != nil {
-						return "", nil, err
+						return "", err
 					}
 				}
 				if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", clientResult, nil, map[string]any{
 					"tool_call_id": call.ID,
 					"tool_name":    call.Function.Name,
 				}); err != nil {
-					return "", nil, err
+					return "", err
 				}
 				if callbacks.OnToolResult != nil {
 					if err := callbacks.OnToolResult(call, clientResult); err != nil {
-						return "", nil, err
+						return "", err
 					}
 				}
 				messages = append(messages, schema.ToolMessage(clientResult, call.ID, schema.WithToolName(call.Function.Name)))
@@ -901,52 +905,52 @@ func (s *ConversationService) streamWithGeneralTools(
 				))
 				toolModel, err = s.executor.NewToolCallingModel(ctx, agentDef, allTools)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if call.Function.Name == getCurrentUserProfileToolName {
 				result, err = s.executeGetCurrentUserProfileToolCall(ctx, agentDef.ID, thread, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if call.Function.Name == setConversationTitleToolName {
 				result, err = s.executeSetConversationTitleToolCall(ctx, thread, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if isTaskToolName(call.Function.Name) {
 				result, err = s.executeTaskToolCall(ctx, agentDef.ID, accountID, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if isMemoryToolName(call.Function.Name) {
 				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if isWebSearchToolName(call.Function.Name) {
 				result, err = s.executeWebSearchToolCall(ctx, accountID, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else if isUserScopedToolName(call.Function.Name) {
 				result, err = s.executeUserScopedToolCall(ctx, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
-					return "", nil, err
+					return "", err
 				}
 			}
 			if err := s.ensureSolarRoomBinding(ctx, thread, agentDef.ID, result.RoomID, result.TargetAccountName, time.Now()); err != nil {
-				return "", nil, err
+				return "", err
 			}
 			if _, err := s.createMessageWithMetadata(ctx, thread, &runID, "tool", result.Content, nil, map[string]any{
 				"tool_call_id": result.ToolCallID,
 				"tool_name":    result.ToolName,
 			}); err != nil {
-				return "", nil, err
+				return "", err
 			}
 			logging.Log.Debug().
 				Str("agent_id", agentDef.ID).
@@ -958,7 +962,7 @@ func (s *ConversationService) streamWithGeneralTools(
 				Msg("streamed tool call completed")
 			if callbacks.OnToolResult != nil {
 				if err := callbacks.OnToolResult(call, result.Content); err != nil {
-					return "", nil, err
+					return "", err
 				}
 			}
 			messages = append(messages, schema.ToolMessage(result.Content, call.ID, schema.WithToolName(call.Function.Name)))

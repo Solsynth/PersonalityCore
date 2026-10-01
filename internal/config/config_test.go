@@ -976,3 +976,47 @@ price = "0.25"
 		t.Fatalf("scraped engine price not parsed: %#v", cfg.WebSearch.Engines[1])
 	}
 }
+
+func TestLoad_ContextWindowFields(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[[providers]]
+id = "openai"
+type = "openai-compatible"
+apiKey = "test"
+baseUrl = "https://example.test/v1"
+contextWindow = 128000
+discoverContextWindow = true
+
+[[providers.models]]
+name = "gpt-4o"
+maxCompletionTokens = 4096
+contextWindow = 64000
+
+[[providers.models]]
+name = "gpt-4o-mini"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("got %d providers, want 1", len(cfg.Providers))
+	}
+	provider := cfg.Providers[0]
+	if provider.ContextWindow != 128000 || !provider.DiscoverContextWindow {
+		t.Fatalf("provider context settings = %d/%v, want 128000/true", provider.ContextWindow, provider.DiscoverContextWindow)
+	}
+	model := provider.ResolveModel("gpt-4o")
+	if model == nil || model.ContextWindow != 64000 {
+		t.Fatalf("model context window = %#v, want 64000", model)
+	}
+	// An omitted model value stays zero so the provider default applies.
+	if mini := provider.ResolveModel("gpt-4o-mini"); mini == nil || mini.ContextWindow != 0 {
+		t.Fatalf("mini context window = %#v, want 0", mini)
+	}
+}

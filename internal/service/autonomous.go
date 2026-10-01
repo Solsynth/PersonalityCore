@@ -95,9 +95,10 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 		return nil, err
 	}
 	responseContent := ""
+	usage := &runUsage{}
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
-		responseContent, err = s.runWithChatTools(ctx, thread.AccountID, thread.ID, run.ID, modelMessages, agentDef, thread.PerkLevel, activatedSkills(thread))
+		responseContent, err = s.runWithChatTools(ctx, thread.AccountID, thread.ID, run.ID, modelMessages, agentDef, thread.PerkLevel, activatedSkills(thread), usage)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
@@ -109,8 +110,10 @@ func (s *ConversationService) TriggerAutonomousRun(ctx context.Context, agentID 
 			return nil, err
 		}
 		responseContent = response.Content
+		usage.addMeta(response.ResponseMeta)
 	}
 
+	s.stampRunUsage(ctx, run, usage, agentDef.Model)
 	responseMessage, err := s.CompleteRun(ctx, run, responseContent, nil)
 	if err != nil {
 		return nil, err

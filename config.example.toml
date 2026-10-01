@@ -71,12 +71,21 @@ timeout = "90s"
 maxCompletionTokens = 2048    # default for all models under this provider
 temperature = 0.7
 topP = 1.0
+# contextWindow is the model's input-token ceiling, used only to report how
+# full a run's context was. Default for all models under this provider.
+contextWindow = 128000
+# discoverContextWindow asks this provider's /models endpoint for a ceiling when
+# neither the model config nor a built-in preset supplies one. Off by default:
+# it is an extra request on the first run that needs a window, and most hosted
+# providers do not report one anyway.
+discoverContextWindow = false
 
 # Model-level config overrides provider defaults.
 [[providers.models]]
 name = "gpt-4o"
 modalities = ["image"]        # this model supports image input
 maxCompletionTokens = 4096
+contextWindow = 128000        # overrides the provider default for this model
 temperature = 0.7
 
 # Per-model perk overrides: restrict or cap specific models per perk level.

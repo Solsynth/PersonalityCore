@@ -675,7 +675,14 @@ as `reasoning.delta` events on streamed runs and in the assistant message's
   "run": {
     "id": "01JF...",
     "status": "completed",
-    "model": "openai/gpt-4o"
+    "model": "openai/gpt-4o",
+    "usage": {
+      "input_tokens": 1005,
+      "output_tokens": 507,
+      "total_tokens": 1512,
+      "rounds": 2,
+      "context": {"used_tokens": 1000, "window_tokens": 128000, "used_ratio": 0.007813}
+    }
   },
   "request_message": { ... },
   "response_message": { ... },
@@ -684,6 +691,30 @@ as `reasoning.delta` events on streamed runs and in the assistant message's
 ```
 
 **Error** `4xx` — agent not found, conversation access denied, model error, etc.
+
+### Run usage
+
+Every run object — from a non-streaming run, [List runs](#list-runs),
+[Get run](#get-run), or the `run.completed` SSE event — carries a `usage`
+object. It is `{}` when the provider reported nothing.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input_tokens` | int | Prompt tokens summed over every model call the run made. |
+| `output_tokens` | int | Completion tokens summed over every model call. |
+| `total_tokens` | int | Provider total, or the sum of the two when the provider omitted it. |
+| `rounds` | int | Model calls the run made. A tool-calling run makes one per round, which is why the totals are summed rather than the last call's. |
+| `context.used_tokens` | int | The largest single prompt the run sent — how full the context actually got. |
+| `context.window_tokens` | int | The model's input ceiling, when known. Omitted otherwise. |
+| `context.used_ratio` | number | `used_tokens / window_tokens`, 6 decimal places. Omitted when the window is unknown. |
+
+The window comes from, in order: the model's `contextWindow`, the provider's
+`contextWindow`, a built-in preset for well-known models, then the provider's
+own `/models` reply when `discoverContextWindow` is enabled. Without one, the
+ratio is left out rather than computed against a guess.
+
+When `[billing]` is enabled, the same summed tokens price the run and are
+written to the billing ledger.
 
 ### Create run (streaming)
 
@@ -712,8 +743,35 @@ GET /api/conversations/:id/runs?take=20&offset=0
 GET /api/conversations/:id/runs/:runId
 ```
 
-**Response** `200 OK` — run object.
+**Response** `200 OK` — run object, including its `usage`.
 **Response** `404 Not Found` — run does not exist or access denied.
+
+### Get conversation usage
+
+```
+GET /api/conversations/:id/usage
+```
+
+Totals the tokens every run in the conversation used, computed from the stored
+per-run usage so it never re-prices history against today's configuration.
+
+**Response** `200 OK`
+
+```json
+{
+  "runs": 12,
+  "input_tokens": 48210,
+  "output_tokens": 9310,
+  "total_tokens": 57520,
+  "peak_context_used_tokens": 7204,
+  "context_window_tokens": 128000
+}
+```
+
+`runs` counts only runs that recorded usage; runs with an empty usage payload
+contribute nothing. `peak_context_used_tokens` is the fullest single prompt any
+run in the conversation sent, and `context_window_tokens` is the largest
+resolved window seen — omitted when no run knew one.
 
 ---
 
@@ -1031,11 +1089,20 @@ conversation can be continued from history.
 ```json
 {
   "run_id": "01JF...",
-  "message_id": "01JF..."
+  "message_id": "01JF...",
+  "usage": {
+    "input_tokens": 1005,
+    "output_tokens": 507,
+    "total_tokens": 1512,
+    "rounds": 2,
+    "context": {"used_tokens": 1000, "window_tokens": 128000, "used_ratio": 0.007813}
+  }
 }
 ```
 
-Emitted when the run finishes successfully.
+Emitted when the run finishes successfully. `usage` is the same object the run
+object carries (see [Run usage](#run-usage)); it is never `null`, and is `{}`
+when the provider reported no tokens.
 
 ### `run.failed`
 

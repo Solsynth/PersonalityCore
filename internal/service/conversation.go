@@ -823,7 +823,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	activeSkills := activatedSkills(thread)
 	responseContent := ""
 	var reasoningContent strings.Builder
-	var billingUsage *schema.TokenUsage
+	usage := &runUsage{}
 	if agent.HasAbility(agentDef, "chat") && s.sn != nil {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 		logging.Log.Info().
@@ -831,7 +831,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 			Str("run_id", run.ID).
 			Str("agent_id", agentDef.ID).
 			Msg("routing run through chat tool execution path")
-		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, thread.PerkLevel, activeSkills)
+		responseContent, err = s.runWithChatTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, thread.PerkLevel, activeSkills, usage)
 		if err != nil {
 			_ = s.FailRun(ctx, run, err)
 			return nil, err
@@ -841,13 +841,13 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		// handed to the caller and nothing can have been replaced.
 		tools := s.conversationToolInfos(agentDef, activeSkills, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), nil)
 		if len(tools) > 0 {
-			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent, activeSkills)
+			responseContent, err = s.runWithGeneralTools(ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), &reasoningContent, activeSkills, usage)
 		} else {
 			var response *schema.Message
 			response, err = s.executor.Generate(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 			if err == nil {
 				responseContent = response.Content
-				billingUsage = response.ResponseMeta.Usage
+				usage.addMeta(response.ResponseMeta)
 				if strings.TrimSpace(response.ReasoningContent) != "" {
 					reasoningContent.WriteString(response.ReasoningContent)
 				}
@@ -863,11 +863,12 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	if reasoning := strings.TrimSpace(reasoningContent.String()); reasoning != "" {
 		completeMeta = map[string]any{"reasoning_content": reasoning}
 	}
+	s.stampRunUsage(ctx, run, usage, agentDef.Model)
 	responseMessage, err := s.CompleteRun(ctx, run, responseContent, completeMeta)
 	if err != nil {
 		return nil, err
 	}
-	s.recordBilling(ctx, run, agentDef, billingUsage)
+	s.recordBilling(ctx, run, agentDef, usage.tokenUsage())
 	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, responseContent, requestMessage.ID, run.ID); err != nil {
@@ -1123,7 +1124,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	var builder strings.Builder
 	var reasoningContent strings.Builder
 	chunkCount := 0
-	var billingUsage *schema.TokenUsage
+	usage := &runUsage{}
 	if agent.HasAbility(agentDef, "chat") {
 		agentDef = effectiveChatAgentDefinition(agentDef)
 	}
@@ -1145,15 +1146,14 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		}
 	}
 	if len(tools) > 0 || len(clientTools) > 0 {
-		streamed, usage, toolErr := s.streamWithGeneralTools(
-			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, clientTools, input.ClientSkills, overrides, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent, activeSkills,
+		streamed, toolErr := s.streamWithGeneralTools(
+			ctx, accountID, threadID, run.ID, modelMessages, agentDef, tools, clientTools, input.ClientSkills, overrides, thread.PerkLevel, strings.HasPrefix(strings.TrimSpace(thread.AccountID), "solar:"), callbacks, &reasoningContent, activeSkills, usage,
 		)
 		if toolErr != nil {
 			_ = s.FailRun(ctx, run, toolErr)
 			return nil, toolErr
 		}
 		builder.WriteString(streamed)
-		billingUsage = usage
 	} else {
 		stream, err := s.executor.Stream(ctx, agent.RunRequest{Agent: agentDef, Messages: modelMessages})
 		if err != nil {
@@ -1162,6 +1162,9 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		}
 		defer stream.Close()
 
+		// One stream is one model call, so the last usage a provider reports is
+		// that call's total; it is added once after the stream ends.
+		var streamUsage *schema.TokenUsage
 		for {
 			chunk, recvErr := stream.Recv()
 			if recvErr != nil {
@@ -1175,7 +1178,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 				continue
 			}
 			if chunk.ResponseMeta.Usage != nil {
-				billingUsage = chunk.ResponseMeta.Usage
+				streamUsage = chunk.ResponseMeta.Usage
 			}
 			emitted := false
 			if chunk.Content != "" {
@@ -1218,17 +1221,19 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 					Msg("stream chunk emitted")
 			}
 		}
+		usage.add(streamUsage)
 	}
 
 	var completeMeta map[string]any
 	if reasoning := strings.TrimSpace(reasoningContent.String()); reasoning != "" {
 		completeMeta = map[string]any{"reasoning_content": reasoning}
 	}
+	s.stampRunUsage(ctx, run, usage, agentDef.Model)
 	responseMessage, err := s.CompleteRun(ctx, run, builder.String(), completeMeta)
 	if err != nil {
 		return nil, err
 	}
-	s.recordBilling(ctx, run, agentDef, billingUsage)
+	s.recordBilling(ctx, run, agentDef, usage.tokenUsage())
 	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
 		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, builder.String(), requestMessage.ID, run.ID); err != nil {

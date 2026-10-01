@@ -156,10 +156,13 @@ func (s *ConversationService) ExecuteResponse(ctx context.Context, accountID str
 	}
 
 	run.Model = result.Model
+	usage := &runUsage{}
+	usage.add(result.Usage)
+	s.stampRunUsage(ctx, run, usage, agentDef.Model)
 	if err := s.db.WithContext(ctx).Save(run).Error; err != nil {
 		return nil, err
 	}
-	s.recordBilling(ctx, run, agentDef, result.Usage)
+	s.recordBilling(ctx, run, agentDef, usage.tokenUsage())
 
 	if len(result.Message.ToolCalls) > 0 {
 		metadata := map[string]any{"tool_calls": result.Message.ToolCalls}

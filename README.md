@@ -7,6 +7,7 @@ It provides:
 - REST APIs under `/api`
 - SSE streaming for chat runs
 - Postgres-backed conversation, message, and run persistence
+- per-run and per-conversation token usage reporting
 - gRPC APIs for internal service-to-service usage
 
 The current implementation is backend-only. Agents are defined on the server side through TOML, not created by clients.
@@ -270,6 +271,14 @@ topP = 1.0
 ```
 
 The service merges inline providers and `providersDir/*.toml` at startup.
+
+Each provider and model may also set `contextWindow`, the model's input-token
+ceiling. It is used only to report how full a run's context was: every run
+records its summed input/output tokens and the largest prompt it sent, and the
+context ratio is included when a window is known. Explicit `contextWindow`
+wins, then a built-in preset for well-known models, then the provider's own
+`/models` reply when `discoverContextWindow = true`. Without one, the ratio is
+omitted rather than computed against a guess.
 
 Example separated layout:
 

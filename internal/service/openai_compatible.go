@@ -100,14 +100,20 @@ func (s *ConversationService) CompleteOpenAI(ctx context.Context, input OpenAICo
 			s.billing.CancelAuthorization(ctx, billingUsageID)
 		}
 	}()
+	// Tool-calling requests call the model once per round, and each call
+	// reports only its own tokens, so the request's usage is summed here
+	// instead of taken from the last round alone.
+	usage := &runUsage{}
 	finish := func(response *schema.Message) (*OpenAICompletionResult, error) {
 		generationCompleted = true
+		usage.addMeta(response.ResponseMeta)
+		summed := usage.tokenUsage()
 		if ownsBilling && s.billing != nil {
-			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, response.ResponseMeta.Usage); err != nil {
+			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, summed); err != nil {
 				return nil, err
 			}
 		}
-		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: response.ResponseMeta.Usage}, nil
+		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: summed}, nil
 	}
 
 	messages := append([]*schema.Message(nil), input.Messages...)
@@ -352,14 +358,20 @@ func (s *ConversationService) StreamOpenAICompletion(ctx context.Context, input 
 			s.billing.CancelAuthorization(ctx, billingUsageID)
 		}
 	}()
+	// Tool-calling requests call the model once per round, and each call
+	// reports only its own tokens, so the request's usage is summed here
+	// instead of taken from the last round alone.
+	usage := &runUsage{}
 	finish := func(response *schema.Message) (*OpenAICompletionResult, error) {
 		generationCompleted = true
+		usage.addMeta(response.ResponseMeta)
+		summed := usage.tokenUsage()
 		if ownsBilling && s.billing != nil {
-			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, response.ResponseMeta.Usage); err != nil {
+			if err := s.billing.RecordUsage(ctx, billingUsageID, billingRunID, def, summed); err != nil {
 				return nil, err
 			}
 		}
-		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: response.ResponseMeta.Usage}, nil
+		return &OpenAICompletionResult{Message: response, Model: def.Model, Definition: def, Usage: summed}, nil
 	}
 
 	messages := append([]*schema.Message(nil), input.Messages...)

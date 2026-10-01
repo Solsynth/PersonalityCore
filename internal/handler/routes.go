@@ -39,6 +39,7 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.POST("/:id/runs", func(c *gin.Context) { createRun(c, conversations) })
 		conv.GET("/:id/runs", func(c *gin.Context) { listRuns(c, conversations) })
 		conv.GET("/:id/runs/:runId", func(c *gin.Context) { getRun(c, conversations) })
+		conv.GET("/:id/usage", func(c *gin.Context) { getConversationUsage(c, conversations) })
 		conv.POST("/:id/runs/:runId/tool-results", func(c *gin.Context) { submitRunToolResult(c, conversations) })
 		conv.POST("/:id/compact", func(c *gin.Context) { compactConversation(c, conversations) })
 	}
@@ -367,7 +368,7 @@ func streamRun(c *gin.Context, conversations *service.ConversationService, accou
 	}
 
 	writeSSE(c, "message.completed", gin.H{"content": result.ResponseContent, "message_id": result.ResponseMessage.ID})
-	writeSSE(c, "run.completed", gin.H{"run_id": result.Run.ID, "message_id": result.ResponseMessage.ID})
+	writeSSE(c, "run.completed", gin.H{"run_id": result.Run.ID, "message_id": result.ResponseMessage.ID, "usage": result.Run.Usage})
 }
 
 func compactConversation(c *gin.Context, conversations *service.ConversationService) {
@@ -411,6 +412,23 @@ func getRun(c *gin.Context, conversations *service.ConversationService) {
 		return
 	}
 	c.JSON(http.StatusOK, run)
+}
+
+// getConversationUsage totals the tokens every run in the conversation used, and
+// the fullest context any of them reached. It is scoped to the account through
+// the service, exactly like the run endpoints.
+func getConversationUsage(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+
+	usage, err := conversations.ConversationUsage(c.Request.Context(), accountID, c.Param("id"))
+	if err != nil {
+		renderServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, usage)
 }
 
 func parseListInput(c *gin.Context) service.ListInput {

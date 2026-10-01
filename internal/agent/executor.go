@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -23,6 +24,10 @@ type RunRequest struct {
 type Executor struct {
 	providers             map[string]config.ProviderConfig
 	onlyAllowListedModels bool
+	// contextWindows caches a model's discovered input ceiling, including the
+	// zero that means "the provider did not say", so each provider/model is
+	// asked at most once per process.
+	contextWindows sync.Map
 }
 
 func NewExecutor(cfg *config.Config) (*Executor, error) {

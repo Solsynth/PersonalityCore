@@ -228,9 +228,16 @@ type ProviderConfig struct {
 	SupportsVision      *bool         `mapstructure:"supportsVision"`
 	Timeout             time.Duration `mapstructure:"timeout"`
 	MaxCompletionTokens int           `mapstructure:"maxCompletionTokens"`
-	Temperature         float32       `mapstructure:"temperature"`
-	TopP                float32       `mapstructure:"topP"`
-	Models              []ModelConfig `mapstructure:"models"`
+	ContextWindow       int           `mapstructure:"contextWindow"`
+	// DiscoverContextWindow asks the provider's /models endpoint for a model's
+	// context ceiling when neither `contextWindow` nor a built-in preset
+	// supplies one. Off by default: it is an extra outbound request on the
+	// first run that needs a window, and most hosted providers do not report
+	// one anyway.
+	DiscoverContextWindow bool          `mapstructure:"discoverContextWindow"`
+	Temperature           float32       `mapstructure:"temperature"`
+	TopP                  float32       `mapstructure:"topP"`
+	Models                []ModelConfig `mapstructure:"models"`
 }
 
 type ModelConfig struct {
@@ -238,6 +245,10 @@ type ModelConfig struct {
 	Type                string                    `mapstructure:"type"`
 	Modalities          []string                  `mapstructure:"modalities"`
 	MaxCompletionTokens int                       `mapstructure:"maxCompletionTokens"`
+	// ContextWindow is the model's total input-token ceiling, used only to
+	// report how full a run's context was. Zero means unknown; the service then
+	// falls back to the built-in presets and the provider's own /models reply.
+	ContextWindow       int                       `mapstructure:"contextWindow"`
 	Temperature         float32                   `mapstructure:"temperature"`
 	TopP                float32                   `mapstructure:"topP"`
 	Pricing             *ModelPricingConfig       `mapstructure:"pricing"`

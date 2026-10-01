@@ -134,10 +134,65 @@ type RunInput struct {
 	// Never persisted: the caller sends it again whenever it still applies.
 	Context         []string       `json:"context,omitempty"`
 	RequestMetadata map[string]any `json:"-"`
+	// ReasoningEffort tunes how much the model reasons before answering, and
+	// is forwarded to the provider verbatim as `reasoning_effort`. Empty
+	// leaves the model's own default untouched. See reasoningEffortValues for
+	// the levels accepted at the API boundary; they are not universal — each
+	// provider honours its own subset.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// DisableReasoning turns the provider's thinking mode off for this run
+	// (`{"thinking":{"type":"disabled"}}`), which is a separate switch from
+	// the effort level and wins over it. Nil keeps the agent's own setting, so
+	// an explicit false can re-enable reasoning an agent disabled by default.
+	DisableReasoning *bool `json:"disable_reasoning,omitempty"`
 	// AccountName and AccountNick carry the authenticated caller's identity
 	// from the request context; they are never accepted from the body.
 	AccountName string `json:"-"`
 	AccountNick string `json:"-"`
+}
+
+// reasoningEffortValues are the effort levels accepted at the API boundary.
+// The union of what the supported provider families document: DeepSeek maps
+// minimal/low/medium/high/xhigh/max/ultra onto its own levels, OpenAI accepts
+// minimal..high and "none" on its newest reasoning models. The value is
+// otherwise passed through untouched, so a level a provider does not know
+// fails in that provider's own words rather than being silently rewritten —
+// this list exists to catch typos, not to model provider capability.
+var reasoningEffortValues = map[string]bool{
+	"minimal": true,
+	"low":     true,
+	"medium":  true,
+	"high":    true,
+	"xhigh":   true,
+	"max":     true,
+	"ultra":   true,
+	"none":    true,
+}
+
+// ValidateReasoning rejects a run whose reasoning controls are not usable, so
+// a typo fails the request instead of quietly diverging from what was asked.
+func (in RunInput) ValidateReasoning() error {
+	effort := strings.TrimSpace(in.ReasoningEffort)
+	if effort == "" {
+		return nil
+	}
+	if !reasoningEffortValues[strings.ToLower(effort)] {
+		return fmt.Errorf("unsupported reasoning_effort %q", in.ReasoningEffort)
+	}
+	return nil
+}
+
+// applyReasoningOverrides folds a run's reasoning controls into the agent
+// definition the executor builds the model from, so one model configuration
+// applies to every execution path (plain, server tools, chat tools).
+func applyReasoningOverrides(def agent.Definition, input RunInput) agent.Definition {
+	if input.DisableReasoning != nil {
+		def.DisableThinking = input.DisableReasoning
+	}
+	if effort := strings.ToLower(strings.TrimSpace(input.ReasoningEffort)); effort != "" {
+		def.ReasoningEffort = new(effort)
+	}
+	return def
 }
 
 // clientToolResultTimeout bounds how long a streamed run waits for the caller
@@ -728,6 +783,11 @@ func (s *ConversationService) FailRun(ctx context.Context, run *database.Convers
 }
 
 func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadID string, input RunInput) (*RunResult, error) {
+	// Checked before the run is persisted: a malformed request must not leave
+	// a failed run behind.
+	if err := input.ValidateReasoning(); err != nil {
+		return nil, err
+	}
 	thread, run, requestMessage, err := s.CreateRun(ctx, accountID, threadID, input)
 	if err != nil {
 		return nil, err
@@ -743,6 +803,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
 	}
+	agentDef = applyReasoningOverrides(agentDef, input)
 
 	run.Model = agentDef.Model
 	if s.isModelBlocked(thread.PerkLevel, agentDef.Model) {
@@ -1020,6 +1081,11 @@ func (s *ConversationService) awaitClientToolResult(ctx context.Context, account
 }
 
 func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID string, input RunInput, callbacks StreamCallbacks) (*RunResult, error) {
+	// Checked before the run is persisted: a malformed request must not leave
+	// a failed run behind, nor open a stream that can only end in run.failed.
+	if err := input.ValidateReasoning(); err != nil {
+		return nil, err
+	}
 	thread, run, requestMessage, err := s.CreateRun(ctx, accountID, threadID, input)
 	if err != nil {
 		return nil, err
@@ -1035,6 +1101,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 		_ = s.FailRun(ctx, run, err)
 		return nil, err
 	}
+	agentDef = applyReasoningOverrides(agentDef, input)
 
 	run.Model = agentDef.Model
 	if s.isModelBlocked(thread.PerkLevel, agentDef.Model) {

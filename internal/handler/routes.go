@@ -232,6 +232,12 @@ func createRun(c *gin.Context, conversations *service.ConversationService) {
 		return
 	}
 	input := wire.RunInput
+	// Checked here as well as in the service so a bad effort is a plain 400,
+	// not a 200 stream that opens and immediately fails.
+	if err := input.ValidateReasoning(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if len(wire.ClientTools) > 0 {
 		converted, err := parseOpenAITools(wire.ClientTools)
 		if err != nil {

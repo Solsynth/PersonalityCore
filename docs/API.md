@@ -644,6 +644,28 @@ POST /api/conversations/:id/runs
 | `stream` | bool | no | `false` (default) returns a JSON response. `true` opens an SSE stream. |
 | `attachment_ids` | array of strings | no | File IDs from Solar Network FileSystem. Resolved to image URLs automatically. |
 | `input_parts` | array | no | Multimodal input (images, extra text). See [Input parts](#input-parts). |
+| `reasoning_effort` | string | no | How much the model should reason before answering: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, or `none`. Forwarded to the provider as `reasoning_effort`; unsupported levels fail at that provider. Omitted keeps the model default. |
+| `disable_reasoning` | bool | no | Turns the provider's thinking mode off for this run (`{"thinking":{"type":"disabled"}}`). Takes precedence over `reasoning_effort`. Omitted keeps the agent's own setting; `false` re-enables reasoning an agent disabled by default. |
+
+### Reasoning control
+
+Reasoning is controlled by two independent request fields, mirroring the
+OpenAI-compatible shape providers accept:
+
+- `reasoning_effort` sets the level, and is passed through verbatim. Effort
+  levels are not universal — DeepSeek honours `minimal` through `ultra`,
+  OpenAI accepts `minimal` through `high` (and `none` on its newest reasoning
+  models) — and a level a provider does not know fails in that provider's own
+  words.
+- `disable_reasoning` is the on/off switch, sent as the provider's
+  `thinking: {"type": "disabled"}` field. It wins over any effort level,
+  because an effort only tunes a model still allowed to reason.
+
+Both are per run and are never persisted, so a client sends them again whenever
+they still apply. Omitting both leaves the agent's configuration in charge
+(`disableThinking` in the agent's TOML). Reasoning the model does emit arrives
+as `reasoning.delta` events on streamed runs and in the assistant message's
+`metadata.reasoning_content` either way.
 
 **Response** `200 OK`
 
@@ -747,7 +769,13 @@ Search the public web through the engines configured in `[webSearch]`. The
 request is answered without a model in the loop, so any authenticated caller can
 use it directly. Configure `[[webSearch.engines]]` (defaults to DuckDuckGo's
 no-JavaScript endpoint) plus the optional crawl settings described in
-`README.md`.
+`README.md`. An `exa`, `tavily`, or `deepseek` engine answers through that
+provider's own search API; `deepseek` is the only engine that involves a model,
+and it is called for the provider's server-side web search rather than to
+generate an answer. Engines differ in which request fields they honour: the
+scripted engines fold `domains` into the query and use `freshness`, `exa` and
+`tavily` map both to their own parameters, `deepseek` ignores `freshness` and
+`language` and applies `domains` by filtering the hits it returns.
 
 ```
 POST /api/web/search
@@ -815,9 +843,9 @@ POST /api/web/search
 
 **Billing**
 
-Engines configured with a `price` (the API-backed `exa` and `tavily`) cost that
-amount in golds per query they answered, charged to the authenticated account.
-The response reports what was charged:
+Engines configured with a `price` (the API-backed `exa`, `tavily`, and
+`deepseek`) cost that amount in golds per query they answered, charged to the
+authenticated account. The response reports what was charged:
 
 ```json
 "charges": [{"engine": "exa", "amount": "1.5"}]

@@ -183,7 +183,7 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 		}
 	}
 
-	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
+	chatConfig := &einoopenai.ChatModelConfig{
 		APIKey:              provider.APIKey,
 		BaseURL:             provider.BaseURL,
 		Model:               modelName,
@@ -191,7 +191,19 @@ func (e *Executor) newOpenAIChatModel(ctx context.Context, provider config.Provi
 		MaxCompletionTokens: intPtr(maxTokens),
 		Temperature:         float32Ptr(temperature),
 		TopP:                float32Ptr(topP),
-	})
+	}
+	// Turning reasoning off is provider-specific and beats any effort level:
+	// an effort only tunes a model that is still allowed to reason. Effort is
+	// passed through verbatim, so a caller can use the levels its model
+	// documents (e.g. "minimal" or "none") without a client release.
+	if agent.DisableThinking != nil && *agent.DisableThinking {
+		chatConfig.ExtraFields = map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	} else if agent.ReasoningEffort != nil {
+		if effort := strings.TrimSpace(*agent.ReasoningEffort); effort != "" {
+			chatConfig.ReasoningEffort = einoopenai.ReasoningEffortLevel(effort)
+		}
+	}
+	return einoopenai.NewChatModel(ctx, chatConfig)
 }
 
 func (e *Executor) newOpenAIClient(provider config.ProviderConfig) (*goopenai.Client, error) {

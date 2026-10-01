@@ -2149,3 +2149,44 @@ func TestRenderUserIdentityOverlayIncludesHandle(t *testing.T) {
 	}
 }
 
+func TestRunInputValidateReasoning(t *testing.T) {
+	accepted := []string{"", "   ", "low", "MINIMAL", " high ", "xhigh", "max", "ultra", "none"}
+	for _, effort := range accepted {
+		if err := (RunInput{ReasoningEffort: effort}).ValidateReasoning(); err != nil {
+			t.Errorf("reasoning_effort %q rejected: %v", effort, err)
+		}
+	}
+
+	rejected := []string{"hgih", "verbose", "0", "very high"}
+	for _, effort := range rejected {
+		err := (RunInput{ReasoningEffort: effort}).ValidateReasoning()
+		if err == nil {
+			t.Fatalf("reasoning_effort %q accepted", effort)
+		}
+		if !strings.Contains(err.Error(), "unsupported reasoning_effort") {
+			t.Fatalf("reasoning_effort %q error = %v", effort, err)
+		}
+	}
+}
+
+func TestApplyReasoningOverridesPrecedence(t *testing.T) {
+	disabled := true
+	base := agent.Definition{Model: "openai/model", DisableThinking: &disabled}
+
+	// No controls leaves the agent's own settings alone.
+	inherited := applyReasoningOverrides(base, RunInput{})
+	if inherited.DisableThinking == nil || !*inherited.DisableThinking || inherited.ReasoningEffort != nil {
+		t.Fatalf("inherit = %#v", inherited)
+	}
+
+	// Effort is normalized, and an explicit false re-enables reasoning the
+	// agent disabled by default.
+	overridden := applyReasoningOverrides(base, RunInput{ReasoningEffort: "  HIGH ", DisableReasoning: new(false)})
+	if overridden.DisableThinking == nil || *overridden.DisableThinking {
+		t.Fatalf("disable flag not cleared: %#v", overridden)
+	}
+	if overridden.ReasoningEffort == nil || *overridden.ReasoningEffort != "high" {
+		t.Fatalf("effort = %v, want high", overridden.ReasoningEffort)
+	}
+}
+

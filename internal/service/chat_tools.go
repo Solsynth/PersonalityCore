@@ -342,11 +342,10 @@ func (s *ConversationService) runWithChatTools(
 			Str("run_id", runID).
 			Int("message_count", len(messages)).
 			Msg("invoking chat tool-capable model")
-		// Build generate options with tool_choice forced
+		// Build generate options with tool_choice forced. The agent's
+		// disableThinking switch is already baked into the model by the
+		// executor, so it is not repeated per call here.
 		genOpts := []model.Option{model.WithToolChoice(schema.ToolChoiceForced)}
-		if agentDef.DisableThinking != nil && *agentDef.DisableThinking {
-			genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
-		}
 		response, err := toolModel.Generate(ctx, messages, genOpts...)
 		if err != nil {
 			// ponytail: DeepSeek thinking mode doesn't support tool_choice, disable thinking and retry

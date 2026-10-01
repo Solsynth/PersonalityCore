@@ -27,6 +27,11 @@ type Definition struct {
 	PerkOverrides           map[int]config.AgentPerkOverride    `json:"-"`
 	// PerkMaxTokens is set by the perk resolver; executor checks this first.
 	PerkMaxTokens *int `json:"-"`
+	// ReasoningEffort is set per request by the run's caller and consumed by
+	// the executor when it builds the model. It is deliberately not agent
+	// configuration: `disableThinking` is the operator-level switch, this is
+	// the caller's per-run override. Nil leaves the model default alone.
+	ReasoningEffort *string `json:"-"`
 }
 
 type Registry struct {

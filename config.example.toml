@@ -41,15 +41,6 @@ dailyUsageLimits = { golds = "20", points = "500" }
 instantBillingWall = "20"      # unpaid golds; 0 = only daily settlement
 
 # ─── Solar Network ──────────────────────────────────────────────────
-# ─── OAuth (optional) ──────────────────────────────────────────────
-# When enabled, Personality obtains per-(agent, account) user tokens via
-# Stargate's OIDC device flow so user-scoped tools can act as the
-# conversation user instead of the bot.
-# [oauth]
-# enabled = true
-# clientId = "personality"       # registered Stargate OIDC client
-# clientSecret = ""              # empty = public client
-# scopes = ["*"]                 # default: single wildcard
 
 # ─── Sentry (optional) ─────────────────────────────────────────────
 # [sentry]
@@ -264,9 +255,6 @@ model = "openai/gpt-4.1-mini"
 maxCompletionTokens = 4096
 billingMultiplier = 1.0         # optional multiplier for this agent's priced model calls
 # disableThinking = false
-# User-scoped abilities (require [oauth] enabled): "files", "wallet",
-# "notifications", "web_reader", "relationships", "search", "stickers",
-# "surveys", "leveling"
 # Web search ability (requires [webSearch] enabled): "web_search"
 enabled = true
 enabled = true

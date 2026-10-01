@@ -354,62 +354,15 @@ func toolNamesInRequest(body map[string]any) map[string]bool {
 // whole mechanism: an override moves a capability the caller has already
 // replaced, and can never remove one it has not. A name the server does not
 // offer leaves the tool list exactly as it was.
-func TestCallerOverridesDropOnlyWhatTheServerHas(t *testing.T) {
-	svc := &ConversationService{}
-	tools := []*schema.ToolInfo{
-		{Name: listNotificationsToolName},
-		{Name: listFeedToolName},
-		{Name: createPostToolName},
-	}
-
-	kept := toolNamesOf(svc.applyCallerOverrides(tools, callerOverrides([]string{
-		listNotificationsToolName, "not_a_server_tool", "   ",
-	})))
-	if kept[listNotificationsToolName] != 0 {
-		t.Fatalf("an overridden tool was still offered: %#v", kept)
-	}
-	for _, name := range []string{listFeedToolName, createPostToolName} {
-		if kept[name] != 1 {
-			t.Fatalf("%s must survive an unrelated override, got %#v", name, kept)
-		}
-	}
-
-	// Nothing declared, nothing dropped.
-	if got := len(svc.applyCallerOverrides(tools, nil)); got != len(tools) {
-		t.Fatalf("no overrides changed the list: %d tools, want %d", got, len(tools))
-	}
-}
-
 // TestOnlyAFullyReplacedSkillLeavesTheCatalogue keeps a part-replaced skill
 // listed: activating it still adds the tools the caller did not claim, and
 // hiding it would take those away.
-func TestOnlyAFullyReplacedSkillLeavesTheCatalogue(t *testing.T) {
-	svc := &ConversationService{cfg: &config.Config{}}
-	notifications := skillRegistry["notifications"]
-
-	if svc.skillFullyReplaced(notifications, nil) {
-		t.Fatal("a skill is not replaced when nothing was declared")
-	}
-	if !svc.skillFullyReplaced(notifications, callerOverrides([]string{
-		listNotificationsToolName,
-		getUnreadNotificationCountToolName,
-		markAllNotificationsReadToolName,
-	})) {
-		t.Fatal("a skill whose every tool was replaced must not be advertised")
-	}
-	if svc.skillFullyReplaced(notifications, callerOverrides([]string{
-		listNotificationsToolName,
-	})) {
-		t.Fatal("a part-replaced skill still has tools to add")
-	}
-}
-
 // TestListSkillsHidesFullyReplacedSkillsAndKeepsTheRest is the same property
 // seen from the model's side: the catalogue it reads must not offer to load
 // something the caller already runs, and must go on offering everything else.
 func TestListSkillsHidesFullyReplacedSkillsAndKeepsTheRest(t *testing.T) {
 	def := agent.Definition{Abilities: []string{"chat"}}
-	// The memory skill needs no OAuth session, so it is in this catalogue
+	// The memory skill is auto-loaded, so it is in this catalogue
 	// either way — which is what makes the claim below testable.
 	svc := &ConversationService{cfg: &config.Config{}}
 

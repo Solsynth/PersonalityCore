@@ -210,24 +210,6 @@ type FileSummary struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// AgentOAuthSession stores a user's OAuth token pair for the account so
-// Personality can call Solar Network REST APIs as the conversation user.
-// The token is account-scoped — the same Stargate grant serves every agent —
-// so a session is keyed by account_id alone. Tokens are stored plaintext to
-// match the existing house convention (bot tokens live in TOML); the server
-// must refresh on the user's behalf.
-type AgentOAuthSession struct {
-	ID               string     `gorm:"primaryKey;size:26" json:"id"`
-	AccountID        string     `gorm:"size:128;uniqueIndex:idx_agent_oauth_sessions_account;priority:1" json:"account_id"`
-	Scopes           string     `gorm:"size:255" json:"scopes"`
-	AccessToken      string     `gorm:"type:text" json:"-"`
-	RefreshToken     string     `gorm:"type:text" json:"-"`
-	AccessExpiresAt  *time.Time `json:"access_expires_at"`
-	RefreshExpiresAt *time.Time `json:"refresh_expires_at"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
 // WebSearchPage is one crawled document kept by the local web search index.
 // Pages are server-global (search is not account-scoped) and keyed by URL so a
 // re-crawl refreshes the stored text instead of adding a duplicate.

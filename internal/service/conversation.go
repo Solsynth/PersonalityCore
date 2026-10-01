@@ -64,7 +64,6 @@ type ConversationService struct {
 	snInbound         *snInboundBatcher
 	billing           *BillingService
 	billingPermission PermissionChecker
-	oauth             *OAuthService
 	webSearch         WebSearchEngine
 	netHTTP           *http.Client
 	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed

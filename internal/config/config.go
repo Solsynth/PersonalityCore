@@ -20,21 +20,10 @@ type Config struct {
 	Personality  PersonalityConfig  `mapstructure:"personality"`
 	Sentry       SentryConfig       `mapstructure:"sentry"`
 	SolarNetwork SolarNetworkConfig `mapstructure:"solarNetwork"`
-	OAuth        OAuthConfig        `mapstructure:"oauth"`
 	WebSearch    WebSearchConfig    `mapstructure:"webSearch"`
 	Agents       AgentsConfig       `mapstructure:"agents"`
 	ProvidersDir string             `mapstructure:"providersDir"`
 	Providers    []ProviderConfig   `mapstructure:"providers"`
-}
-
-// OAuthConfig controls user-scoped OAuth sessions. When enabled, personality
-// obtains and refreshes per-(agent, account) user tokens via Stargate's OIDC
-// device flow so user-scoped tools can act as the conversation user.
-type OAuthConfig struct {
-	Enabled      bool     `mapstructure:"enabled"`
-	ClientID     string   `mapstructure:"clientId"`
-	ClientSecret string   `mapstructure:"clientSecret"` // empty => public client
-	Scopes       []string `mapstructure:"scopes"`
 }
 
 // WebSearchConfig configures the built-in web search engine. Engines are the
@@ -325,9 +314,6 @@ func Load(configPath string) (*Config, error) {
 	if err := validateSolarNetworkConfig(&cfg); err != nil {
 		return nil, err
 	}
-	if err := validateOAuthConfig(&cfg); err != nil {
-		return nil, err
-	}
 	normalizeWebSearchConfig(&cfg)
 	if err := resolveWebSearchEngines(&cfg); err != nil {
 		return nil, err
@@ -375,10 +361,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sentry.environment", "")
 	v.SetDefault("sentry.release", "")
 	v.SetDefault("solarNetwork.baseUrl", "")
-	v.SetDefault("oauth.enabled", false)
-	v.SetDefault("oauth.clientId", "")
-	v.SetDefault("oauth.clientSecret", "")
-	v.SetDefault("oauth.scopes", []string{"*"})
 	v.SetDefault("webSearch.enabled", false)
 	v.SetDefault("webSearch.defaultLimit", 5)
 	v.SetDefault("webSearch.maxLimit", 10)
@@ -522,19 +504,6 @@ func validateSolarNetworkConfig(cfg *Config) error {
 		return fmt.Errorf("solarNetwork.baseUrl is required when an enabled agent has chat ability")
 	}
 
-	return nil
-}
-
-func validateOAuthConfig(cfg *Config) error {
-	if !cfg.OAuth.Enabled {
-		return nil
-	}
-	if strings.TrimSpace(cfg.OAuth.ClientID) == "" {
-		return fmt.Errorf("oauth.clientId is required when oauth is enabled")
-	}
-	if strings.TrimSpace(cfg.SolarNetwork.BaseURL) == "" {
-		return fmt.Errorf("solarNetwork.baseUrl is required when oauth is enabled")
-	}
 	return nil
 }
 

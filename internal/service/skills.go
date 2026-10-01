@@ -201,52 +201,6 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
-	"files": {
-		Name:        "files",
-		Description: "Browse, upload, and manage files in Solar Drive",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listFilesToolInfo(),
-				s.getFileInfoToolInfo(),
-				s.createFolderToolInfo(),
-				s.uploadTextFileToolInfo(),
-				s.recycleFileToolInfo(),
-				s.restoreFileToolInfo(),
-				s.listRecycleBinToolInfo(),
-				s.getStorageQuotaToolInfo(),
-			}
-		},
-	},
-	"wallet": {
-		Name:        "wallet",
-		Description: "View Solar wallets and orders",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listWalletsToolInfo(),
-				s.listOrdersToolInfo(),
-			}
-		},
-	},
-	"notifications": {
-		Name:        "notifications",
-		Description: "View and manage Solar notifications",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listNotificationsToolInfo(),
-				s.getUnreadNotificationCountToolInfo(),
-				s.markAllNotificationsReadToolInfo(),
-			}
-		},
-	},
-	"web_reader": {
-		Name:        "web_reader",
-		Description: "Read and extract content from web pages",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.readWebpageToolInfo(),
-			}
-		},
-	},
 	"web_search": {
 		Name:        "web_search",
 		Description: "Search the public web for current information",
@@ -256,62 +210,12 @@ var skillRegistry = map[string]Skill{
 			}
 		},
 	},
-	"relationships": {
-		Name:        "relationships",
-		Description: "View and manage Solar relationships (follow, unfollow, friends)",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listRelationshipsToolInfo(),
-				s.followAccountToolInfo(),
-				s.unfollowAccountToolInfo(),
-			}
-		},
-	},
-	"search": {
-		Name:        "search",
-		Description: "Search for Solar Network accounts",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.searchAccountsToolInfo(),
-			}
-		},
-	},
-	"stickers": {
-		Name:        "stickers",
-		Description: "Browse, search, and load Solar sticker packs and individual stickers",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listStickersToolInfo(),
-				s.searchStickersToolInfo(),
-				s.getPackStickersToolInfo(),
-			}
-		},
-	},
-	"surveys": {
-		Name:        "surveys",
-		Description: "View Solar surveys",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.listSurveysToolInfo(),
-			}
-		},
-	},
-	"leveling": {
-		Name:        "leveling",
-		Description: "View Solar leveling and experience history",
-		Tools: func(s *ConversationService) []*schema.ToolInfo {
-			return []*schema.ToolInfo{
-				s.getMyLevelingToolInfo(),
-			}
-		},
-	},
 }
 
 // abilityGatedSkills maps a skill to the agent ability that unlocks it. For
 // these skills the ability is the whole gate: capable agents get the tools
 // auto-loaded, every other agent never sees or activates them. Skills absent
-// from this map are gated by buildToolInfos (chat, solar_network) or by their
-// OAuth session requirement (userSkillAbilities).
+// from this map are gated by buildToolInfos (chat, solar_network).
 var abilityGatedSkills = map[string]string{
 	"web_search": "web_search",
 }
@@ -325,7 +229,6 @@ func (s *ConversationService) skillAllowedForAgent(def agent.Definition, name st
 func (s *ConversationService) availableSkills(def agent.Definition, activeSkills map[string]bool, perkLevel int32, overrides map[string]bool) []Skill {
 	var skills []Skill
 	loaded := s.autoLoadedSkills(def, perkLevel)
-	oauthReady := s.oauthReady()
 	for name, skill := range skillRegistry {
 		// Skills whose tools this agent already has must not be advertised:
 		// activating them would be a no-op the model cannot observe.
@@ -342,10 +245,6 @@ func (s *ConversationService) availableSkills(def agent.Definition, activeSkills
 			continue
 		}
 		if !s.skillAllowedForAgent(def, name) {
-			continue
-		}
-		// OAuth-backed skills only produce failing tools without a session.
-		if userSkillNames[name] && !oauthReady {
 			continue
 		}
 		skills = append(skills, skill)

@@ -181,33 +181,12 @@ func (s *ConversationService) filterSolarOutboundTools(tools []*schema.ToolInfo,
 	return filtered
 }
 
-// userSkillAbilities maps an agent ability to the skill that backs it. These
-// skills need an OAuth session because their tools act on the caller's account.
-var userSkillAbilities = map[string]string{
-	"files": "files", "wallet": "wallet", "notifications": "notifications",
-	"web_reader": "web_reader", "relationships": "relationships", "search": "search",
-	"stickers": "stickers", "surveys": "surveys", "leveling": "leveling",
-}
-
-// userSkillNames is the set of OAuth-backed skill names.
-var userSkillNames = func() map[string]bool {
-	names := make(map[string]bool, len(userSkillAbilities))
-	for _, skillName := range userSkillAbilities {
-		names[skillName] = true
-	}
-	return names
-}()
-
-func (s *ConversationService) oauthReady() bool {
-	return s.cfg != nil && s.cfg.OAuth.Enabled && s.oauth != nil
-}
-
 // autoLoadedSkills returns the skills whose tools buildToolInfos injects on its
 // own for this agent, keyed by skill name. Skill discovery must not advertise
 // them: activating an already-loaded skill would re-append tools the model
 // already has, and providers reject duplicate tool names.
 func (s *ConversationService) autoLoadedSkills(def agent.Definition, perkLevel int32) map[string]bool {
-	loaded := make(map[string]bool, len(userSkillAbilities)+2)
+	loaded := make(map[string]bool, 2)
 	mark := func(name string) {
 		if _, ok := skillRegistry[name]; ok && s.isSkillAllowed(perkLevel, name) {
 			loaded[name] = true
@@ -222,13 +201,6 @@ func (s *ConversationService) autoLoadedSkills(def agent.Definition, perkLevel i
 	for skillName, ability := range abilityGatedSkills {
 		if agent.HasAbility(def, ability) {
 			mark(skillName)
-		}
-	}
-	if s.oauthReady() {
-		for ability, skillName := range userSkillAbilities {
-			if agent.HasAbility(def, ability) {
-				mark(skillName)
-			}
 		}
 	}
 	return loaded
@@ -279,10 +251,6 @@ func (s *ConversationService) buildToolInfos(def agent.Definition, activeSkills 
 			switch name {
 			case "chat", "solar_network":
 				if !agent.HasAbility(def, "chat") {
-					continue
-				}
-			case "files", "wallet", "notifications", "web_reader", "relationships", "search", "stickers", "surveys", "leveling":
-				if s.cfg == nil || !s.cfg.OAuth.Enabled || s.oauth == nil || !agent.HasAbility(def, name) {
 					continue
 				}
 			}
@@ -470,12 +438,7 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
-			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, call)
-				if err != nil {
-					return "", err
-				}
-			} else {
+		} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err
@@ -609,12 +572,7 @@ func (s *ConversationService) runWithGeneralTools(
 				if err != nil {
 					return "", err
 				}
-			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, call)
-				if err != nil {
-					return "", err
-				}
-			} else {
+		} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err
@@ -932,12 +890,7 @@ func (s *ConversationService) streamWithGeneralTools(
 				if err != nil {
 					return "", err
 				}
-			} else if isUserScopedToolName(call.Function.Name) {
-				result, err = s.executeUserScopedToolCall(ctx, call)
-				if err != nil {
-					return "", err
-				}
-			} else {
+		} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err

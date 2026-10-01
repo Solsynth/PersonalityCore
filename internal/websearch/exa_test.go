@@ -43,7 +43,7 @@ func TestExaEngineMapsRequestAndResponse(t *testing.T) {
 		t.Fatalf("newEngine() error = %v", err)
 	}
 
-	results, err := engine.Search(context.Background(), Query{
+	response, err := engine.Search(context.Background(), Query{
 		Text:      "postgres 18 async io",
 		Limit:     4,
 		Freshness: FreshnessWeek,
@@ -74,11 +74,11 @@ func TestExaEngineMapsRequestAndResponse(t *testing.T) {
 	}
 
 	// The result without a title and the engine's own link are dropped.
-	if len(results) != 1 {
-		t.Fatalf("got %d results, want 1: %#v", len(results), results)
+	if len(response.Results) != 1 {
+		t.Fatalf("got %d results, want 1: %#v", len(response.Results), response.Results)
 	}
-	if results[0].Provider != "exa" || !strings.Contains(results[0].Snippet, "asynchronous I/O") {
-		t.Fatalf("unexpected result: %#v", results[0])
+	if response.Results[0].Provider != "exa" || !strings.Contains(response.Results[0].Snippet, "asynchronous I/O") {
+		t.Fatalf("unexpected result: %#v", response.Results[0])
 	}
 }
 

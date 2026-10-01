@@ -14,6 +14,8 @@ import (
 type stubEngine struct {
 	name    string
 	results []Result
+	usage   *Usage
+	meters  bool
 	err     error
 
 	mu        sync.Mutex
@@ -23,16 +25,19 @@ type stubEngine struct {
 
 func (e *stubEngine) Name() string { return e.name }
 
-func (e *stubEngine) Search(_ context.Context, query Query) ([]Result, error) {
+func (e *stubEngine) Search(_ context.Context, query Query) (EngineResponse, error) {
 	e.mu.Lock()
 	e.calls++
 	e.lastQuery = query
+	usage := e.usage
 	e.mu.Unlock()
 	if e.err != nil {
-		return nil, e.err
+		return EngineResponse{}, e.err
 	}
-	return e.results, nil
+	return EngineResponse{Results: e.results, Usage: usage}, nil
 }
+
+func (e *stubEngine) Metered() bool { return e.meters }
 
 func (e *stubEngine) callCount() int {
 	e.mu.Lock()
@@ -384,10 +389,43 @@ func TestSearcherChargesOnlyPricedEnginesThatAnswered(t *testing.T) {
 	if response.Charges[0].Engine != "exa" || response.Charges[0].Amount != "1.5" {
 		t.Fatalf("unexpected charge: %#v", response.Charges[0])
 	}
+	if response.Charges[0].Kind != ChargeKindQuery {
+		t.Fatalf("a configured price is a per-query charge: %#v", response.Charges[0])
+	}
+}
+
+func TestSearchReportsEngineUsage(t *testing.T) {
+	spent := &Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 3_000, OutputTokens: 500, Searches: 1}
+	engine := &stubEngine{
+		name:    "deepseek",
+		meters:  true,
+		results: []Result{result("deepseek", "https://example.com/1")},
+		usage:   spent,
+	}
+	searcher := newTestSearcher(0, engine)
+	searcher.metered = true
+
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(response.Engines) != 1 || response.Engines[0].Usage == nil {
+		t.Fatalf("the provider spend must be reported per engine: %#v", response.Engines)
+	}
+	if got := response.Engines[0].Usage; got.InputTokens != 3_000 || got.Searches != 1 {
+		t.Fatalf("unexpected usage: %#v", got)
+	}
+	if !searcher.Metered() {
+		t.Fatal("a searcher with a metered engine must report itself as metered")
+	}
 }
 
 func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
-	engine := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/1")}}
+	engine := &stubEngine{
+		name:    "exa",
+		results: []Result{result("exa", "https://example.com/1")},
+		usage:   &Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 10},
+	}
 	searcher := newTestSearcher(time.Minute, engine)
 	searcher.prices = map[string]string{"exa": "1"}
 
@@ -406,6 +444,9 @@ func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
 	if !second.Cached || len(second.Charges) != 0 {
 		t.Fatalf("a cached search makes no upstream call and must not be charged: %#v", second)
 	}
+	if reported := second.Engines; len(reported) == 0 || reported[0].Usage != nil {
+		t.Fatalf("a cached answer must not claim the cached query's token spend: %#v", reported)
+	}
 
 	// The index fallback answers without calling any engine either.
 	indexSearcher := newTestSearcher(0, &stubEngine{name: "exa", err: errors.New("boom")})
@@ -417,6 +458,25 @@ func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
 	}
 	if !fallback.Fallback || len(fallback.Charges) != 0 {
 		t.Fatalf("an index fallback must not be charged: %#v", fallback)
+	}
+}
+
+func TestNewReportsMeteredFromConfiguredEngines(t *testing.T) {
+	cfg := config.WebSearchConfig{
+		Enabled: true,
+		Engines: []config.WebSearchEngineConfig{{
+			Type: "deepseek", Provider: "deepseek", APIKey: "sk-test", BaseURL: "https://api.deepseek.com", Price: "0",
+		}},
+	}
+	searcher, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !searcher.Metered() {
+		t.Fatal("an engine that spends provider tokens must mark the searcher as metered")
+	}
+	if searcher.Billed() {
+		t.Fatal("a price of zero is not a per-query charge")
 	}
 }
 

@@ -87,6 +87,20 @@ func newEngine(cfg config.WebSearchEngineConfig, root config.WebSearchConfig) (E
 			baseURL = "https://api.exa.ai/search"
 		}
 		return &exaEngine{id: id, apiKey: strings.TrimSpace(cfg.APIKey), baseURL: baseURL, client: client}, nil
+	case "deepseek":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("web search engine %q requires apiKey", id)
+		}
+		if timeout <= defaultTimeout {
+			timeout = deepseekMinTimeout
+		}
+		return &deepseekEngine{
+			id:       id,
+			provider: strings.TrimSpace(cfg.Provider),
+			apiKey:   strings.TrimSpace(cfg.APIKey),
+			baseURL:  deepseekAnthropicBase(cfg.BaseURL),
+			client:   &http.Client{Timeout: timeout},
+		}, nil
 	default:
 		return nil, fmt.Errorf("web search engine %q uses unsupported type %q", id, cfg.Type)
 	}
@@ -203,10 +217,10 @@ type duckDuckGoEngine struct {
 
 func (e *duckDuckGoEngine) Name() string { return e.id }
 
-func (e *duckDuckGoEngine) Search(ctx context.Context, query Query) ([]Result, error) {
+func (e *duckDuckGoEngine) Search(ctx context.Context, query Query) (EngineResponse, error) {
 	endpoint, err := url.Parse(e.baseURL + "/html/")
 	if err != nil {
-		return nil, fmt.Errorf("invalid duckduckgo base url: %w", err)
+		return EngineResponse{}, fmt.Errorf("invalid duckduckgo base url: %w", err)
 	}
 	values := endpoint.Query()
 	values.Set("q", buildQueryText(query))
@@ -218,11 +232,11 @@ func (e *duckDuckGoEngine) Search(ctx context.Context, query Query) ([]Result, e
 
 	body, err := fetchHTML(ctx, e.client, endpoint, e.userAgent, e.language)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 	doc := parseHTML(body)
 	if doc == nil {
-		return nil, fmt.Errorf("decode response")
+		return EngineResponse{}, fmt.Errorf("decode response")
 	}
 
 	var rows []Result
@@ -242,14 +256,14 @@ func (e *duckDuckGoEngine) Search(ctx context.Context, query Query) ([]Result, e
 	}
 	if len(rows) == 0 {
 		if err := emptyOrBlocked(body); err != nil {
-			return nil, err
+			return EngineResponse{}, err
 		}
 	}
 	collected, err := collect(e.id, query, rows)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
-	return collected, nil
+	return EngineResponse{Results: collected}, nil
 }
 
 // duckDuckGoDateFilter maps the shared freshness window onto DuckDuckGo's
@@ -282,10 +296,10 @@ type bingEngine struct {
 
 func (e *bingEngine) Name() string { return e.id }
 
-func (e *bingEngine) Search(ctx context.Context, query Query) ([]Result, error) {
+func (e *bingEngine) Search(ctx context.Context, query Query) (EngineResponse, error) {
 	endpoint, err := url.Parse(e.baseURL + "/search")
 	if err != nil {
-		return nil, fmt.Errorf("invalid bing base url: %w", err)
+		return EngineResponse{}, fmt.Errorf("invalid bing base url: %w", err)
 	}
 	values := endpoint.Query()
 	values.Set("q", buildQueryText(query))
@@ -303,11 +317,11 @@ func (e *bingEngine) Search(ctx context.Context, query Query) ([]Result, error) 
 
 	body, err := fetchHTML(ctx, e.client, endpoint, e.userAgent, e.language)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 	doc := parseHTML(body)
 	if doc == nil {
-		return nil, fmt.Errorf("decode response")
+		return EngineResponse{}, fmt.Errorf("decode response")
 	}
 
 	var rows []Result
@@ -326,14 +340,14 @@ func (e *bingEngine) Search(ctx context.Context, query Query) ([]Result, error) 
 	}
 	if len(rows) == 0 {
 		if err := emptyOrBlocked(body); err != nil {
-			return nil, err
+			return EngineResponse{}, err
 		}
 	}
 	collected, err := collect(e.id, query, rows)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
-	return collected, nil
+	return EngineResponse{Results: collected}, nil
 }
 
 // bingDateFilter maps the shared freshness window onto the filter Bing's own
@@ -375,10 +389,10 @@ func (e *googleEngine) Name() string { return e.id }
 // reports an engine error rather than an empty result set. Google is therefore
 // not part of the default engine set: enable it only where the egress is known
 // to receive real result pages.
-func (e *googleEngine) Search(ctx context.Context, query Query) ([]Result, error) {
+func (e *googleEngine) Search(ctx context.Context, query Query) (EngineResponse, error) {
 	endpoint, err := url.Parse(e.baseURL + "/search")
 	if err != nil {
-		return nil, fmt.Errorf("invalid google base url: %w", err)
+		return EngineResponse{}, fmt.Errorf("invalid google base url: %w", err)
 	}
 	values := endpoint.Query()
 	values.Set("q", buildQueryText(query))
@@ -396,11 +410,11 @@ func (e *googleEngine) Search(ctx context.Context, query Query) ([]Result, error
 
 	body, err := fetchHTML(ctx, e.client, endpoint, e.userAgent, e.language)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 	doc := parseHTML(body)
 	if doc == nil {
-		return nil, fmt.Errorf("decode response")
+		return EngineResponse{}, fmt.Errorf("decode response")
 	}
 
 	// Google has no stable result container class. Titles are still marked up as
@@ -421,14 +435,14 @@ func (e *googleEngine) Search(ctx context.Context, query Query) ([]Result, error
 	}
 	if len(rows) == 0 {
 		if err := emptyOrBlocked(body); err != nil {
-			return nil, err
+			return EngineResponse{}, err
 		}
 	}
 	collected, err := collect(e.id, query, rows)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
-	return collected, nil
+	return EngineResponse{Results: collected}, nil
 }
 
 // googleSnippet looks for the descriptive text that Google renders next to a

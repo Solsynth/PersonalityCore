@@ -21,7 +21,7 @@ type tavilyEngine struct {
 
 func (e *tavilyEngine) Name() string { return e.id }
 
-func (e *tavilyEngine) Search(ctx context.Context, query Query) ([]Result, error) {
+func (e *tavilyEngine) Search(ctx context.Context, query Query) (EngineResponse, error) {
 	body := map[string]any{
 		"query":        query.Text,
 		"max_results":  query.Limit,
@@ -40,12 +40,12 @@ func (e *tavilyEngine) Search(ctx context.Context, query Query) ([]Result, error
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 
 	request, err := http.NewRequest(http.MethodPost, e.baseURL, bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+e.apiKey)
@@ -60,7 +60,7 @@ func (e *tavilyEngine) Search(ctx context.Context, query Query) ([]Result, error
 		} `json:"results"`
 	}
 	if err := doJSON(ctx, e.client, request, &response); err != nil {
-		return nil, err
+		return EngineResponse{}, err
 	}
 
 	rows := make([]Result, 0, len(response.Results))
@@ -71,7 +71,11 @@ func (e *tavilyEngine) Search(ctx context.Context, query Query) ([]Result, error
 			Snippet: excerptText(cleanText(item.Content), exaSnippetCharacters),
 		})
 	}
-	return collect(e.id, query, rows)
+	collected, err := collect(e.id, query, rows)
+	if err != nil {
+		return EngineResponse{}, err
+	}
+	return EngineResponse{Results: collected}, nil
 }
 
 // tavilyTimeRange maps the shared freshness window onto Tavily's time range.

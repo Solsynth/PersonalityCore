@@ -20,6 +20,9 @@ type WebSearchEngine interface {
 	Search(ctx context.Context, query websearch.Query) (*websearch.Response, error)
 	// Billed reports whether any configured engine charges per query.
 	Billed() bool
+	// Metered reports whether any configured engine spends model tokens per
+	// query, which the caller is billed for at the provider's pricing.
+	Metered() bool
 }
 
 // WebSearchInput is the request shape shared by the tool and the HTTP endpoint.
@@ -42,7 +45,9 @@ func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, i
 	if s.webSearch == nil {
 		return nil, websearch.ErrNotConfigured
 	}
-	if s.webSearch.Billed() {
+	if s.webSearch.Billed() || s.webSearch.Metered() {
+		// The search costs the caller either way: the per-query price of a
+		// configured engine, or the provider tokens a metered engine spends.
 		if err := s.billing.AuthorizeAction(ctx, accountID); err != nil {
 			return nil, err
 		}
@@ -64,7 +69,8 @@ func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, i
 }
 
 // chargeWebSearch records what the search owes. A search that ran no charged
-// engine carries no charges, which is how scraped and cached answers stay free.
+// engine and spent no provider tokens carries no charges, which is how scraped,
+// cached, and local-index answers stay free.
 func (s *ConversationService) chargeWebSearch(ctx context.Context, accountID string, response *websearch.Response) error {
 	if s.billing == nil || response == nil {
 		return nil
@@ -72,6 +78,21 @@ func (s *ConversationService) chargeWebSearch(ctx context.Context, accountID str
 	for _, charge := range response.Charges {
 		if err := s.billing.ChargeAction(ctx, accountID, "web_search/"+charge.Engine, charge.Amount); err != nil {
 			return err
+		}
+	}
+	// A metered engine spent the provider's tokens on top of the price the
+	// operator set for it, so they are billed separately, at the pricing of the
+	// model the search called.
+	for _, report := range response.Engines {
+		if report.Usage == nil {
+			continue
+		}
+		charge, err := s.billing.chargeSearchUsage(ctx, accountID, report.Name, *report.Usage)
+		if err != nil {
+			return err
+		}
+		if charge != nil {
+			response.Charges = append(response.Charges, *charge)
 		}
 	}
 	return nil

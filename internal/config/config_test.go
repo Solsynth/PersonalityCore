@@ -561,6 +561,133 @@ enabled = true
 	}
 }
 
+func TestLoad_WebSearchDeepseekEngineUsesProviderConfig(t *testing.T) {
+	dir := t.TempDir()
+	providerDir := filepath.Join(dir, "models.d")
+	if err := os.MkdirAll(providerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The provider lives in a split file, which must be loaded before the
+	// engine is bound to it.
+	if err := os.WriteFile(filepath.Join(providerDir, "deepseek.toml"), []byte(`
+[[providers]]
+id = "deepseek"
+type = "openai"
+apiKey = "sk-from-provider"
+baseUrl = "https://api.deepseek.com"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+providersDir = "`+providerDir+`"
+
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = true
+mode = "prefer"
+
+[[webSearch.engines]]
+type = "deepseek"
+provider = "deepseek"
+price = "2"
+timeout = "90s"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.WebSearch.Engines) != 1 {
+		t.Fatalf("got %d engines, want 1: %#v", len(cfg.WebSearch.Engines), cfg.WebSearch.Engines)
+	}
+	engine := cfg.WebSearch.Engines[0]
+	if engine.Provider != "deepseek" || engine.APIKey != "sk-from-provider" {
+		t.Fatalf("the engine must take its key from the provider: %#v", engine)
+	}
+	if engine.BaseURL != "https://api.deepseek.com" {
+		t.Fatalf("baseUrl = %q, want the provider's", engine.BaseURL)
+	}
+	if engine.Price != "2" || engine.Timeout != 90*time.Second {
+		t.Fatalf("unexpected engine billing or timeout: %#v", engine)
+	}
+}
+
+func TestLoad_WebSearchDeepseekProviderErrors(t *testing.T) {
+	cases := map[string]string{
+		"engine without provider": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "deepseek"
+price = "1"
+`,
+		"unknown provider": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "deepseek"
+provider = "nonexistent"
+price = "1"
+`,
+		"provider without apiKey": `
+[webSearch]
+enabled = true
+
+[[providers]]
+id = "local"
+type = "openai-compatible"
+baseUrl = "http://localhost:8000"
+
+[[webSearch.engines]]
+type = "deepseek"
+provider = "local"
+price = "1"
+`,
+	}
+
+	for name, block := range cases {
+		dir := t.TempDir()
+		mainFile := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(mainFile, []byte("[database]\ndsn = \"postgres://example\"\n"+block), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(mainFile); err == nil {
+			t.Fatalf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestLoad_WebSearchDeepseekIgnoredWhileDisabled(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	// Web search is off, so an engine that would not build must not fail
+	// startup for a deployment that never searches.
+	if err := os.WriteFile(mainFile, []byte(`
+[database]
+dsn = "postgres://example"
+
+[webSearch]
+enabled = false
+
+[[webSearch.engines]]
+type = "deepseek"
+provider = "nonexistent"
+price = "1"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(mainFile); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
 func TestLoad_WebSearchAbilityRequiresEnabledConfig(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := filepath.Join(dir, "config.toml")
@@ -612,6 +739,22 @@ enabled = true
 [[webSearch.engines]]
 type = "bing"
 enabled = false
+`,
+		"deepseek without key": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "deepseek"
+price = "1"
+`,
+		"deepseek without price": `
+[webSearch]
+enabled = true
+
+[[webSearch.engines]]
+type = "deepseek"
+apiKey = "sk-test"
 `,
 	}
 

@@ -16,6 +16,7 @@ import (
 	"src.solsynth.dev/sosys/persona/internal/agent"
 	"src.solsynth.dev/sosys/persona/internal/config"
 	"src.solsynth.dev/sosys/persona/internal/database"
+	"src.solsynth.dev/sosys/persona/internal/websearch"
 )
 
 const PermissionBillingManage = "personality.billing.manage"
@@ -250,6 +251,39 @@ func (s *BillingService) AuthorizeAction(ctx context.Context, accountID string) 
 // the ledger's unique run_id index allows one row per run, so actions such as a
 // web search keep run_id NULL and are only attributed by their action name.
 func (s *BillingService) ChargeAction(ctx context.Context, accountID, action, amount string) error {
+	return s.chargeAction(ctx, accountID, action, s.defaultCurrency(), amount, 0, 0)
+}
+
+// chargeSearchUsage prices the model tokens a metered search engine spent and
+// writes them to the ledger the way a generation's tokens are written: from the
+// provider entry's pricing for the model the search called, plus the configured
+// service fee. It returns the charge to report, or nil when that model carries
+// no pricing.
+func (s *BillingService) chargeSearchUsage(ctx context.Context, accountID, engine string, usage websearch.Usage) (*websearch.Charge, error) {
+	priced, err := s.price(agent.Definition{Model: usage.Provider + "/" + usage.Model}, &schema.TokenUsage{
+		PromptTokens:     usage.InputTokens,
+		CompletionTokens: usage.OutputTokens,
+	})
+	if err != nil {
+		return nil, err
+	}
+	amount, err := decimal(priced.amount)
+	if err != nil {
+		return nil, fmt.Errorf("price web search usage: %w", err)
+	}
+	if amount.Sign() <= 0 {
+		return nil, nil
+	}
+	if err := s.chargeAction(ctx, accountID, "web_search/"+engine+"/tokens", priced.currency, priced.amount, usage.InputTokens, usage.OutputTokens); err != nil {
+		return nil, err
+	}
+	return &websearch.Charge{Engine: engine, Kind: websearch.ChargeKindUsage, Amount: priced.amount}, nil
+}
+
+// chargeAction writes one ledger row for a completed billable action. A
+// non-positive amount is nothing to charge, and an empty currency falls back to
+// the configured default.
+func (s *BillingService) chargeAction(ctx context.Context, accountID, action, currency, amount string, inputTokens, outputTokens int) error {
 	if !s.enabled() || strings.TrimSpace(accountID) == "" {
 		return nil
 	}
@@ -260,12 +294,16 @@ func (s *BillingService) ChargeAction(ctx context.Context, accountID, action, am
 	if value.Sign() <= 0 {
 		return nil
 	}
-	currency := s.defaultCurrency()
+	if strings.TrimSpace(currency) == "" {
+		currency = s.defaultCurrency()
+	}
 	record := &database.BillingUsage{
 		ID:             newID(),
 		AccountID:      accountID,
 		Model:          action,
 		Currency:       currency,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
 		Amount:         normalizedDecimal(amount),
 		OriginalAmount: normalizedDecimal(amount),
 		CreatedAt:      time.Now().UTC(),

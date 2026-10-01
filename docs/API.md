@@ -772,10 +772,13 @@ no-JavaScript endpoint) plus the optional crawl settings described in
 `README.md`. An `exa`, `tavily`, or `deepseek` engine answers through that
 provider's own search API; `deepseek` is the only engine that involves a model,
 and it is called for the provider's server-side web search rather than to
-generate an answer. Engines differ in which request fields they honour: the
-scripted engines fold `domains` into the query and use `freshness`, `exa` and
-`tavily` map both to their own parameters, `deepseek` ignores `freshness` and
-`language` and applies `domains` by filtering the hits it returns.
+generate an answer. It takes its credentials from the `[[providers]]` entry
+named by its `provider` field rather than carrying its own `apiKey`. Engines
+differ in which request fields they honour: the scripted engines fold `domains`
+into the query and use `freshness`, `exa` and `tavily` map both to their own
+parameters, `deepseek` ignores `freshness` and `language` and applies `domains`
+by filtering the hits it returns, and it spends model tokens, which are charged
+to the caller at the provider's pricing for `deepseek-flash`.
 
 ```
 POST /api/web/search
@@ -827,6 +830,7 @@ POST /api/web/search
 |-------|------|-------------|
 | `results[].provider` | string | Engine that returned the hit, or `index` for a locally indexed page. |
 | `engines[]` | object[] | Per-engine outcome. `error` is set when that engine failed or answered a different question; the remaining engines still answer. |
+| `engines[].usage` | object | What that engine spent on its provider: `provider` and `model` name the pricing entry, `input_tokens` and `output_tokens` the tokens, `searches` the provider-side searches. Only metered engines report it. |
 | `cached` | bool | Served from the in-process response cache within `webSearch.cacheTTL`. |
 | `fallback` | bool | Every live engine failed and the results come from the local page index. Only present when true. |
 | `pages_crawled` | int | Pages fetched into the local index for this query. Only present when non-zero. |
@@ -845,17 +849,27 @@ POST /api/web/search
 
 Engines configured with a `price` (the API-backed `exa`, `tavily`, and
 `deepseek`) cost that amount in golds per query they answered, charged to the
-authenticated account. The response reports what was charged:
+authenticated account. An engine that spends provider tokens costs those on top
+of its price: the `deepseek` engine reports what the search spent, and the
+tokens are charged at the pricing the provider entry carries for the model the
+search called. The response reports every one of them:
 
 ```json
-"charges": [{"engine": "exa", "amount": "1.5"}]
+"charges": [
+  {"engine": "deepseek", "kind": "query", "amount": "2"},
+  {"engine": "deepseek", "kind": "usage", "amount": "0.00075000"}
+]
 ```
 
-`charges` is omitted when the answer came from a free engine, from the response
-cache, or from the local index — a search only costs golds when it actually
-reached a priced engine. Charges land in the same ledger as model usage (with
-`web_search/<engine>` as the model column), count toward the hourly and daily
-golds limits, and settle on the normal billing cycle.
+`kind` is `query` for an engine's configured price and `usage` for metered
+tokens. `charges` is omitted when the answer came from a free engine, from the
+response cache, or from the local index, and a `usage` entry is omitted when the
+model carries no pricing — a search only costs golds when it actually reached a
+priced or metered engine. Charges land in the same ledger as model usage (with
+`web_search/<engine>` and `web_search/<engine>/tokens` as the model columns,
+token counts kept on the row), count toward the hourly and daily golds limits,
+and settle on the normal billing cycle. A metered search also requires a payment
+wallet, like a paid model, even when no engine states a price.
 
 ### Running the search on the client
 

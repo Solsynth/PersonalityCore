@@ -189,7 +189,9 @@ type = "duckduckgo"
 # API-backed engines for datacenter egresses that scraped engines block. List
 # one first with mode = "prefer" above. `price` is what one query through that
 # engine charges the caller, in [billing].currency (normally golds); scraped
-# engines can be priced too, or left free by omitting price.
+# engines can be priced too, or left free by omitting price. An engine that
+# spends provider tokens (deepseek) charges those additionally, at the pricing
+# its provider entry carries for the model the search called.
 # [[webSearch.engines]]
 # type = "exa"
 # apiKey = "YOUR_EXA_KEY"
@@ -200,6 +202,29 @@ type = "duckduckgo"
 # type = "tavily"
 # apiKey = "YOUR_TAVILY_KEY"
 # price = "0.5"
+
+# DeepSeek runs its own server-side web search, so one DeepSeek account covers
+# both the search and the summarization. The engine does not carry its own
+# credentials: `provider` names a [[providers]] entry (inline or from
+# providersDir) and the search runs on that account's apiKey and baseUrl, which
+# must therefore exist — startup fails on a missing, unknown, or keyless
+# provider. The provider's base URL is the chat API; the engine extends it with
+# /anthropic, because DeepSeek's Responses API ignores built-in web search
+# tools and only the Anthropic-compatible endpoint serves them. Results are
+# titles and URLs without snippets, so keep [webSearch.crawl] enabled, and give
+# it a longer timeout than the shared 15s default: a search plus the model turn
+# around it takes seconds, not milliseconds. `freshness` and `language` do not
+# apply; `domains` is applied by filtering the hits, since DeepSeek ignores the
+# tool's domain filter. DeepSeek bills the query as model tokens: the input it
+# assembles and the answer it writes are charged to the caller at the
+# deepseek-flash pricing of the provider entry above, so give that provider a
+# pricing block for the spend to be billed. `price` is separate — set it for
+# whatever the provider charges per search.
+# [[webSearch.engines]]
+# type = "deepseek"
+# provider = "deepseek"        # id of a [[providers]] entry
+# price = "2"
+# timeout = "60s"
 
 # [[webSearch.engines]]
 # type = "bing"

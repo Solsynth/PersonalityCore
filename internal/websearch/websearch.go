@@ -52,6 +52,20 @@ type Query struct {
 	Language  string
 }
 
+// Usage is what one engine's query spent on a metered provider, in that
+// provider's own units. Provider and Model name the entry the caller prices it
+// with, so the tokens are billed like the model the search called.
+type Usage struct {
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	InputTokens  int    `json:"input_tokens,omitempty"`
+	OutputTokens int    `json:"output_tokens,omitempty"`
+	// Searches counts the provider-side searches this query ran. Providers bill
+	// them separately from the tokens; the operator's per-query price is where
+	// that fee is recovered.
+	Searches int `json:"searches,omitempty"`
+}
+
 // Result is one normalized search hit.
 type Result struct {
 	Title    string `json:"title"`
@@ -66,12 +80,26 @@ type EngineReport struct {
 	Name    string `json:"name"`
 	Results int    `json:"results"`
 	Error   string `json:"error,omitempty"`
+	// Usage is what this engine spent on its provider for the query. Engines
+	// that run without a provider leave it nil.
+	Usage *Usage `json:"usage,omitempty"`
 }
 
-// Charge is what one engine chargeable per query cost for this search. A search
-// billed through several engines reports one entry each.
+// Charge kinds: what an amount covers.
+const (
+	// ChargeKindQuery is the engine's configured price for answering one query.
+	ChargeKindQuery = "query"
+	// ChargeKindUsage is the model tokens a metered engine spent answering it,
+	// priced from the provider's own model pricing.
+	ChargeKindUsage = "usage"
+)
+
+// Charge is what one engine cost this search. A search billed through several
+// engines, or one that both states a price and spends tokens, reports one entry
+// each.
 type Charge struct {
 	Engine string `json:"engine"`
+	Kind   string `json:"kind"`
 	Amount string `json:"amount"`
 }
 
@@ -92,10 +120,24 @@ type Response struct {
 	PagesCrawled int `json:"pages_crawled,omitempty"`
 }
 
+// EngineResponse is one engine's answer to a query: the hits, and what the query
+// spent on a metered provider.
+type EngineResponse struct {
+	Results []Result
+	Usage   *Usage
+}
+
+// MeteredEngine is an engine whose queries spend provider tokens on top of
+// whatever price the operator configured, which is what makes a caller billable
+// even when no engine states a price.
+type MeteredEngine interface {
+	Metered() bool
+}
+
 // Engine is one directly queried search engine.
 type Engine interface {
 	Name() string
-	Search(ctx context.Context, query Query) ([]Result, error)
+	Search(ctx context.Context, query Query) (EngineResponse, error)
 }
 
 // Page is one crawled document.
@@ -119,7 +161,10 @@ type Searcher struct {
 	mode    string
 	// prices holds the per-query price of every engine that charges for one,
 	// keyed by engine id. Engines absent from the map are free.
-	prices       map[string]string
+	prices map[string]string
+	// metered is set when some engine spends provider tokens per query, which
+	// costs the caller golds even when no engine states a price.
+	metered      bool
 	defaultLimit int
 	maxLimit     int
 	language     string
@@ -157,9 +202,17 @@ func New(cfg config.WebSearchConfig, store PageStore) (*Searcher, error) {
 			prices[strings.TrimSpace(engineCfg.ID)] = amount
 		}
 	}
+	metered := false
+	for _, engine := range engines {
+		if reporter, ok := engine.(MeteredEngine); ok && reporter.Metered() {
+			metered = true
+			break
+		}
+	}
 	searcher := &Searcher{
 		engines:      engines,
 		mode:         mode,
+		metered:      metered,
 		prices:       prices,
 		defaultLimit: cfg.DefaultLimit,
 		maxLimit:     cfg.MaxLimit,
@@ -171,6 +224,12 @@ func New(cfg config.WebSearchConfig, store PageStore) (*Searcher, error) {
 		searcher.crawler = newPageCrawler(cfg.Crawl, cfg.UserAgent, cfg.Timeout)
 	}
 	return searcher, nil
+}
+
+// Metered reports whether any configured engine spends provider tokens, which
+// the caller is billed for at the provider's model pricing.
+func (s *Searcher) Metered() bool {
+	return s != nil && s.metered
 }
 
 // EngineNames returns the configured engine ids in query order.
@@ -209,8 +268,11 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 	key := cacheKey(query, s.engines)
 	if cached, ok := s.cache.get(key); ok {
 		cached.Cached = true
-		// A cached answer made no upstream call, so it is never billed.
+		// A cached answer made no upstream call, so it is never billed, and the
+		// provider usage behind the stored answer belongs to the query that was
+		// cached rather than to this one.
 		cached.Charges = nil
+		cached.Engines = withoutUsage(cached.Engines)
 		return &cached, nil
 	}
 
@@ -219,7 +281,7 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 	reports := make([]EngineReport, 0, len(outcomes))
 	failures := make([]string, 0, len(outcomes))
 	for _, outcome := range outcomes {
-		report := EngineReport{Name: outcome.name, Results: len(outcome.results)}
+		report := EngineReport{Name: outcome.name, Results: len(outcome.results), Usage: outcome.usage}
 		if outcome.err != nil {
 			report.Error = outcome.err.Error()
 			failures = append(failures, outcome.name+": "+outcome.err.Error())
@@ -284,6 +346,7 @@ func (s *Searcher) searchIndex(ctx context.Context, query Query) (*Response, err
 type outcome struct {
 	name    string
 	results []Result
+	usage   *Usage
 	err     error
 }
 
@@ -297,10 +360,25 @@ func (s *Searcher) chargesFor(outcomes []outcome) []Charge {
 			continue
 		}
 		if amount, ok := s.prices[outcome.name]; ok {
-			charges = append(charges, Charge{Engine: outcome.name, Amount: amount})
+			charges = append(charges, Charge{Engine: outcome.name, Kind: ChargeKindQuery, Amount: amount})
 		}
 	}
 	return charges
+}
+
+// withoutUsage drops the provider usage from a response served from the cache.
+// The reports are copied, so the cached entry keeps its own and two concurrent
+// cache hits never write to the same report.
+func withoutUsage(reports []EngineReport) []EngineReport {
+	if len(reports) == 0 {
+		return reports
+	}
+	copied := make([]EngineReport, len(reports))
+	copy(copied, reports)
+	for i := range copied {
+		copied[i].Usage = nil
+	}
+	return copied
 }
 
 // query runs the configured engines according to the configured mode.
@@ -317,9 +395,9 @@ func (s *Searcher) query(ctx context.Context, query Query) []outcome {
 func (s *Searcher) queryInOrder(ctx context.Context, query Query) []outcome {
 	outcomes := make([]outcome, 0, len(s.engines))
 	for _, engine := range s.engines {
-		results, err := engine.Search(ctx, query)
-		outcomes = append(outcomes, outcome{name: engine.Name(), results: results, err: err})
-		if err == nil && len(results) > 0 {
+		response, err := engine.Search(ctx, query)
+		outcomes = append(outcomes, outcome{name: engine.Name(), results: response.Results, usage: response.Usage, err: err})
+		if err == nil && len(response.Results) > 0 {
 			break
 		}
 	}
@@ -333,8 +411,8 @@ func (s *Searcher) fanOut(ctx context.Context, query Query) []outcome {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results, err := engine.Search(ctx, query)
-			outcomes[i] = outcome{name: engine.Name(), results: results, err: err}
+			response, err := engine.Search(ctx, query)
+			outcomes[i] = outcome{name: engine.Name(), results: response.Results, usage: response.Usage, err: err}
 		}()
 	}
 	wg.Wait()

@@ -62,7 +62,7 @@ func TestDuckDuckGoEngineParsesResultPage(t *testing.T) {
 	fixture := serveFixture(t, "duckduckgo.html")
 	engine := newFixtureEngine(t, "duckduckgo", fixture.URL)
 
-	results, err := engine.Search(context.Background(), Query{
+	response, err := engine.Search(context.Background(), Query{
 		Text:      "postgres 18 features",
 		Limit:     5,
 		Freshness: FreshnessWeek,
@@ -85,10 +85,10 @@ func TestDuckDuckGoEngineParsesResultPage(t *testing.T) {
 		t.Fatal("engine must send a user agent")
 	}
 
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2: %#v", len(results), results)
+	if len(response.Results) != 2 {
+		t.Fatalf("got %d results, want 2: %#v", len(response.Results), response.Results)
 	}
-	first := results[0]
+	first := response.Results[0]
 	if first.Title == "" || first.Snippet == "" {
 		t.Fatalf("title and snippet must be populated: %#v", first)
 	}
@@ -104,7 +104,7 @@ func TestBingEngineParsesResultPage(t *testing.T) {
 	fixture := serveFixture(t, "bing.html")
 	engine := newFixtureEngine(t, "bing", fixture.URL)
 
-	results, err := engine.Search(context.Background(), Query{
+	response, err := engine.Search(context.Background(), Query{
 		Text:      "postgres 18 features",
 		Limit:     4,
 		Freshness: FreshnessDay,
@@ -121,11 +121,11 @@ func TestBingEngineParsesResultPage(t *testing.T) {
 		t.Fatalf("filters = %q, want the past-day filter", query.Get("filters"))
 	}
 
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2: %#v", len(results), results)
+	if len(response.Results) != 2 {
+		t.Fatalf("got %d results, want 2: %#v", len(response.Results), response.Results)
 	}
-	if results[0].Title == "" || results[0].Snippet == "" {
-		t.Fatalf("title and snippet must be populated: %#v", results[0])
+	if response.Results[0].Title == "" || response.Results[0].Snippet == "" {
+		t.Fatalf("title and snippet must be populated: %#v", response.Results[0])
 	}
 }
 
@@ -133,19 +133,19 @@ func TestGoogleEngineParsesResultPage(t *testing.T) {
 	fixture := serveFixture(t, "google.html")
 	engine := newFixtureEngine(t, "google", fixture.URL)
 
-	results, err := engine.Search(context.Background(), Query{Text: "postgres 18", Limit: 5})
+	response, err := engine.Search(context.Background(), Query{Text: "postgres 18", Limit: 5})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
 	// The settings link is engine-internal and must be dropped.
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2: %#v", len(results), results)
+	if len(response.Results) != 2 {
+		t.Fatalf("got %d results, want 2: %#v", len(response.Results), response.Results)
 	}
-	if results[0].URL != "https://www.postgresql.org/docs/current/release-18.html" {
-		t.Fatalf("google /url wrapper was not unwrapped: %q", results[0].URL)
+	if response.Results[0].URL != "https://www.postgresql.org/docs/current/release-18.html" {
+		t.Fatalf("google /url wrapper was not unwrapped: %q", response.Results[0].URL)
 	}
-	if !strings.Contains(results[0].Snippet, "new features of PostgreSQL 18") {
-		t.Fatalf("snippet not extracted: %q", results[0].Snippet)
+	if !strings.Contains(response.Results[0].Snippet, "new features of PostgreSQL 18") {
+		t.Fatalf("snippet not extracted: %q", response.Results[0].Snippet)
 	}
 }
 
@@ -158,9 +158,9 @@ func TestEnginesReportBotWallsAsErrors(t *testing.T) {
 		fixture := serveFixture(t, fixtureName)
 		engine := newFixtureEngine(t, engineType, fixture.URL)
 
-		results, err := engine.Search(context.Background(), Query{Text: "query"})
+		response, err := engine.Search(context.Background(), Query{Text: "query"})
 		if err == nil {
-			t.Fatalf("%s: expected an error instead of %d silent results", engineType, len(results))
+			t.Fatalf("%s: expected an error instead of %d silent results", engineType, len(response.Results))
 		}
 		if !strings.Contains(err.Error(), "bot wall") {
 			t.Fatalf("%s: error = %v, want a bot wall error", engineType, err)
@@ -211,9 +211,9 @@ func TestEnginesRejectResultsUnrelatedToQuery(t *testing.T) {
 	fixture := serveFixture(t, "bing.html")
 	engine := newFixtureEngine(t, "bing", fixture.URL)
 
-	results, err := engine.Search(context.Background(), Query{Text: "kubernetes operator patterns", Limit: 5})
+	response, err := engine.Search(context.Background(), Query{Text: "kubernetes operator patterns", Limit: 5})
 	if err == nil {
-		t.Fatalf("expected unrelated results to be rejected, got %#v", results)
+		t.Fatalf("expected unrelated results to be rejected, got %#v", response.Results)
 	}
 	if !strings.Contains(err.Error(), "unrelated to the query") {
 		t.Fatalf("error = %v, want a relevance error", err)
@@ -253,9 +253,9 @@ func TestEngineReportsThrottling(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	engine := newFixtureEngine(t, "duckduckgo", server.URL)
-	results, err := engine.Search(context.Background(), Query{Text: "nix flakes"})
+	response, err := engine.Search(context.Background(), Query{Text: "nix flakes"})
 	if err == nil {
-		t.Fatalf("expected a throttle error, got %#v", results)
+		t.Fatalf("expected a throttle error, got %#v", response.Results)
 	}
 	if !strings.Contains(err.Error(), "202") || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("error = %v, want an explicit throttle error", err)

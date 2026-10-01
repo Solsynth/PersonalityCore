@@ -42,7 +42,7 @@ func TestTavilyEngineMapsRequestAndResponse(t *testing.T) {
 		t.Fatalf("newEngine() error = %v", err)
 	}
 
-	results, err := engine.Search(context.Background(), Query{
+	response, err := engine.Search(context.Background(), Query{
 		Text:      "postgres 18 async io",
 		Limit:     3,
 		Freshness: FreshnessWeek,
@@ -65,11 +65,11 @@ func TestTavilyEngineMapsRequestAndResponse(t *testing.T) {
 		t.Fatalf("include_domains = %#v", body["include_domains"])
 	}
 
-	if len(results) != 1 {
-		t.Fatalf("got %d results, want 1: %#v", len(results), results)
+	if len(response.Results) != 1 {
+		t.Fatalf("got %d results, want 1: %#v", len(response.Results), response.Results)
 	}
-	if results[0].Provider != "tavily" || !strings.Contains(results[0].Snippet, "asynchronous I/O") {
-		t.Fatalf("unexpected result: %#v", results[0])
+	if response.Results[0].Provider != "tavily" || !strings.Contains(response.Results[0].Snippet, "asynchronous I/O") {
+		t.Fatalf("unexpected result: %#v", response.Results[0])
 	}
 }
 

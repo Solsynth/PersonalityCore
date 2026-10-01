@@ -19,6 +19,7 @@ type stubWebSearchEngine struct {
 	response  *websearch.Response
 	err       error
 	billed    bool
+	metered   bool
 	lastQuery websearch.Query
 }
 
@@ -31,6 +32,8 @@ func (e *stubWebSearchEngine) Search(_ context.Context, query websearch.Query) (
 }
 
 func (e *stubWebSearchEngine) Billed() bool { return e.billed }
+
+func (e *stubWebSearchEngine) Metered() bool { return e.metered }
 
 func webSearchCall(arguments string) schema.ToolCall {
 	return schema.ToolCall{
@@ -226,16 +229,132 @@ func TestIsWebSearchToolName(t *testing.T) {
 // be inspected on the ledger.
 func newBilledTestService(t *testing.T, engine WebSearchEngine) (*ConversationService, *database.DB) {
 	t.Helper()
+	return newBilledTestServiceWithProviders(t, engine, nil)
+}
+
+// newBilledTestServiceWithProviders adds the model providers a metered search
+// engine prices its tokens against.
+func newBilledTestServiceWithProviders(t *testing.T, engine WebSearchEngine, providers []config.ProviderConfig) (*ConversationService, *database.DB) {
+	t.Helper()
 	registry, err := agent.NewRegistry(nil)
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
 	db := openTestDB(t)
-	cfg := &config.Config{Billing: config.BillingConfig{Enabled: true, Currency: "golds"}}
+	cfg := &config.Config{
+		Billing:   config.BillingConfig{Enabled: true, Currency: "golds", ServiceFeePercentage: "0"},
+		Providers: providers,
+	}
 	svc := NewConversationService(db, cfg, registry, nil)
 	svc.billing.SetWalletChecker(openAICompatibleTestWalletChecker{})
 	svc.webSearch = engine
 	return svc, db
+}
+
+// deepseekProvider prices the model the deepseek search engine calls, which is
+// what makes its tokens billable.
+func deepseekProvider(input, output string) []config.ProviderConfig {
+	return []config.ProviderConfig{{
+		ID: "deepseek", Type: "openai", APIKey: "sk-test", BaseURL: "https://api.deepseek.com",
+		Models: []config.ModelConfig{{
+			Name:    "deepseek-flash",
+			Pricing: &config.ModelPricingConfig{Input: &input, Output: &output},
+		}},
+	}}
+}
+
+func TestSearchWebBillsMeteredEngineTokens(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		// A metered engine needs no per-query price: the tokens are the charge.
+		metered: true,
+		response: &websearch.Response{
+			Query: "postgres 18",
+			Engines: []websearch.EngineReport{{
+				Name:    "deepseek",
+				Results: 3,
+				Usage: &websearch.Usage{
+					Provider: "deepseek", Model: "deepseek-flash",
+					InputTokens: 3_000, OutputTokens: 500, Searches: 1,
+				},
+			}},
+		},
+	}
+	svc, db := newBilledTestServiceWithProviders(t, engine, deepseekProvider("0.15", "0.6"))
+
+	response, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"})
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+
+	// 3000 input at 0.15 per million plus 500 output at 0.6 per million.
+	rows := ledgerRows(t, db)
+	if len(rows) != 1 {
+		t.Fatalf("got %d ledger rows, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Model != "web_search/deepseek/tokens" || row.AccountID != "acct-1" {
+		t.Fatalf("unexpected ledger row: %#v", row)
+	}
+	if row.Amount != "0.00075000" || row.Currency != "golds" {
+		t.Fatalf("unexpected charge: %#v", row)
+	}
+	if row.InputTokens != 3_000 || row.OutputTokens != 500 {
+		t.Fatalf("the ledger row must keep the counts it was charged for: %#v", row)
+	}
+	if row.RunID != nil {
+		t.Fatalf("an action charge is not a run and must not claim a run id: %#v", row.RunID)
+	}
+	if len(response.Charges) != 1 || response.Charges[0].Kind != websearch.ChargeKindUsage {
+		t.Fatalf("the response must report the token charge: %#v", response.Charges)
+	}
+	if response.Charges[0].Engine != "deepseek" || response.Charges[0].Amount != "0.00075000" {
+		t.Fatalf("unexpected reported charge: %#v", response.Charges[0])
+	}
+}
+
+func TestSearchWebChargesNothingForAnUnpricedMeteredModel(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		metered:  true,
+		response: &websearch.Response{Engines: []websearch.EngineReport{{Name: "deepseek", Usage: &websearch.Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 3_000}}}},
+	}
+	svc, db := newBilledTestService(t, engine)
+
+	response, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"})
+	if err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if rows := ledgerRows(t, db); len(rows) != 0 {
+		t.Fatalf("a model without pricing must not be charged: %#v", rows)
+	}
+	if len(response.Charges) != 0 {
+		t.Fatalf("charges = %#v, want none", response.Charges)
+	}
+}
+
+func TestSearchWebRequiresPaymentWalletForMeteredEngine(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		metered:  true,
+		response: &websearch.Response{Engines: []websearch.EngineReport{{Name: "deepseek", Usage: &websearch.Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 3_000}}}},
+	}
+	svc, db := newBilledTestServiceWithProviders(t, engine, deepseekProvider("0.15", "0.6"))
+	// Tokens cost golds even though no engine states a per-query price, so the
+	// caller has to be able to pay before the search runs.
+	svc.billing.SetWalletChecker(fakeWalletChecker{exists: false})
+
+	_, err := svc.SearchWeb(context.Background(), "acct-1", WebSearchInput{Query: "postgres 18"})
+	if !errors.Is(err, ErrPaymentWalletRequired) {
+		t.Fatalf("error = %v, want ErrPaymentWalletRequired", err)
+	}
+	if engine.lastQuery.Text != "" {
+		t.Fatal("a search the caller cannot pay for must not reach the engine")
+	}
+	var rows []database.BillingUsage
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a refused search must not be charged: %#v", rows)
+	}
 }
 
 func ledgerRows(t *testing.T, db *database.DB) []database.BillingUsage {

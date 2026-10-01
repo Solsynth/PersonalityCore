@@ -73,6 +73,11 @@ type WebSearchEngineConfig struct {
 	BaseURL string        `mapstructure:"baseUrl"`
 	Region  string        `mapstructure:"region"`
 	Timeout time.Duration `mapstructure:"timeout"`
+	// Provider is the id of a [[providers]] entry whose credentials and
+	// endpoint the engine searches through, so a DeepSeek account is not
+	// configured twice. Only the "deepseek" engine reads it, and it is required
+	// there.
+	Provider string `mapstructure:"provider"`
 	// Price is what one query through this engine costs the caller, in the
 	// billing currency (normally golds). Empty or "0" means the engine is free.
 	// API-backed engines are required to state it so a paid call is never
@@ -313,6 +318,9 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	normalizeWebSearchConfig(&cfg)
+	if err := resolveWebSearchEngines(&cfg); err != nil {
+		return nil, err
+	}
 	if err := validateWebSearchConfig(&cfg); err != nil {
 		return nil, err
 	}
@@ -614,6 +622,59 @@ func normalizeWebSearchConfig(cfg *Config) {
 	}
 }
 
+// resolveWebSearchEngines binds the engines that search through a configured
+// model provider to that provider's credentials and endpoint.
+//
+// The provider entries are the one place a key lives, so a DeepSeek deployment
+// that already has one for chat does not repeat it under [[webSearch.engines]].
+// Resolution runs after provider files are loaded and only while web search is
+// enabled, so a disabled feature never fails startup over engines it will not
+// build.
+func resolveWebSearchEngines(cfg *Config) error {
+	if !cfg.WebSearch.Enabled {
+		return nil
+	}
+	for index := range cfg.WebSearch.Engines {
+		engine := &cfg.WebSearch.Engines[index]
+		if strings.ToLower(strings.TrimSpace(engine.Type)) != "deepseek" {
+			continue
+		}
+		id := strings.TrimSpace(engine.ID)
+		if id == "" {
+			id = strings.TrimSpace(engine.Type)
+		}
+
+		providerID := strings.TrimSpace(engine.Provider)
+		if providerID == "" {
+			return fmt.Errorf("web search engine %q requires provider, the id of a [[providers]] entry to search through", id)
+		}
+		provider, found := findProvider(cfg.Providers, providerID)
+		if !found {
+			return fmt.Errorf("web search engine %q references unknown provider %q", id, providerID)
+		}
+		// The engine calls the provider's search service over the network, so
+		// it needs a credential even though an openai-compatible provider for a
+		// local proxy may be configured without one.
+		if strings.TrimSpace(provider.APIKey) == "" {
+			return fmt.Errorf("web search engine %q needs the apiKey of provider %q", id, providerID)
+		}
+
+		engine.APIKey = provider.APIKey
+		engine.BaseURL = provider.BaseURL
+	}
+	return nil
+}
+
+// findProvider returns the configured provider with the given id.
+func findProvider(providers []ProviderConfig, id string) (ProviderConfig, bool) {
+	for _, provider := range providers {
+		if strings.TrimSpace(provider.ID) == id {
+			return provider, true
+		}
+	}
+	return ProviderConfig{}, false
+}
+
 func validateWebSearchConfig(cfg *Config) error {
 	requiresSearch := false
 	for _, agent := range cfg.Agents.Items {
@@ -656,6 +717,12 @@ func validateWebSearchConfig(cfg *Config) error {
 			if strings.TrimSpace(engine.APIKey) == "" {
 				return fmt.Errorf("web search engine %q requires apiKey", id)
 			}
+			if !validAmount(engine.Price) {
+				return fmt.Errorf("web search engine %q requires price, the amount one query costs in the billing currency (use \"0\" for a free engine)", id)
+			}
+		case "deepseek":
+			// resolveWebSearchEngines filled in the provider's key and endpoint;
+			// what is left to state is what one query costs the caller.
 			if !validAmount(engine.Price) {
 				return fmt.Errorf("web search engine %q requires price, the amount one query costs in the billing currency (use \"0\" for a free engine)", id)
 			}

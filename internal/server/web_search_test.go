@@ -35,6 +35,7 @@ type searchStack struct {
 	failing    bool
 	queries    []string
 	exaQueries []string
+	deepseek   int
 }
 
 func newSearchStack(t *testing.T) *searchStack {
@@ -64,6 +65,18 @@ func newSearchStack(t *testing.T) *searchStack {
 			stack.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"results":[{"title":"PostgreSQL 18 AIO","url":"%s/article","text":"An asynchronous I/O subsystem that improves sequential scans."}]}`, stack.URL)
+		case "/deepseek-provider/anthropic/v1/messages":
+			stack.mu.Lock()
+			stack.deepseek++
+			stack.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			// DeepSeek returns the search hits themselves: a title and a URL,
+			// with no snippet text, which is what the local index is for. It
+			// also reports what the query spent, which the caller is billed for.
+			fmt.Fprintf(w, `{"content":[{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[
+				{"type":"web_search_result","url":"%s/article","title":"PostgreSQL 18 AIO"}]}],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":3000,"output_tokens":500,"server_tool_use":{"web_search_requests":1}}}`, stack.URL)
 		case "/article":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, `<html><head><title>Upgrading to PostgreSQL 18</title></head><body>
@@ -223,6 +236,116 @@ func TestWebSearchEndpointCrawlsAndIndexesResults(t *testing.T) {
 	}
 	if queries := stack.searchedQueries(); len(queries) != 1 || queries[0] != "postgres 18 features" {
 		t.Fatalf("engine received %#v", queries)
+	}
+}
+
+// TestWebSearchEndpointRunsDeepseekSearch drives the LLM-backed engine through
+// the public endpoint. DeepSeek answers with the hits themselves and no snippet
+// text, so the crawler is what makes the result answerable.
+func TestWebSearchEndpointRunsDeepseekSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stack := newSearchStack(t)
+	cfg := webSearchConfig(stack)
+	// Shaped the way config.Load leaves it: the engine names a provider entry,
+	// and resolution has already copied that provider's key and base URL in.
+	inputPrice, outputPrice := "0.15", "0.6"
+	cfg.Providers = []config.ProviderConfig{{
+		ID: "deepseek", Type: "openai", APIKey: "sk-test", BaseURL: stack.URL + "/deepseek-provider",
+		Models: []config.ModelConfig{{
+			Name:    "deepseek-flash",
+			Pricing: &config.ModelPricingConfig{Input: &inputPrice, Output: &outputPrice},
+		}},
+	}}
+	// The metered tokens are priced with the same service fee a generation
+	// would carry.
+	cfg.Billing = config.BillingConfig{ServiceFeePercentage: "0"}
+	cfg.WebSearch.Engines = []config.WebSearchEngineConfig{{
+		ID:       "deepseek",
+		Type:     "deepseek",
+		Provider: "deepseek",
+		APIKey:   "sk-test",
+		Price:    "2",
+		BaseURL:  stack.URL + "/deepseek-provider",
+	}}
+	router := newWebSearchRouter(t, cfg)
+
+	response := postSearch(t, router, `{"query":"postgres 18 async io","limit":3}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var payload struct {
+		Results []struct {
+			Title    string `json:"title"`
+			URL      string `json:"url"`
+			Snippet  string `json:"snippet"`
+			Provider string `json:"provider"`
+		} `json:"results"`
+		Engines []struct {
+			Name    string `json:"name"`
+			Results int    `json:"results"`
+			Error   string `json:"error"`
+			Usage   *struct {
+				Provider     string `json:"provider"`
+				Model        string `json:"model"`
+				InputTokens  int    `json:"input_tokens"`
+				OutputTokens int    `json:"output_tokens"`
+				Searches     int    `json:"searches"`
+			} `json:"usage"`
+		} `json:"engines"`
+		Charges []struct {
+			Engine string `json:"engine"`
+			Kind   string `json:"kind"`
+			Amount string `json:"amount"`
+		} `json:"charges"`
+		PagesCrawled int `json:"pages_crawled"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, response.Body.String())
+	}
+
+	// The search runs on the caller's DeepSeek account, so what it spent is
+	// reported and charged: 3000 input at 0.15 per million and 500 output at
+	// 0.6 per million.
+	if len(payload.Engines) != 1 || payload.Engines[0].Usage == nil {
+		t.Fatalf("the provider spend must be reported: %s", response.Body.String())
+	}
+	usage := payload.Engines[0].Usage
+	if usage.Provider != "deepseek" || usage.Model != "deepseek-flash" || usage.InputTokens != 3000 || usage.OutputTokens != 500 || usage.Searches != 1 {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
+	// The engine's configured price and the tokens it spent are two charges.
+	if len(payload.Charges) != 2 {
+		t.Fatalf("unexpected charges: %#v", payload.Charges)
+	}
+	if payload.Charges[0].Kind != "query" || payload.Charges[0].Amount != "2" {
+		t.Fatalf("unexpected per-query charge: %#v", payload.Charges[0])
+	}
+	last := payload.Charges[1]
+	if last.Engine != "deepseek" || last.Kind != "usage" || last.Amount != "0.00075000" {
+		t.Fatalf("unexpected usage charge: %#v", last)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("got %d results: %s", len(payload.Results), response.Body.String())
+	}
+	result := payload.Results[0]
+	if result.Provider != "deepseek" || result.URL != stack.URL+"/article" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if !strings.Contains(result.Snippet, "asynchronous I/O subsystem") {
+		t.Fatalf("the crawled page must supply the snippet: %q", result.Snippet)
+	}
+	if payload.PagesCrawled != 1 {
+		t.Fatalf("pages_crawled = %d, want 1", payload.PagesCrawled)
+	}
+	if len(payload.Engines) != 1 || payload.Engines[0].Name != "deepseek" || payload.Engines[0].Results != 1 || payload.Engines[0].Error != "" {
+		t.Fatalf("unexpected engine report: %#v", payload.Engines)
+	}
+
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.deepseek != 1 {
+		t.Fatalf("deepseek endpoint was called %d times, want 1", stack.deepseek)
 	}
 }
 

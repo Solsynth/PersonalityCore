@@ -301,9 +301,10 @@ autonomousSecret = ""
 ```
 
 Web search is configured in the main config. The server queries public search
-engines directly over HTTP — no search API, aggregator, or hosted index sits in
-between — merges what they return, and can crawl the pages it discovers into a
-local index:
+engines directly over HTTP — no aggregator or hosted index sits in between —
+merges what they return, and can crawl the pages it discovers into a local
+index. A configured `exa`, `tavily`, or `deepseek` engine answers through that
+provider's own search API instead:
 
 ```toml
 [webSearch]
@@ -327,6 +328,15 @@ type = "duckduckgo"
 # region = "en-GB"
 # timeout = "10s"
 
+# API-backed engines for datacenter egresses that scraped engines block. List
+# one first with mode = "prefer" so it is only billed when scraping cannot
+# answer.
+# [[webSearch.engines]]
+# type = "deepseek"
+# provider = "deepseek"        # id of a [[providers]] entry; runs the search there
+# price = "2"
+# timeout = "60s"
+
 [webSearch.crawl]
 enabled = true
 maxPagesPerQuery = 3
@@ -337,7 +347,8 @@ maxPageBytes = 2097152
 
 - `duckduckgo` (its no-JavaScript HTML endpoint) is the default engine when `webSearch.enabled = true` and no `[[webSearch.engines]]` are listed. `bing` and `google` are supported but opt-in: Bing replies to longer queries with HTTP 200 pages about unrelated topics, and Google answers server-side clients with a JavaScript interstitial instead of results.
 - `exa` and `tavily` are API-backed engines: they need `apiKey` and answer from any egress, including datacenter IPs that scraped engines block. Set `webSearch.mode = "prefer"` and list one first so the scraped engines only run when the API engine returns nothing — otherwise every query is billed and scraped in parallel.
-- API-backed queries consume golds. Every engine with a `price` charges the authenticated account that amount per query it answered; the charge is written to the same billing ledger as model usage (`model` column `web_search/<engine>`), counts toward the hourly and daily golds limits, and settles through the normal daily or instant-wall path. Scraped, cached, and local-index answers are free. `webSearch.mode = "prefer"` therefore also means "pay only when scraping cannot answer".
+- `deepseek` runs DeepSeek's own server-side web search through a `[[providers]]` entry instead of its own credentials: `provider` names that entry, and the engine takes its `apiKey` and `baseUrl` from it, so a DeepSeek account is configured once. The provider's base URL is DeepSeek's chat API; the engine reaches the Anthropic-compatible endpoint beside it (`https://api.deepseek.com` → `https://api.deepseek.com/anthropic`, or `https://api.deepseek.com/anthropic` when the provider already points there) and calls it with the server-side `web_search` tool. DeepSeek's Responses API ignores built-in web search tools, which is why this engine uses the Anthropic-format endpoint. Startup fails when the provider is missing, unknown, or has no `apiKey`. Its results carry a title and URL but no snippet text, so they are only readable on their own when crawling is enabled (which replaces the thin snippet with the page's opening text); set `timeout = "60s"` or higher, because a server-side search and the model turn around it take longer than a scraped engine's, and the engine raises the shared 15s default to 60s when nothing else is configured. `freshness` and `language` do not apply to it, and `domains` is enforced by filtering the returned hits, because DeepSeek ignores the tool's own domain filter. DeepSeek bills the query as model tokens, so the input it assembles and the answer it writes are charged to the caller at the `deepseek-flash` pricing of that provider entry; give the entry a pricing block for the token spend to be billed, and set `price` for whatever the provider charges per search, which the tokens do not cover.
+- API-backed queries consume golds. Every engine with a `price` charges the authenticated account that amount per query it answered, written to the same billing ledger as model usage (`model` column `web_search/<engine>`) and settled through the normal daily or instant-wall path. A metered engine costs its provider tokens on top of that: `deepseek` reports what the search spent, and those tokens are charged at the pricing the provider entry carries for the model it called, in a `web_search/<engine>/tokens` ledger row. Both count toward the hourly and daily golds limits. A metered search needs a payment wallet just like a paid model, even when no engine states a price. Scraped, cached, and local-index answers are free. `webSearch.mode = "prefer"` therefore also means "pay only when scraping cannot answer".
 - Scraped engines can answer an HTTP 200 page about an unrelated topic. An engine whose results mostly mention none of the query terms is reported as a failed engine rather than ranked, so `engines[].error` in a response explains a missing engine.
 - Engines also rate limit. DuckDuckGo answers a throttled request with `202` and a bot-challenge page; that is reported as an engine error (`rate limited or challenged; retry later`), never as an empty result set, and the local index still answers queries. Datacenter egresses are challenged routinely, which is what `exa` and the client-side path below exist for.
 - `webSearch.crawl` is what makes results answerable later: pages behind the top results are fetched (robots.txt and `perHostDelay` respected, HTML only), their text is extracted, and thin engine snippets are replaced with the page's own opening text. Crawled pages are stored in `web_search_pages` and answer later queries when every live engine fails.

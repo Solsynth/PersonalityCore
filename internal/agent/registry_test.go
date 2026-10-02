@@ -87,6 +87,7 @@ func TestExecutor_SupportsVisionDefaultsConservativelyForCompatibleBackends(t *t
 		Providers: []config.ProviderConfig{
 			{ID: "openai", Type: "openai", APIKey: "test", Timeout: time.Second},
 			{ID: "deepseek", Type: "openai", APIKey: "test", BaseURL: "https://api.deepseek.com", Timeout: time.Second},
+			{ID: "local", Type: "openai", APIKey: "test", BaseURL: "http://127.0.0.1:8080/v1", Timeout: time.Second},
 		},
 	})
 	if err != nil {
@@ -96,8 +97,15 @@ func TestExecutor_SupportsVisionDefaultsConservativelyForCompatibleBackends(t *t
 	if !executor.SupportsVision(Definition{Model: "openai/gpt-4.1-mini"}) {
 		t.Fatal("expected official openai provider to default to vision-capable")
 	}
-	if executor.SupportsVision(Definition{Model: "deepseek/deepseek-v4-flash"}) {
-		t.Fatal("expected custom openai-compatible backend to default to text-only")
+	// DeepSeek's Flash line reads images, and a preset knows so: the endpoint
+	// is what it is keyed on, not the model name alone.
+	if !executor.SupportsVision(Definition{Model: "deepseek/deepseek-v4-flash"}) {
+		t.Fatal("expected deepseek flash to take image input")
+	}
+	// Every other compatible backend stays conservative until it says
+	// otherwise, in the provider or on the model.
+	if executor.SupportsVision(Definition{Model: "local/qwen2.5-7b"}) {
+		t.Fatal("expected an unstated openai-compatible backend to default to text-only")
 	}
 }
 

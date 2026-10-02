@@ -538,6 +538,98 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 }
 
+// The deployment's own shape: DeepSeek's Flash model listed with no declared
+// modalities, which the presets know takes image input.
+func TestBuildModelMessagesSendsImageToDeepSeekFlash(t *testing.T) {
+	build := func(t *testing.T, key string, modalities []string) *schema.Message {
+		t.Helper()
+		db := openTestDB(t)
+		cfg := &config.Config{
+			Personality:  config.PersonalityConfig{MaxHistoryMessages: 24},
+			SolarNetwork: config.SolarNetworkConfig{BaseURL: "https://api.solian.app"},
+			Providers: []config.ProviderConfig{{
+				ID: "deepseek", Type: "openai-compatible", APIKey: "test",
+				BaseURL: "https://api.deepseek.com",
+				Models: []config.ModelConfig{{
+					Name:       "deepseek-v4-flash",
+					Modalities: modalities,
+				}},
+			}},
+		}
+		executor, err := agent.NewExecutor(cfg)
+		if err != nil {
+			t.Fatalf("NewExecutor() error = %v", err)
+		}
+		registry, err := agent.NewRegistry([]config.AgentConfig{{
+			ID:           "flash-bot",
+			Name:         "Flash Bot",
+			Model:        "deepseek/deepseek-v4-flash",
+			Abilities:    []string{"chat"},
+			Enabled:      true,
+			SystemPrompt: "You can inspect images.",
+		}})
+		if err != nil {
+			t.Fatalf("NewRegistry() error = %v", err)
+		}
+		svc := NewConversationService(db, cfg, registry, executor)
+
+		thread := &database.ConversationThread{
+			ID:        "thread-flash-" + key,
+			AccountID: "acct-1",
+			AgentID:   "flash-bot",
+			Title:     "Flash chat",
+		}
+		if err := db.Create(thread).Error; err != nil {
+			t.Fatalf("create thread: %v", err)
+		}
+		if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "What is this?", nil, map[string]any{
+			"input_parts": []userMessageInputPart{{
+				Type:         "image",
+				AttachmentID: "file-123",
+			}},
+		}); err != nil {
+			t.Fatalf("create multimodal user message: %v", err)
+		}
+
+		messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+		if err != nil {
+			t.Fatalf("BuildModelMessages() error = %v", err)
+		}
+		for _, msg := range messages {
+			if msg.Role == schema.User {
+				return msg
+			}
+		}
+		t.Fatal("expected a user message")
+		return nil
+	}
+
+	// Undeclared modalities: the preset supplies them, and the model is handed
+	// the image itself — a link it can fetch, under the name the file server
+	// knows it by.
+	undeclared := build(t, "preset", nil)
+	if len(undeclared.UserInputMultiContent) != 2 {
+		t.Fatalf("expected text+image parts, got %d", len(undeclared.UserInputMultiContent))
+	}
+	image := undeclared.UserInputMultiContent[1]
+	if image.Type != schema.ChatMessagePartTypeImageURL || image.Image == nil || image.Image.URL == nil {
+		t.Fatalf("expected an image part, got %#v", image)
+	}
+	if got := *image.Image.URL; got != "https://api.solian.app/files/api/files/file-123" {
+		t.Fatalf("image url = %q", got)
+	}
+
+	// Declared text-only: the model gets the placeholder instead, which is what
+	// an explicit answer from the deployment means.
+	declared := build(t, "declared", []string{"text"})
+	if len(declared.UserInputMultiContent) != 0 {
+		t.Fatalf("expected no multimodal parts, got %d", len(declared.UserInputMultiContent))
+	}
+	if !strings.Contains(declared.Content, "only accepts text input") {
+		t.Fatalf("expected the text-only placeholder, got %q", declared.Content)
+	}
+}
+
 func TestBuildModelMessagesReplaysTextAttachmentPart(t *testing.T) {
 	db := openTestDB(t)
 	registry, err := agent.NewRegistry([]config.AgentConfig{{

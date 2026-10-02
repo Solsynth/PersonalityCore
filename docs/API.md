@@ -1013,6 +1013,8 @@ For extra text parts, use `input_parts`:
 
 Models declare supported modalities via the `modalities` field in their provider model config (e.g. `["image"]`, `["image", "audio", "video"]`). When a model supports `image`, image parts are sent directly to the model. When it does not, PersonalityCore automatically summarizes each image using the app-wide `visionModel` configured under `[personality]` and injects the summary as text. Summaries are cached and reused.
 
+A model that declares no modalities has not declared "text only": PersonalityCore then falls back to the provider's `supportsVision` flag, to built-in knowledge of well-known multimodal models (DeepSeek's Flash line is included, for the endpoints that serve it), and finally to whether the endpoint is OpenAI's own. Only when every one of those is silent is the run treated as text-only.
+
 If no `visionModel` is configured, image parts for non-vision models are replaced with a placeholder.
 
 ---

@@ -273,11 +273,17 @@ func (e *Executor) SupportsVision(agent Definition) bool {
 	if err != nil {
 		return false
 	}
-	if mc := provider.ResolveModel(modelName); mc != nil {
+	// A model that declares its modalities has answered for itself; one that
+	// declares none has not said "no", so the provider and then the presets
+	// still get to answer.
+	if mc := provider.ResolveModel(modelName); mc != nil && len(mc.Modalities) > 0 {
 		return mc.SupportsModality("image")
 	}
 	if provider.SupportsVision != nil {
 		return *provider.SupportsVision
+	}
+	if presetSupportsImage(provider, modelName) {
+		return true
 	}
 	baseURL := strings.ToLower(strings.TrimSpace(provider.BaseURL))
 	if baseURL == "" {

@@ -33,7 +33,7 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 		},
 	}
 
-	content, metadata, err := svc.userMessagePayload(input, input.RequestMetadata, 0)
+	content, metadata, err := svc.userMessagePayload(context.Background(), input, input.RequestMetadata, 0)
 	if err != nil {
 		t.Fatalf("userMessagePayload() error = %v", err)
 	}
@@ -43,8 +43,94 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 	if metadata["source"] != "api" {
 		t.Fatalf("expected source metadata to be preserved, got %#v", metadata["source"])
 	}
-	if metadata["input_parts"] != nil && metadata["attachment_ids"] == nil {
-		t.Fatalf("expected attachment_ids or no metadata, got %#v", metadata)
+	// The ids ride the message for clients to show, and the resolved parts
+	// ride alongside them so the model sees the attachment.
+	ids, ok := metadata["attachment_ids"].([]string)
+	if !ok || len(ids) != 1 || ids[0] != "file-123" {
+		t.Fatalf("expected attachment_ids metadata, got %#v", metadata["attachment_ids"])
+	}
+	parts, ok := metadata["input_parts"].([]userMessageInputPart)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("expected one resolved input part, got %#v", metadata["input_parts"])
+	}
+	if parts[0].Type != "image" || parts[0].AttachmentID != "file-123" {
+		t.Fatalf("unexpected resolved part: %#v", parts[0])
+	}
+}
+
+func TestResolveAttachmentInputPartsInlinesTextFile(t *testing.T) {
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		switch r.URL.Path {
+		case "/files/api/files/doc-1/info":
+			fmt.Fprint(w, `{"name":"Pasted text.txt","object":{"mime_type":"text/plain"}}`)
+		case "/files/api/files/doc-1":
+			fmt.Fprint(w, "a pasted document")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	svc := &ConversationService{cfg: &config.Config{
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
+	}}
+
+	parts, err := svc.resolveAttachmentInputParts(context.Background(), []string{"doc-1"})
+	if err != nil {
+		t.Fatalf("resolveAttachmentInputParts() error = %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected one part, got %#v", parts)
+	}
+	if parts[0].Type != "text" {
+		t.Fatalf("expected a text part, got %q", parts[0].Type)
+	}
+	if !strings.Contains(parts[0].Text, "a pasted document") {
+		t.Fatalf("expected the file body inlined, got %q", parts[0].Text)
+	}
+	if !strings.Contains(parts[0].Text, "Pasted text.txt") {
+		t.Fatalf("expected the file name inlined, got %q", parts[0].Text)
+	}
+
+	// The resolved part is what later turns replay: no further fetch.
+	requested = nil
+	built, err := svc.buildSchemaMessageInputParts(parts, "what does this say?", 0)
+	if err != nil {
+		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
+	}
+	if len(requested) != 0 {
+		t.Fatalf("expected replay to reuse the stored text, fetched %v", requested)
+	}
+	if len(built) != 2 || built[1].Type != schema.ChatMessagePartTypeText {
+		t.Fatalf("unexpected built parts: %#v", built)
+	}
+}
+
+func TestResolveAttachmentInputPartsKeepsImageIDsWithMIME(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/files/api/files/img-1/info" {
+			fmt.Fprint(w, `{"name":"cat.png","object":{"mime_type":"image/png"}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	svc := &ConversationService{cfg: &config.Config{
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
+	}}
+
+	parts, err := svc.resolveAttachmentInputParts(context.Background(), []string{"img-1"})
+	if err != nil {
+		t.Fatalf("resolveAttachmentInputParts() error = %v", err)
+	}
+	if len(parts) != 1 || parts[0].Type != "image" || parts[0].AttachmentID != "img-1" {
+		t.Fatalf("unexpected parts: %#v", parts)
+	}
+	if parts[0].MIMEType != "image/png" {
+		t.Fatalf("expected the file server's MIME type, got %q", parts[0].MIMEType)
 	}
 }
 
@@ -52,7 +138,7 @@ func TestRunInputUserMessagePayloadRejectsEmptyInput(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}}
 	input := RunInput{}
 
-	_, _, err := svc.userMessagePayload(input, nil, 0)
+	_, _, err := svc.userMessagePayload(context.Background(), input, nil, 0)
 	if err == nil {
 		t.Fatal("expected validation error for empty input")
 	}
@@ -132,7 +218,7 @@ func TestResolveImageReferenceNormalizesAttachmentIDToFileURL(t *testing.T) {
 		},
 	}
 
-	resolvedURL, attachmentID, mimeType := svc.resolveImageReference("img-1")
+	resolvedURL, attachmentID, mimeType := svc.resolveImageReference(context.Background(), "img-1")
 	if resolvedURL != "https://solar.example/files/api/files/img-1" {
 		t.Fatalf("resolvedURL = %q", resolvedURL)
 	}
@@ -442,6 +528,80 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 	if userMsg.UserInputMultiContent[1].Image.URL == nil {
 		t.Fatal("expected image url to be set")
+	}
+}
+
+func TestBuildModelMessagesInlinesTextAttachmentHistory(t *testing.T) {
+	db := openTestDB(t)
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID:           "note-bot",
+		Name:         "Note Bot",
+		Model:        "openai/gpt-4.1-mini",
+		Abilities:    []string{"chat"},
+		Enabled:      true,
+		SystemPrompt: "You read notes.",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/files/api/files/note-1/info":
+			fmt.Fprint(w, `{"name":"Pasted text.txt","object":{"mime_type":"text/plain"}}`)
+		case "/files/api/files/note-1":
+			fmt.Fprint(w, "remember the milk")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fileServer.Close()
+
+	svc := NewConversationService(db, &config.Config{
+		Personality:  config.PersonalityConfig{MaxHistoryMessages: 24},
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: fileServer.URL},
+	}, registry, nil)
+
+	thread := &database.ConversationThread{
+		ID:        "thread-note-1",
+		AccountID: "acct-1",
+		AgentID:   "note-bot",
+		Title:     "Notes",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// A row written with ids only, as the message API and older callers do.
+	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "", nil, map[string]any{
+		"attachment_ids": []string{"note-1"},
+	}); err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	messages, _, err := svc.BuildModelMessages(context.Background(), thread.AccountID, thread.ID, 0, "", "")
+	if err != nil {
+		t.Fatalf("BuildModelMessages() error = %v", err)
+	}
+
+	var userMsg *schema.Message
+	for _, msg := range messages {
+		if msg.Role == schema.User {
+			userMsg = msg
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("expected user message to be present")
+	}
+	if len(userMsg.UserInputMultiContent) != 1 {
+		t.Fatalf("expected one inlined text part, got %#v", userMsg.UserInputMultiContent)
+	}
+	part := userMsg.UserInputMultiContent[0]
+	if part.Type != schema.ChatMessagePartTypeText {
+		t.Fatalf("unexpected part: %#v", part)
+	}
+	if !strings.Contains(part.Text, "remember the milk") || !strings.Contains(part.Text, "Pasted text.txt") {
+		t.Fatalf("expected the attachment body in the prompt, got %q", part.Text)
 	}
 }
 

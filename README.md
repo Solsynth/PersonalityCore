@@ -757,6 +757,18 @@ running in; PersonalityCore trims the value, truncates it to 255 characters, and
 The stateless `/v1/chat/completions` path never advertises this tool because it does not persist
 conversations.
 
+### Attachments
+
+`POST /api/conversations/:id/runs` accepts `attachment_ids`: ids of files the caller has
+already uploaded to the drive (`POST {solarNetwork.baseUrl}/drive/files/upload/direct`).
+An image becomes a multimodal image input. A text file — anything the file server reports as
+`text/*` or as JSON, YAML, TOML, XML, SQL, CSV, shell, or JavaScript — is read from the drive
+once, bounded to 64 KiB, and inlined into the prompt as text, so a pasted document reaches the
+model as a document. The ids are resolved when the message is created and stored with it, so
+later turns replay the attachment without fetching the file again; a file the file server
+cannot identify is treated as an image, which is what every attachment was assumed to be
+before.
+
 ### Vision / multimodal run
 
 `POST /api/conversations/:id/runs` also accepts `input_parts` for multimodal user input.

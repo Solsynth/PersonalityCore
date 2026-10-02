@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/oklog/ulid/v2"
@@ -41,6 +42,10 @@ type toolMessageMetadata struct {
 
 type userMessageMetadata struct {
 	InputParts []userMessageInputPart `json:"input_parts"`
+	// AttachmentIDs are the drive files the caller attached. Rows written
+	// before attachments were resolved at send time carry ids only, and are
+	// resolved from here when they are replayed.
+	AttachmentIDs []string `json:"attachment_ids"`
 }
 
 type snInboundRequestMetadata struct {
@@ -101,6 +106,9 @@ type userMessageInputPart struct {
 	Type         string `json:"type"`
 	Text         string `json:"text,omitempty"`
 	AttachmentID string `json:"attachment_id,omitempty"`
+	// MIMEType is what the file server reported for an image attachment. It is
+	// kept so replaying the conversation does not have to ask again.
+	MIMEType string `json:"mime_type,omitempty"`
 }
 
 type RunInput struct {
@@ -418,7 +426,7 @@ func (s *ConversationService) CreateRun(ctx context.Context, accountID, threadID
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	content, metadata, err := s.userMessagePayload(input, input.RequestMetadata, thread.PerkLevel)
+	content, metadata, err := s.userMessagePayload(ctx, input, input.RequestMetadata, thread.PerkLevel)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -651,17 +659,35 @@ func (s *ConversationService) buildModelMessages(ctx context.Context, accountID,
 		switch role {
 		case schema.User:
 			var meta userMessageMetadata
-			if decodeMessageMetadata(record.Metadata, &meta) == nil && len(meta.InputParts) > 0 {
-				if !supportsVision {
-					msg.Content = s.renderTextOnlyWithSummaries(ctx, meta.InputParts, msg.Content, perkLimits)
-					break
+			if decodeMessageMetadata(record.Metadata, &meta) == nil {
+				parts := meta.InputParts
+				if len(parts) == 0 && len(meta.AttachmentIDs) > 0 {
+					// Rows written before attachments were resolved at send
+					// time — or by the message API — carry ids only. A broken
+					// one costs its own attachment, never the whole thread.
+					resolved, err := s.resolveAttachmentInputParts(ctx, meta.AttachmentIDs)
+					if err != nil {
+						logging.Log.Warn().
+							Err(err).
+							Str("conversation_id", threadID).
+							Str("message_id", record.ID).
+							Msg("dropping unresolvable attachments from a replayed message")
+					} else {
+						parts = resolved
+					}
 				}
-				parts, err := s.buildSchemaMessageInputParts(meta.InputParts, renderedContent, nil, perkLevel)
-				if err != nil {
-					return nil, agent.Definition{}, err
+				if len(parts) > 0 {
+					if !supportsVision {
+						msg.Content = s.renderTextOnlyWithSummaries(ctx, parts, msg.Content, perkLimits)
+						break
+					}
+					built, err := s.buildSchemaMessageInputParts(parts, renderedContent, perkLevel)
+					if err != nil {
+						return nil, agent.Definition{}, err
+					}
+					msg.Content = ""
+					msg.UserInputMultiContent = built
 				}
-				msg.Content = ""
-				msg.UserInputMultiContent = parts
 			}
 		case schema.Assistant:
 			var meta assistantMessageMetadata
@@ -1394,23 +1420,30 @@ func resolveImpressionAccountIDFromMetadata(fallbackAccountID string, raw dataty
 	return strings.TrimSpace(fallbackAccountID)
 }
 
-func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata map[string]any, perkLevel int32) (string, map[string]any, error) {
+func (s *ConversationService) userMessagePayload(ctx context.Context, input RunInput, baseMetadata map[string]any, perkLevel int32) (string, map[string]any, error) {
 	content := strings.TrimSpace(input.Message)
 	if content == "" && len(input.InputParts) == 0 && len(input.AttachmentIDs) == 0 {
 		return "", nil, fmt.Errorf("message, input_parts, or attachment_ids is required")
 	}
 
-	parsed, err := s.buildSchemaMessageInputParts(input.InputParts, content, input.AttachmentIDs, perkLevel)
+	// Attachment ids become parts now: a text file is read here and inlined,
+	// an image records the MIME the file server reported, so replaying the
+	// conversation never fetches an attachment again. The ids still ride the
+	// message metadata — they are what clients show as the turn's files.
+	attachmentParts, err := s.resolveAttachmentInputParts(ctx, input.AttachmentIDs)
 	if err != nil {
+		return "", nil, err
+	}
+	parts := make([]userMessageInputPart, 0, len(input.InputParts)+len(attachmentParts))
+	parts = append(parts, input.InputParts...)
+	parts = append(parts, attachmentParts...)
+	if _, err := s.buildSchemaMessageInputParts(parts, content, perkLevel); err != nil {
 		return "", nil, err
 	}
 
 	metadata := cloneMetadataMap(baseMetadata)
-	if len(parsed) == 0 {
-		return content, metadata, nil
-	}
-	if len(input.InputParts) > 0 {
-		metadata["input_parts"] = input.InputParts
+	if len(parts) > 0 {
+		metadata["input_parts"] = parts
 	}
 	if len(input.AttachmentIDs) > 0 {
 		metadata["attachment_ids"] = input.AttachmentIDs
@@ -1418,8 +1451,8 @@ func (s *ConversationService) userMessagePayload(input RunInput, baseMetadata ma
 	return content, metadata, nil
 }
 
-func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, attachmentIDs []string, perkLevel int32) ([]schema.MessageInputPart, error) {
-	parts := make([]schema.MessageInputPart, 0, len(rawParts)+len(attachmentIDs)+1)
+func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, perkLevel int32) ([]schema.MessageInputPart, error) {
+	parts := make([]schema.MessageInputPart, 0, len(rawParts)+1)
 
 	if text := strings.TrimSpace(message); text != "" {
 		parts = append(parts, schema.MessageInputPart{
@@ -1453,7 +1486,7 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 				})
 				continue
 			}
-			image, err := s.buildAttachmentImage(id)
+			image, err := s.buildAttachmentImage(id, part.MIMEType)
 			if err != nil {
 				return nil, fmt.Errorf("input_parts[%d]: %w", idx, err)
 			}
@@ -1466,33 +1499,199 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 		}
 	}
 
-	for _, id := range attachmentIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if !perkLimits.AllowVision {
-			parts = append(parts, schema.MessageInputPart{
-				Type: schema.ChatMessagePartTypeText,
-				Text: "[Image attachment: image analysis is not available for your current access level]",
-			})
-			continue
-		}
-		image, err := s.buildAttachmentImage(id)
-		if err != nil {
-			return nil, err
-		}
-		parts = append(parts, schema.MessageInputPart{
-			Type:  schema.ChatMessagePartTypeImageURL,
-			Image: image,
-		})
-	}
-
 	return parts, nil
 }
 
-func (s *ConversationService) buildAttachmentImage(attachmentID string) (*schema.MessageInputImage, error) {
-	resolvedURL, mimeType := s.resolveAttachmentURL(attachmentID)
+// maxAttachmentTextBytes caps how much of a text attachment is inlined into a
+// prompt. A pasted document has no natural size limit and every later turn
+// replays it, so the tail is dropped rather than the whole run.
+const maxAttachmentTextBytes = 64 << 10
+
+// attachmentFileInfo is what the file server says about a drive file: where to
+// read it, what it is, and what it is called. The URL is the drive's own file
+// endpoint rather than a signed one, so it stays valid for every turn that
+// replays the message it rides on.
+type attachmentFileInfo struct {
+	URL      string
+	Name     string
+	MimeType string
+}
+
+// attachmentFileURL is where a drive attachment is read from. Without a
+// configured file server the id itself stands in, keeping attachment-only
+// messages usable in offline mode.
+func (s *ConversationService) attachmentFileURL(attachmentID string) string {
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+	if baseURL == "" {
+		return "attachment://" + attachmentID
+	}
+	return strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID
+}
+
+// fetchAttachmentInfo asks the file server what a drive file is. A file server
+// that cannot be reached leaves the MIME type empty, and the caller falls back
+// to treating the attachment by its id alone — which is what the server did
+// before it could read MIME types at all.
+func (s *ConversationService) fetchAttachmentInfo(ctx context.Context, attachmentID string) attachmentFileInfo {
+	info := attachmentFileInfo{URL: s.attachmentFileURL(attachmentID)}
+	baseURL := strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
+	if baseURL == "" || info.URL == "" {
+		return info
+	}
+	infoURL := strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID + "/info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, infoURL, nil)
+	if err != nil {
+		return info
+	}
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return info
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return info
+	}
+	var result struct {
+		Name   string `json:"name"`
+		Object *struct {
+			MimeType string `json:"mime_type"`
+		} `json:"object"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return info
+	}
+	info.Name = strings.TrimSpace(result.Name)
+	if result.Object != nil {
+		info.MimeType = strings.TrimSpace(result.Object.MimeType)
+	}
+	return info
+}
+
+func (s *ConversationService) httpClient() *http.Client {
+	if s != nil && s.netHTTP != nil {
+		return s.netHTTP
+	}
+	return http.DefaultClient
+}
+
+// resolveAttachmentInputParts turns the caller's drive attachment ids into the
+// input parts the message is stored with. A text file is read once here — so a
+// pasted document reaches the model as text rather than as the image every
+// attachment used to be assumed to be — and an image records the MIME type the
+// file server reported.
+func (s *ConversationService) resolveAttachmentInputParts(ctx context.Context, attachmentIDs []string) ([]userMessageInputPart, error) {
+	if len(attachmentIDs) == 0 {
+		return nil, nil
+	}
+	parts := make([]userMessageInputPart, 0, len(attachmentIDs))
+	for _, raw := range attachmentIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		info := s.fetchAttachmentInfo(ctx, id)
+		if isTextLikeMIME(info.MimeType) {
+			text, err := s.fetchAttachmentText(ctx, id)
+			if err != nil {
+				return nil, fmt.Errorf("attachment %q could not be read: %w", id, err)
+			}
+			parts = append(parts, userMessageInputPart{
+				Type: "text",
+				Text: renderTextAttachment(info.Name, text),
+			})
+			continue
+		}
+		// An image — or a file the file server could not identify, which
+		// travels the way images always have.
+		parts = append(parts, userMessageInputPart{
+			Type:         "image",
+			AttachmentID: id,
+			MIMEType:     info.MimeType,
+		})
+	}
+	return parts, nil
+}
+
+// isTextLikeMIME reports whether a file's MIME type is text the model can read
+// as text rather than as an image or an opaque blob.
+func isTextLikeMIME(mimeType string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	if strings.HasPrefix(mimeType, "text/") {
+		return true
+	}
+	switch mimeType {
+	case "application/json",
+		"application/xml",
+		"application/yaml",
+		"application/x-yaml",
+		"application/toml",
+		"application/javascript",
+		"application/x-javascript",
+		"application/x-sh",
+		"application/sql",
+		"application/csv",
+		"application/x-ndjson":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *ConversationService) fetchAttachmentText(ctx context.Context, attachmentID string) (string, error) {
+	fileURL := s.attachmentFileURL(attachmentID)
+	if fileURL == "" {
+		return "", fmt.Errorf("attachment %q could not be resolved", attachmentID)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("file server answered %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentTextBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(body) > maxAttachmentTextBytes {
+		return truncateUTF8(string(body), maxAttachmentTextBytes) + "\n\n[attachment truncated]", nil
+	}
+	return string(body), nil
+}
+
+// renderTextAttachment frames a text file for the model: the name it was
+// stored under, then the document itself.
+func renderTextAttachment(name, body string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "attachment.txt"
+	}
+	return fmt.Sprintf("Attached file %q:\n\n%s", name, body)
+}
+
+// truncateUTF8 cuts a string to at most limit bytes without splitting a rune.
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
+}
+
+func (s *ConversationService) buildAttachmentImage(attachmentID, mimeType string) (*schema.MessageInputImage, error) {
+	resolvedURL := s.attachmentFileURL(attachmentID)
 	if resolvedURL == "" {
 		return nil, fmt.Errorf("attachment_id %q could not be resolved", attachmentID)
 	}
@@ -1500,45 +1699,19 @@ func (s *ConversationService) buildAttachmentImage(attachmentID string) (*schema
 		MessagePartCommon: schema.MessagePartCommon{URL: &resolvedURL},
 		Detail:            schema.ImageURLDetailAuto,
 	}
+	mimeType = strings.TrimSpace(mimeType)
+	if mimeType == "" {
+		_, mimeType = s.resolveAttachmentURL(context.Background(), attachmentID)
+	}
 	if mimeType != "" {
 		image.MIMEType = mimeType
 	}
 	return image, nil
 }
 
-func (s *ConversationService) resolveAttachmentURL(attachmentID string) (fileURL string, mimeType string) {
-	baseURL := strings.TrimSpace(s.cfg.SolarNetwork.BaseURL)
-	if baseURL == "" {
-		// ponytail: no base URL configured, return synthetic URL for model context
-		return "attachment://" + attachmentID, ""
-	}
-	fileURL = strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID
-	infoURL := strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID + "/info"
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, infoURL, nil)
-	if err != nil {
-		return fileURL, ""
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fileURL, ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fileURL, ""
-	}
-	var result struct {
-		Object *struct {
-			MimeType string `json:"mime_type"`
-		} `json:"object"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&result) != nil {
-		return fileURL, ""
-	}
-	if result.Object != nil {
-		mimeType = strings.TrimSpace(result.Object.MimeType)
-	}
-	return fileURL, mimeType
+func (s *ConversationService) resolveAttachmentURL(ctx context.Context, attachmentID string) (fileURL string, mimeType string) {
+	info := s.fetchAttachmentInfo(ctx, attachmentID)
+	return info.URL, info.MimeType
 }
 
 func cloneMetadataMap(in map[string]any) map[string]any {
@@ -1763,7 +1936,7 @@ func extractAttachmentID(imageRef string) string {
 	return ""
 }
 
-func (s *ConversationService) resolveImageReference(imageRef string) (resolvedURL string, attachmentID string, mimeType string) {
+func (s *ConversationService) resolveImageReference(ctx context.Context, imageRef string) (resolvedURL string, attachmentID string, mimeType string) {
 	imageRef = strings.TrimSpace(imageRef)
 	if imageRef == "" {
 		return "", "", ""
@@ -1774,7 +1947,7 @@ func (s *ConversationService) resolveImageReference(imageRef string) (resolvedUR
 		return imageRef, "", ""
 	}
 
-	resolvedURL, detectedMimeType := s.resolveAttachmentURL(attachmentID)
+	resolvedURL, detectedMimeType := s.resolveAttachmentURL(ctx, attachmentID)
 	if resolvedURL == "" {
 		return imageRef, attachmentID, detectedMimeType
 	}
@@ -1848,7 +2021,7 @@ func (s *ConversationService) summarizeImage(ctx context.Context, imageRef strin
 		return "", "", fmt.Errorf("no vision model configured")
 	}
 
-	imageURL, attachmentID, mimeType := s.resolveImageReference(imageRef)
+	imageURL, attachmentID, mimeType := s.resolveImageReference(ctx, imageRef)
 	if imageURL == "" {
 		return "", "", fmt.Errorf("image reference is required")
 	}

@@ -43,8 +43,8 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 	if metadata["source"] != "api" {
 		t.Fatalf("expected source metadata to be preserved, got %#v", metadata["source"])
 	}
-	// The ids ride the message for clients to show, and the resolved parts
-	// ride alongside them so the model sees the attachment.
+	// The ids ride the message for clients to show, and the resolved image
+	// parts ride alongside them so the model sees the attachment.
 	ids, ok := metadata["attachment_ids"].([]string)
 	if !ok || len(ids) != 1 || ids[0] != "file-123" {
 		t.Fatalf("expected attachment_ids metadata, got %#v", metadata["attachment_ids"])
@@ -58,57 +58,7 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 	}
 }
 
-func TestResolveAttachmentInputPartsInlinesTextFile(t *testing.T) {
-	var requested []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested = append(requested, r.URL.Path)
-		switch r.URL.Path {
-		case "/files/api/files/doc-1/info":
-			fmt.Fprint(w, `{"name":"Pasted text.txt","object":{"mime_type":"text/plain"}}`)
-		case "/files/api/files/doc-1":
-			fmt.Fprint(w, "a pasted document")
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	svc := &ConversationService{cfg: &config.Config{
-		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
-	}}
-
-	parts, err := svc.resolveAttachmentInputParts(context.Background(), []string{"doc-1"})
-	if err != nil {
-		t.Fatalf("resolveAttachmentInputParts() error = %v", err)
-	}
-	if len(parts) != 1 {
-		t.Fatalf("expected one part, got %#v", parts)
-	}
-	if parts[0].Type != "text" {
-		t.Fatalf("expected a text part, got %q", parts[0].Type)
-	}
-	if !strings.Contains(parts[0].Text, "a pasted document") {
-		t.Fatalf("expected the file body inlined, got %q", parts[0].Text)
-	}
-	if !strings.Contains(parts[0].Text, "Pasted text.txt") {
-		t.Fatalf("expected the file name inlined, got %q", parts[0].Text)
-	}
-
-	// The resolved part is what later turns replay: no further fetch.
-	requested = nil
-	built, err := svc.buildSchemaMessageInputParts(parts, "what does this say?", 0)
-	if err != nil {
-		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
-	}
-	if len(requested) != 0 {
-		t.Fatalf("expected replay to reuse the stored text, fetched %v", requested)
-	}
-	if len(built) != 2 || built[1].Type != schema.ChatMessagePartTypeText {
-		t.Fatalf("unexpected built parts: %#v", built)
-	}
-}
-
-func TestResolveAttachmentInputPartsKeepsImageIDsWithMIME(t *testing.T) {
+func TestBuildAttachmentImagePartsRecordsMIME(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/files/api/files/img-1/info" {
 			fmt.Fprint(w, `{"name":"cat.png","object":{"mime_type":"image/png"}}`)
@@ -122,15 +72,72 @@ func TestResolveAttachmentInputPartsKeepsImageIDsWithMIME(t *testing.T) {
 		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
 	}}
 
-	parts, err := svc.resolveAttachmentInputParts(context.Background(), []string{"img-1"})
+	parts, err := svc.buildAttachmentImageParts(context.Background(), []string{"img-1"})
 	if err != nil {
-		t.Fatalf("resolveAttachmentInputParts() error = %v", err)
+		t.Fatalf("buildAttachmentImageParts() error = %v", err)
 	}
 	if len(parts) != 1 || parts[0].Type != "image" || parts[0].AttachmentID != "img-1" {
 		t.Fatalf("unexpected parts: %#v", parts)
 	}
 	if parts[0].MIMEType != "image/png" {
 		t.Fatalf("expected the file server's MIME type, got %q", parts[0].MIMEType)
+	}
+
+	// The MIME type is stored with the part, so replaying the message needs no
+	// second look at the file server.
+	built, err := svc.buildSchemaMessageInputParts(parts, "what is this?", 0)
+	if err != nil {
+		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
+	}
+	if len(built) != 2 || built[1].Image == nil || built[1].Image.MIMEType != "image/png" {
+		t.Fatalf("unexpected built parts: %#v", built)
+	}
+	builtURL := ""
+	if built[1].Image.URL != nil {
+		builtURL = *built[1].Image.URL
+	}
+	if builtURL != server.URL+"/files/api/files/img-1" {
+		t.Fatalf("unexpected image URL: %q", builtURL)
+	}
+}
+
+// A named text part is what a pasted document travels as: the caller sends the
+// text itself, never an uploaded file, and the model reads it under its name.
+func TestBuildSchemaMessageInputPartsFramesNamedText(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{}}
+
+	parts, err := svc.buildSchemaMessageInputParts([]userMessageInputPart{{
+		Type: "text",
+		Name: "Pasted text 2026-10-02 143005.txt",
+		Text: "the whole document",
+	}}, "what does this say?", 0)
+	if err != nil {
+		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected the message plus the attachment, got %#v", parts)
+	}
+	attachment := parts[1]
+	if attachment.Type != schema.ChatMessagePartTypeText {
+		t.Fatalf("expected a text part, got %#v", attachment)
+	}
+	if !strings.Contains(attachment.Text, "Pasted text 2026-10-02 143005.txt") {
+		t.Fatalf("expected the attachment name in the prompt, got %q", attachment.Text)
+	}
+	if !strings.Contains(attachment.Text, "the whole document") {
+		t.Fatalf("expected the attachment body in the prompt, got %q", attachment.Text)
+	}
+
+	// An unnamed text part stays plain prose, as it always was.
+	plain, err := svc.buildSchemaMessageInputParts([]userMessageInputPart{{
+		Type: "text",
+		Text: "just words",
+	}}, "", 0)
+	if err != nil {
+		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
+	}
+	if len(plain) != 1 || plain[0].Text != "just words" {
+		t.Fatalf("unexpected plain text part: %#v", plain)
 	}
 }
 
@@ -531,7 +538,7 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 }
 
-func TestBuildModelMessagesInlinesTextAttachmentHistory(t *testing.T) {
+func TestBuildModelMessagesReplaysTextAttachmentPart(t *testing.T) {
 	db := openTestDB(t)
 	registry, err := agent.NewRegistry([]config.AgentConfig{{
 		ID:           "note-bot",
@@ -545,21 +552,8 @@ func TestBuildModelMessagesInlinesTextAttachmentHistory(t *testing.T) {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
 
-	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/files/api/files/note-1/info":
-			fmt.Fprint(w, `{"name":"Pasted text.txt","object":{"mime_type":"text/plain"}}`)
-		case "/files/api/files/note-1":
-			fmt.Fprint(w, "remember the milk")
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer fileServer.Close()
-
 	svc := NewConversationService(db, &config.Config{
-		Personality:  config.PersonalityConfig{MaxHistoryMessages: 24},
-		SolarNetwork: config.SolarNetworkConfig{BaseURL: fileServer.URL},
+		Personality: config.PersonalityConfig{MaxHistoryMessages: 24},
 	}, registry, nil)
 
 	thread := &database.ConversationThread{
@@ -571,9 +565,14 @@ func TestBuildModelMessagesInlinesTextAttachmentHistory(t *testing.T) {
 	if err := db.Create(thread).Error; err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	// A row written with ids only, as the message API and older callers do.
+	// The shape a pasted document is stored in: text the caller sent, named,
+	// with no drive file behind it.
 	if _, err := svc.createMessageWithMetadata(context.Background(), thread, nil, "user", "", nil, map[string]any{
-		"attachment_ids": []string{"note-1"},
+		"input_parts": []userMessageInputPart{{
+			Type: "text",
+			Name: "Pasted text.txt",
+			Text: "remember the milk",
+		}},
 	}); err != nil {
 		t.Fatalf("create message: %v", err)
 	}
@@ -594,14 +593,14 @@ func TestBuildModelMessagesInlinesTextAttachmentHistory(t *testing.T) {
 		t.Fatal("expected user message to be present")
 	}
 	if len(userMsg.UserInputMultiContent) != 1 {
-		t.Fatalf("expected one inlined text part, got %#v", userMsg.UserInputMultiContent)
+		t.Fatalf("expected one text part, got %#v", userMsg.UserInputMultiContent)
 	}
 	part := userMsg.UserInputMultiContent[0]
 	if part.Type != schema.ChatMessagePartTypeText {
 		t.Fatalf("unexpected part: %#v", part)
 	}
 	if !strings.Contains(part.Text, "remember the milk") || !strings.Contains(part.Text, "Pasted text.txt") {
-		t.Fatalf("expected the attachment body in the prompt, got %q", part.Text)
+		t.Fatalf("expected the attachment in the prompt, got %q", part.Text)
 	}
 }
 

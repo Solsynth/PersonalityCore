@@ -757,17 +757,24 @@ running in; PersonalityCore trims the value, truncates it to 255 characters, and
 The stateless `/v1/chat/completions` path never advertises this tool because it does not persist
 conversations.
 
-### Attachments
+### Attachments and text parts
 
-`POST /api/conversations/:id/runs` accepts `attachment_ids`: ids of files the caller has
-already uploaded to the drive (`POST {solarNetwork.baseUrl}/drive/files/upload/direct`).
-An image becomes a multimodal image input. A text file — anything the file server reports as
-`text/*` or as JSON, YAML, TOML, XML, SQL, CSV, shell, or JavaScript — is read from the drive
-once, bounded to 64 KiB, and inlined into the prompt as text, so a pasted document reaches the
-model as a document. The ids are resolved when the message is created and stored with it, so
-later turns replay the attachment without fetching the file again; a file the file server
-cannot identify is treated as an image, which is what every attachment was assumed to be
-before.
+A run carries two kinds of user content besides `message`:
+
+- `attachment_ids`: ids of files the caller uploaded to the drive
+  (`POST {solarNetwork.baseUrl}/drive/files/upload/direct`). Each becomes a multimodal image
+  input. The MIME type the file server reports is stored with the part, so replaying the
+  conversation never asks for it again; a file the file server cannot identify travels as an
+  image by its id alone.
+- `input_parts`: message parts supplied directly. `{"type": "image", "attachment_id": "..."}`
+  is the same image input by another route, and `{"type": "text", "text": "...", "name":
+  "..."}` is a block of text the caller contributed — a pasted document, say. A named text
+  part is framed for the model as `Attached file "<name>":` followed by the body, and is
+  stored with the message like any other part.
+
+Text travels as text, not as an uploaded file: a caller with a document to hand the model
+sends it in `input_parts` and needs no drive storage for it. Both part kinds are persisted in
+the user message's metadata, which is what clients read back to show a turn's files.
 
 ### Vision / multimodal run
 

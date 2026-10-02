@@ -1747,6 +1747,31 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+// requireContentFieldOnEveryMessage asserts that every serialized message in
+// every captured upstream chat-completion body carries a "content" key.
+//
+// The provider rejects a whole request when any message omits "content", and
+// the OpenAI client library's `omitempty` tag drops the key for an empty plain
+// text message (e.g. an assistant turn that only called tools).
+func requireContentFieldOnEveryMessage(t *testing.T, bodies []map[string]any) {
+	t.Helper()
+	for bodyIndex, body := range bodies {
+		rawMessages, ok := body["messages"].([]any)
+		if !ok {
+			t.Fatalf("request %d: messages = %T, want array", bodyIndex, body["messages"])
+		}
+		for messageIndex, rawMessage := range rawMessages {
+			message, ok := rawMessage.(map[string]any)
+			if !ok {
+				t.Fatalf("request %d message %d: got %T, want object", bodyIndex, messageIndex, rawMessage)
+			}
+			if _, ok := message["content"]; !ok {
+				t.Fatalf("request %d message %d (role %v) is missing the content field: %#v", bodyIndex, messageIndex, message["role"], message)
+			}
+		}
+	}
+}
+
 func TestStreamRunExecutesStreamedMemoryToolCall(t *testing.T) {
 	var requestBodies []map[string]any
 	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1876,6 +1901,10 @@ func TestStreamRunExecutesStreamedMemoryToolCall(t *testing.T) {
 	if !foundTool {
 		t.Fatalf("expected memory tool result message in second request, got %#v", secondMessages)
 	}
+
+	// The second request replays the assistant tool-call turn, whose text is
+	// empty. The provider requires a content field on every message.
+	requireContentFieldOnEveryMessage(t, requestBodies)
 }
 
 func TestStreamRunExecutesSetConversationTitleToolCall(t *testing.T) {
@@ -2348,4 +2377,3 @@ func TestApplyReasoningOverridesPrecedence(t *testing.T) {
 		t.Fatalf("effort = %v, want high", overridden.ReasoningEffort)
 	}
 }
-

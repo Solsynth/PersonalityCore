@@ -61,7 +61,7 @@ func (e *Executor) Generate(ctx context.Context, req RunRequest) (*schema.Messag
 	if err != nil {
 		return nil, err
 	}
-	return model.Generate(ctx, req.Messages)
+	return model.Generate(ctx, normalizeMessageContentForWire(req.Messages))
 }
 
 func (e *Executor) Stream(ctx context.Context, req RunRequest) (*schema.StreamReader[*schema.Message], error) {
@@ -69,7 +69,7 @@ func (e *Executor) Stream(ctx context.Context, req RunRequest) (*schema.StreamRe
 	if err != nil {
 		return nil, err
 	}
-	return model.Stream(ctx, req.Messages)
+	return model.Stream(ctx, normalizeMessageContentForWire(req.Messages))
 }
 
 func (e *Executor) NewToolCallingModel(ctx context.Context, agent Definition, tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
@@ -81,7 +81,11 @@ func (e *Executor) NewToolCallingModel(ctx context.Context, agent Definition, to
 	if !ok {
 		return nil, fmt.Errorf("provider for model %q does not support tool calling", agent.Model)
 	}
-	return toolModel.WithTools(tools)
+	bound, err := toolModel.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &contentNormalizingToolModel{inner: bound}, nil
 }
 
 func (e *Executor) ResolveEmbeddingModel(explicitModel, defaultModel string) (string, error) {

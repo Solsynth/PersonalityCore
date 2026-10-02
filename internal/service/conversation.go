@@ -1553,7 +1553,15 @@ func (s *ConversationService) attachmentFileURL(attachmentID string) string {
 	if baseURL == "" {
 		return "attachment://" + attachmentID
 	}
-	return strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID
+	return driveFileURL(baseURL, attachmentID)
+}
+
+// driveFileURL is the file server's public endpoint for one file: the path the
+// app uploads through and the provider fetches from, so a model handed an
+// image reads the picture rather than a 404 from the gateway.
+func driveFileURL(baseURL, attachmentID string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") +
+		"/drive/files/" + strings.TrimSpace(attachmentID)
 }
 
 // fetchAttachmentMimeType asks the file server what a drive file is. A file
@@ -1565,7 +1573,7 @@ func (s *ConversationService) fetchAttachmentMimeType(ctx context.Context, attac
 	if baseURL == "" || strings.TrimSpace(attachmentID) == "" {
 		return ""
 	}
-	infoURL := strings.TrimRight(baseURL, "/") + "/files/api/files/" + attachmentID + "/info"
+	infoURL := driveFileURL(baseURL, attachmentID) + "/info"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, infoURL, nil)
 	if err != nil {
 		return ""

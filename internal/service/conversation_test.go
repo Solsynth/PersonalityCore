@@ -60,7 +60,7 @@ func TestRunInputUserMessagePayloadSupportsAttachmentIDs(t *testing.T) {
 
 func TestBuildAttachmentImagePartsRecordsMIME(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/files/api/files/img-1/info" {
+		if r.URL.Path == "/drive/files/img-1/info" {
 			fmt.Fprint(w, `{"name":"cat.png","object":{"mime_type":"image/png"}}`)
 			return
 		}
@@ -96,7 +96,7 @@ func TestBuildAttachmentImagePartsRecordsMIME(t *testing.T) {
 	if built[1].Image.URL != nil {
 		builtURL = *built[1].Image.URL
 	}
-	if builtURL != server.URL+"/files/api/files/img-1" {
+	if builtURL != server.URL+"/drive/files/img-1" {
 		t.Fatalf("unexpected image URL: %q", builtURL)
 	}
 }
@@ -226,7 +226,7 @@ func TestResolveImageReferenceNormalizesAttachmentIDToFileURL(t *testing.T) {
 	}
 
 	resolvedURL, attachmentID, mimeType := svc.resolveImageReference(context.Background(), "img-1")
-	if resolvedURL != "https://solar.example/files/api/files/img-1" {
+	if resolvedURL != "https://solar.example/drive/files/img-1" {
 		t.Fatalf("resolvedURL = %q", resolvedURL)
 	}
 	if attachmentID != "img-1" {
@@ -538,6 +538,43 @@ func TestBuildModelMessagesRehydratesUserVisionHistory(t *testing.T) {
 	}
 }
 
+// The file server is reached through the endpoint the app uploads through.
+// The filesystem service's own internal prefix is not routed by the gateway,
+// so a link built from it 404s for whoever fetches it — which, for an image
+// sent to a model, is the provider.
+func TestAttachmentURLsUseTheDriveEndpoint(t *testing.T) {
+	svc := &ConversationService{cfg: &config.Config{
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: "https://api.solian.app/"},
+	}}
+	if got := svc.attachmentFileURL("file-123"); got != "https://api.solian.app/drive/files/file-123" {
+		t.Fatalf("attachment url = %q", got)
+	}
+	// With no file server configured the id stands in, as it always has.
+	offline := &ConversationService{cfg: &config.Config{}}
+	if got := offline.attachmentFileURL("file-123"); got != "attachment://file-123" {
+		t.Fatalf("offline attachment url = %q", got)
+	}
+
+	// The MIME lookup asks the same place, for the file's info.
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		_, _ = w.Write([]byte(`{"object":{"mime_type":"image/png"}}`))
+	}))
+	defer server.Close()
+
+	lookup := &ConversationService{
+		cfg:     &config.Config{SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL}},
+		netHTTP: server.Client(),
+	}
+	if got := lookup.fetchAttachmentMimeType(context.Background(), "file-123"); got != "image/png" {
+		t.Fatalf("mime type = %q", got)
+	}
+	if len(asked) != 1 || asked[0] != "/drive/files/file-123/info" {
+		t.Fatalf("info requests = %v", asked)
+	}
+}
+
 // The deployment's own shape: DeepSeek's Flash model listed with no declared
 // modalities, which the presets know takes image input.
 func TestBuildModelMessagesSendsImageToDeepSeekFlash(t *testing.T) {
@@ -615,7 +652,7 @@ func TestBuildModelMessagesSendsImageToDeepSeekFlash(t *testing.T) {
 	if image.Type != schema.ChatMessagePartTypeImageURL || image.Image == nil || image.Image.URL == nil {
 		t.Fatalf("expected an image part, got %#v", image)
 	}
-	if got := *image.Image.URL; got != "https://api.solian.app/files/api/files/file-123" {
+	if got := *image.Image.URL; got != "https://api.solian.app/drive/files/file-123" {
 		t.Fatalf("image url = %q", got)
 	}
 

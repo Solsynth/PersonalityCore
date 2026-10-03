@@ -1676,13 +1676,10 @@ func (s *ConversationService) resolveAttachmentImage(ctx context.Context, attach
 
 	image, ok := s.inlineAttachmentImage(ctx, attachmentID)
 	if !ok {
-		if signedURL, mimeType, resolved := s.attachmentSignedURL(ctx, attachmentID); resolved {
+		if signedURL, resolved := s.attachmentSignedURL(ctx, attachmentID); resolved {
 			image = &schema.MessageInputImage{
-				MessagePartCommon: schema.MessagePartCommon{
-					URL:      &signedURL,
-					MIMEType: mimeType,
-				},
-				Detail: schema.ImageURLDetailAuto,
+				MessagePartCommon: schema.MessagePartCommon{URL: &signedURL},
+				Detail:            schema.ImageURLDetailAuto,
 			}
 			ok = true
 		}
@@ -1730,38 +1727,36 @@ func (s *ConversationService) inlineAttachmentImage(ctx context.Context, attachm
 }
 
 // attachmentSignedURL asks the file server for a link to the attachment, for the
-// pictures too large to send in the request. Signing is the file server's own
-// call, so nothing here has to know how its storage is addressed.
-func (s *ConversationService) attachmentSignedURL(ctx context.Context, attachmentID string) (string, string, bool) {
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		driveFileURL(s.cfg.SolarNetwork.BaseURL, attachmentID)+"/url",
-		nil,
-	)
+// pictures too large to send in the request.
+//
+// The open route answers with a redirect to one, signed by the file server's own
+// hand, so the request is made without following it: its Location is the link a
+// browser would end up at, taken here so the provider is handed the link
+// directly and has no redirect of its own to follow.
+func (s *ConversationService) attachmentSignedURL(ctx context.Context, attachmentID string) (string, bool) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.attachmentFileURL(attachmentID), nil)
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
-	response, err := s.httpClient().Do(request)
+	// The shared client follows redirects, which is what fetching the bytes
+	// needs and the opposite of what asking for the link needs.
+	client := *s.httpClient()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := client.Do(request)
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", "", false
+	if response.StatusCode < 300 || response.StatusCode >= 400 {
+		return "", false
 	}
-	var body struct {
-		URL      string `json:"url"`
-		MIMEType string `json:"mime_type"`
-	}
-	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&body) != nil {
-		return "", "", false
-	}
-	signedURL := strings.TrimSpace(body.URL)
+	signedURL := strings.TrimSpace(response.Header.Get("Location"))
 	if signedURL == "" {
-		return "", "", false
+		return "", false
 	}
-	return signedURL, normalizeMimeType(body.MIMEType), true
+	return signedURL, true
 }
 
 // normalizeMimeType keeps the type alone: a header may carry parameters, and

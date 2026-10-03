@@ -670,24 +670,26 @@ func TestBuildModelMessagesSendsImageToDeepSeekFlash(t *testing.T) {
 	}
 }
 
-// imageFileServer stands in for the file server's two faces: the bytes of the
-// file as it serves them (for an image, the compressed variant), and the signed
-// link it mints on request.
-func imageFileServer(t *testing.T, body []byte, signedURL string) (*httptest.Server, func() []string) {
+// imageFileServer stands in for the file server: the open route redirects to a
+// signed link, and the link serves the bytes — for an image, the compressed
+// variant. A client that follows redirects gets the picture; one that does not
+// gets the link.
+func imageFileServer(t *testing.T, body []byte) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var asked []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		asked = append(asked, r.URL.Path)
 		mu.Unlock()
 		switch {
-		case r.URL.Path == "/drive/files/img-1" && body != nil:
+		case r.URL.Path == "/drive/files/img-1":
+			w.Header().Set("Location", server.URL+"/signed/img-1")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case r.URL.Path == "/signed/img-1" && body != nil:
 			w.Header().Set("Content-Type", "image/webp")
 			_, _ = w.Write(body)
-		case r.URL.Path == "/drive/files/img-1/url" && signedURL != "":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"url":%q,"mime_type":"image/webp","size":%d}`, signedURL, len(body))
 		default:
 			http.NotFound(w, r)
 		}
@@ -705,7 +707,7 @@ func imageFileServer(t *testing.T, body []byte, signedURL string) (*httptest.Ser
 // fetch, nothing to follow and nothing to expire.
 func TestAttachmentImageInlinesSmallPictures(t *testing.T) {
 	body := bytes.Repeat([]byte("RIFF"), 200_000)
-	server, asked := imageFileServer(t, body, "https://storage.example/signed/img-1")
+	server, asked := imageFileServer(t, body)
 	svc := NewConversationService(openTestDB(t), &config.Config{
 		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
 	}, nil, nil)
@@ -735,16 +737,16 @@ func TestAttachmentImageInlinesSmallPictures(t *testing.T) {
 	if !bytes.Equal(decoded, body) {
 		t.Fatalf("inlined %d bytes, want %d", len(decoded), len(body))
 	}
-	// Read from the endpoint that serves the compressed variant, and once only:
-	// the second look-up is answered from memory.
-	if got := asked(); len(got) != 1 || got[0] != "/drive/files/img-1" {
+	// Read from the open route — which redirects to the compressed variant —
+	// and once only: the second look-up is answered from memory.
+	if got := asked(); len(got) != 2 || got[0] != "/drive/files/img-1" || got[1] != "/signed/img-1" {
 		t.Fatalf("requested %v", got)
 	}
 	again, err := svc.buildAttachmentImage(context.Background(), "img-1", "")
 	if err != nil || again.Base64Data == nil {
 		t.Fatalf("second look-up = %#v, %v", again, err)
 	}
-	if got := asked(); len(got) != 1 {
+	if got := asked(); len(got) != 2 {
 		t.Fatalf("expected the cache to answer, requested %v", got)
 	}
 }
@@ -752,7 +754,7 @@ func TestAttachmentImageInlinesSmallPictures(t *testing.T) {
 // A picture past the limit is sent as a link the file server signed, so the
 // request stays small where the bytes would not have.
 func TestAttachmentImageSignsPicturesTooLargeToInline(t *testing.T) {
-	server, asked := imageFileServer(t, bytes.Repeat([]byte("x"), 4096), "https://storage.example/signed/img-1")
+	server, asked := imageFileServer(t, bytes.Repeat([]byte("x"), 4096))
 	svc := NewConversationService(openTestDB(t), &config.Config{
 		Personality:  config.PersonalityConfig{ImageInlineMaxBytes: 1024},
 		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
@@ -765,15 +767,12 @@ func TestAttachmentImageSignsPicturesTooLargeToInline(t *testing.T) {
 	if image.URL == nil || image.Base64Data != nil {
 		t.Fatalf("expected a signed link, got %#v", image)
 	}
-	if *image.URL != "https://storage.example/signed/img-1" {
+	if *image.URL != server.URL+"/signed/img-1" {
 		t.Fatalf("signed url = %q (requested %v)", *image.URL, asked())
 	}
-	if image.MIMEType != "image/webp" {
-		t.Fatalf("mime type = %q", image.MIMEType)
-	}
 	// The bytes were refused at the limit rather than carried, and the link was
-	// asked for instead.
-	if got := asked(); len(got) != 2 || got[0] != "/drive/files/img-1" || got[1] != "/drive/files/img-1/url" {
+	// taken from the redirect in one request that fetched nothing.
+	if got := asked(); len(got) != 3 || got[2] != "/drive/files/img-1" {
 		t.Fatalf("requested %v", got)
 	}
 }
@@ -832,7 +831,7 @@ func TestStreamRunSendsAttachmentBytesInTheRequest(t *testing.T) {
 	defer modelServer.Close()
 
 	imageBytes := bytes.Repeat([]byte("RIFF"), 3000)
-	fileServer, _ := imageFileServer(t, imageBytes, "")
+	fileServer, _ := imageFileServer(t, imageBytes)
 
 	cfg := &config.Config{
 		SolarNetwork: config.SolarNetworkConfig{BaseURL: fileServer.URL},

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,10 @@ type ConversationService struct {
 	webSearch         WebSearchEngine
 	netHTTP           *http.Client
 	profileCache      sync.Map // ponyttl: simple cache, evict manually if needed
+
+	// imageCache holds resolved image parts for a conversation turn, so a
+	// picture that is replayed on every run is fetched and encoded once.
+	imageCache *attachmentImageCache
 
 	// clientToolWaiters resolves a paused run's pending client-owned tool
 	// calls: key is accountID + "\x00" + runID + "\x00" + toolCallID.
@@ -247,13 +252,14 @@ type ModelInfo struct {
 
 func NewConversationService(db *database.DB, cfg *config.Config, registry *agent.Registry, executor *agent.Executor) *ConversationService {
 	svc := &ConversationService{
-		db:       db,
-		cfg:      cfg,
-		registry: registry,
-		executor: executor,
-		humanize: humanize.NewManager(db),
-		billing:  NewBillingService(db, cfg),
-		netHTTP:  &http.Client{Timeout: 30 * time.Second},
+		db:         db,
+		cfg:        cfg,
+		registry:   registry,
+		executor:   executor,
+		humanize:   humanize.NewManager(db),
+		billing:    NewBillingService(db, cfg),
+		netHTTP:    &http.Client{Timeout: 30 * time.Second},
+		imageCache: newAttachmentImageCache(),
 	}
 	if cfg != nil {
 		searcher, err := websearch.New(cfg.WebSearch, webindex.New(db))
@@ -683,7 +689,7 @@ func (s *ConversationService) buildModelMessages(ctx context.Context, accountID,
 						msg.Content = s.renderTextOnlyWithSummaries(ctx, parts, msg.Content, perkLimits)
 						break
 					}
-					built, err := s.buildSchemaMessageInputParts(parts, renderedContent, perkLevel)
+					built, err := s.buildSchemaMessageInputParts(ctx, parts, renderedContent, perkLevel)
 					if err != nil {
 						return nil, agent.Definition{}, err
 					}
@@ -1440,7 +1446,7 @@ func (s *ConversationService) userMessagePayload(ctx context.Context, input RunI
 	parts := make([]userMessageInputPart, 0, len(input.InputParts)+len(attachmentParts))
 	parts = append(parts, input.InputParts...)
 	parts = append(parts, attachmentParts...)
-	if _, err := s.buildSchemaMessageInputParts(parts, content, perkLevel); err != nil {
+	if _, err := s.buildSchemaMessageInputParts(ctx, parts, content, perkLevel); err != nil {
 		return "", nil, err
 	}
 
@@ -1490,7 +1496,7 @@ func renderTextInputPart(part userMessageInputPart) string {
 	return fmt.Sprintf("Attached file %q:\n\n%s", name, text)
 }
 
-func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessageInputPart, message string, perkLevel int32) ([]schema.MessageInputPart, error) {
+func (s *ConversationService) buildSchemaMessageInputParts(ctx context.Context, rawParts []userMessageInputPart, message string, perkLevel int32) ([]schema.MessageInputPart, error) {
 	parts := make([]schema.MessageInputPart, 0, len(rawParts)+1)
 
 	if text := strings.TrimSpace(message); text != "" {
@@ -1525,7 +1531,7 @@ func (s *ConversationService) buildSchemaMessageInputParts(rawParts []userMessag
 				})
 				continue
 			}
-			image, err := s.buildAttachmentImage(id, part.MIMEType)
+			image, err := s.buildAttachmentImage(ctx, id, part.MIMEType)
 			if err != nil {
 				return nil, fmt.Errorf("input_parts[%d]: %w", idx, err)
 			}
@@ -1607,9 +1613,33 @@ func (s *ConversationService) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// buildAttachmentImage points an image part at the drive, filling in the MIME
-// type only when it is not already known from the stored part.
-func (s *ConversationService) buildAttachmentImage(attachmentID, mimeType string) (*schema.MessageInputImage, error) {
+// imageInlineLimit is the size past which an image travels as a link instead of
+// as base64 bytes inside the request.
+func (s *ConversationService) imageInlineLimit() int {
+	if s != nil && s.cfg != nil && s.cfg.Personality.ImageInlineMaxBytes > 0 {
+		return s.cfg.Personality.ImageInlineMaxBytes
+	}
+	return defaultImageInlineMaxBytes
+}
+
+// buildAttachmentImage is the image part the model is given for an attachment.
+//
+// Small pictures travel inside the request as base64 — no second fetch for the
+// provider to make, nothing to expire, nothing to redirect — and larger ones
+// travel as a signed link the file server mints on request, so the request
+// stays small. What the file server serves for an image is its compressed
+// variant, which is what makes the bytes worth inlining in the first place.
+//
+// When neither can be had the part falls back to the file's own URL, which is
+// what the model would have been given before any of this existed.
+func (s *ConversationService) buildAttachmentImage(ctx context.Context, attachmentID, mimeType string) (*schema.MessageInputImage, error) {
+	if image, ok := s.resolveAttachmentImage(ctx, attachmentID); ok {
+		if image.MIMEType == "" {
+			image.MIMEType = s.attachmentMimeType(ctx, attachmentID, mimeType)
+		}
+		return image, nil
+	}
+
 	resolvedURL := s.attachmentFileURL(attachmentID)
 	if resolvedURL == "" {
 		return nil, fmt.Errorf("attachment_id %q could not be resolved", attachmentID)
@@ -1618,14 +1648,140 @@ func (s *ConversationService) buildAttachmentImage(attachmentID, mimeType string
 		MessagePartCommon: schema.MessagePartCommon{URL: &resolvedURL},
 		Detail:            schema.ImageURLDetailAuto,
 	}
-	mimeType = strings.TrimSpace(mimeType)
-	if mimeType == "" {
-		mimeType = s.fetchAttachmentMimeType(context.Background(), attachmentID)
-	}
-	if mimeType != "" {
-		image.MIMEType = mimeType
-	}
+	image.MIMEType = s.attachmentMimeType(ctx, attachmentID, mimeType)
 	return image, nil
+}
+
+// attachmentMimeType prefers what the caller already stored with the part and
+// asks the file server only when nothing else says.
+func (s *ConversationService) attachmentMimeType(ctx context.Context, attachmentID, stored string) string {
+	if mimeType := strings.TrimSpace(stored); mimeType != "" {
+		return mimeType
+	}
+	return s.fetchAttachmentMimeType(ctx, attachmentID)
+}
+
+// resolveAttachmentImage resolves an attachment to a part the model can read,
+// from the cache when it is still current.
+func (s *ConversationService) resolveAttachmentImage(ctx context.Context, attachmentID string) (*schema.MessageInputImage, bool) {
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" || strings.TrimSpace(s.cfg.SolarNetwork.BaseURL) == "" {
+		// Nothing to fetch from: the caller is offline, and the id itself is
+		// what the part will carry.
+		return nil, false
+	}
+	if cached, ok := s.cachedAttachmentImage(attachmentID); ok {
+		return cached, true
+	}
+
+	image, ok := s.inlineAttachmentImage(ctx, attachmentID)
+	if !ok {
+		if signedURL, mimeType, resolved := s.attachmentSignedURL(ctx, attachmentID); resolved {
+			image = &schema.MessageInputImage{
+				MessagePartCommon: schema.MessagePartCommon{
+					URL:      &signedURL,
+					MIMEType: mimeType,
+				},
+				Detail: schema.ImageURLDetailAuto,
+			}
+			ok = true
+		}
+	}
+	if !ok {
+		return nil, false
+	}
+	s.cacheAttachmentImage(attachmentID, image)
+	return image, true
+}
+
+// inlineAttachmentImage reads the attachment's bytes and encodes them for the
+// request, refusing anything the limit says is too large to carry.
+func (s *ConversationService) inlineAttachmentImage(ctx context.Context, attachmentID string) (*schema.MessageInputImage, bool) {
+	limit := s.imageInlineLimit()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.attachmentFileURL(attachmentID), nil)
+	if err != nil {
+		return nil, false
+	}
+	response, err := s.httpClient().Do(request)
+	if err != nil {
+		return nil, false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	mimeType := normalizeMimeType(response.Header.Get("Content-Type"))
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, false
+	}
+	// One byte over the limit is enough to know it will not fit.
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
+	if err != nil || len(body) == 0 || len(body) > limit {
+		return nil, false
+	}
+	encoded := base64.StdEncoding.EncodeToString(body)
+	return &schema.MessageInputImage{
+		MessagePartCommon: schema.MessagePartCommon{
+			Base64Data: &encoded,
+			MIMEType:   mimeType,
+		},
+		Detail: schema.ImageURLDetailAuto,
+	}, true
+}
+
+// attachmentSignedURL asks the file server for a link to the attachment, for the
+// pictures too large to send in the request. Signing is the file server's own
+// call, so nothing here has to know how its storage is addressed.
+func (s *ConversationService) attachmentSignedURL(ctx context.Context, attachmentID string) (string, string, bool) {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		driveFileURL(s.cfg.SolarNetwork.BaseURL, attachmentID)+"/url",
+		nil,
+	)
+	if err != nil {
+		return "", "", false
+	}
+	response, err := s.httpClient().Do(request)
+	if err != nil {
+		return "", "", false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", "", false
+	}
+	var body struct {
+		URL      string `json:"url"`
+		MIMEType string `json:"mime_type"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&body) != nil {
+		return "", "", false
+	}
+	signedURL := strings.TrimSpace(body.URL)
+	if signedURL == "" {
+		return "", "", false
+	}
+	return signedURL, normalizeMimeType(body.MIMEType), true
+}
+
+// normalizeMimeType keeps the type alone: a header may carry parameters, and
+// the model is told what the bytes are, not how they were negotiated.
+func normalizeMimeType(value string) string {
+	return strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
+}
+
+func (s *ConversationService) cachedAttachmentImage(attachmentID string) (*schema.MessageInputImage, bool) {
+	if s == nil || s.imageCache == nil {
+		return nil, false
+	}
+	return s.imageCache.get(attachmentID)
+}
+
+func (s *ConversationService) cacheAttachmentImage(attachmentID string, image *schema.MessageInputImage) {
+	if s == nil || s.imageCache == nil {
+		return
+	}
+	s.imageCache.put(attachmentID, image)
 }
 
 func cloneMetadataMap(in map[string]any) map[string]any {

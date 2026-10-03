@@ -1,12 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,7 +88,7 @@ func TestBuildAttachmentImagePartsRecordsMIME(t *testing.T) {
 
 	// The MIME type is stored with the part, so replaying the message needs no
 	// second look at the file server.
-	built, err := svc.buildSchemaMessageInputParts(parts, "what is this?", 0)
+	built, err := svc.buildSchemaMessageInputParts(context.Background(), parts, "what is this?", 0)
 	if err != nil {
 		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
 	}
@@ -106,7 +109,7 @@ func TestBuildAttachmentImagePartsRecordsMIME(t *testing.T) {
 func TestBuildSchemaMessageInputPartsFramesNamedText(t *testing.T) {
 	svc := &ConversationService{cfg: &config.Config{}}
 
-	parts, err := svc.buildSchemaMessageInputParts([]userMessageInputPart{{
+	parts, err := svc.buildSchemaMessageInputParts(context.Background(), []userMessageInputPart{{
 		Type: "text",
 		Name: "Pasted text 2026-10-02 143005.txt",
 		Text: "the whole document",
@@ -129,7 +132,7 @@ func TestBuildSchemaMessageInputPartsFramesNamedText(t *testing.T) {
 	}
 
 	// An unnamed text part stays plain prose, as it always was.
-	plain, err := svc.buildSchemaMessageInputParts([]userMessageInputPart{{
+	plain, err := svc.buildSchemaMessageInputParts(context.Background(), []userMessageInputPart{{
 		Type: "text",
 		Text: "just words",
 	}}, "", 0)
@@ -664,6 +667,240 @@ func TestBuildModelMessagesSendsImageToDeepSeekFlash(t *testing.T) {
 	}
 	if !strings.Contains(declared.Content, "only accepts text input") {
 		t.Fatalf("expected the text-only placeholder, got %q", declared.Content)
+	}
+}
+
+// imageFileServer stands in for the file server's two faces: the bytes of the
+// file as it serves them (for an image, the compressed variant), and the signed
+// link it mints on request.
+func imageFileServer(t *testing.T, body []byte, signedURL string) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.Path)
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/drive/files/img-1" && body != nil:
+			w.Header().Set("Content-Type", "image/webp")
+			_, _ = w.Write(body)
+		case r.URL.Path == "/drive/files/img-1/url" && signedURL != "":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"url":%q,"mime_type":"image/webp","size":%d}`, signedURL, len(body))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), asked...)
+	}
+}
+
+// A picture small enough to carry travels inside the request, as the file
+// server serves it — the compressed variant — so the provider has nothing to
+// fetch, nothing to follow and nothing to expire.
+func TestAttachmentImageInlinesSmallPictures(t *testing.T) {
+	body := bytes.Repeat([]byte("RIFF"), 200_000)
+	server, asked := imageFileServer(t, body, "https://storage.example/signed/img-1")
+	svc := NewConversationService(openTestDB(t), &config.Config{
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
+	}, nil, nil)
+
+	parts, err := svc.buildSchemaMessageInputParts(context.Background(), []userMessageInputPart{{
+		Type: "image", AttachmentID: "img-1", MIMEType: "image/jpeg",
+	}}, "what is this?", 0)
+	if err != nil {
+		t.Fatalf("buildSchemaMessageInputParts() error = %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected the message and its image, got %#v", parts)
+	}
+	image := parts[1].Image
+	if image == nil || image.Base64Data == nil || image.URL != nil {
+		t.Fatalf("expected inlined bytes, got %#v", image)
+	}
+	// The MIME the bytes actually are — the served variant's, not the source's.
+	// The provider hop requires it with base64 data.
+	if image.MIMEType != "image/webp" {
+		t.Fatalf("mime type = %q", image.MIMEType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(*image.Base64Data)
+	if err != nil {
+		t.Fatalf("base64 data: %v", err)
+	}
+	if !bytes.Equal(decoded, body) {
+		t.Fatalf("inlined %d bytes, want %d", len(decoded), len(body))
+	}
+	// Read from the endpoint that serves the compressed variant, and once only:
+	// the second look-up is answered from memory.
+	if got := asked(); len(got) != 1 || got[0] != "/drive/files/img-1" {
+		t.Fatalf("requested %v", got)
+	}
+	again, err := svc.buildAttachmentImage(context.Background(), "img-1", "")
+	if err != nil || again.Base64Data == nil {
+		t.Fatalf("second look-up = %#v, %v", again, err)
+	}
+	if got := asked(); len(got) != 1 {
+		t.Fatalf("expected the cache to answer, requested %v", got)
+	}
+}
+
+// A picture past the limit is sent as a link the file server signed, so the
+// request stays small where the bytes would not have.
+func TestAttachmentImageSignsPicturesTooLargeToInline(t *testing.T) {
+	server, asked := imageFileServer(t, bytes.Repeat([]byte("x"), 4096), "https://storage.example/signed/img-1")
+	svc := NewConversationService(openTestDB(t), &config.Config{
+		Personality:  config.PersonalityConfig{ImageInlineMaxBytes: 1024},
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL},
+	}, nil, nil)
+
+	image, err := svc.buildAttachmentImage(context.Background(), "img-1", "image/jpeg")
+	if err != nil {
+		t.Fatalf("buildAttachmentImage() error = %v", err)
+	}
+	if image.URL == nil || image.Base64Data != nil {
+		t.Fatalf("expected a signed link, got %#v", image)
+	}
+	if *image.URL != "https://storage.example/signed/img-1" {
+		t.Fatalf("signed url = %q (requested %v)", *image.URL, asked())
+	}
+	if image.MIMEType != "image/webp" {
+		t.Fatalf("mime type = %q", image.MIMEType)
+	}
+	// The bytes were refused at the limit rather than carried, and the link was
+	// asked for instead.
+	if got := asked(); len(got) != 2 || got[0] != "/drive/files/img-1" || got[1] != "/drive/files/img-1/url" {
+		t.Fatalf("requested %v", got)
+	}
+}
+
+// A file server that answers neither still leaves the model a link, which is
+// what every attachment was given before the bytes travelled with the request.
+func TestAttachmentImageFallsBackToTheFileURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	svc := &ConversationService{
+		cfg:     &config.Config{SolarNetwork: config.SolarNetworkConfig{BaseURL: server.URL}},
+		netHTTP: server.Client(),
+	}
+
+	image, err := svc.buildAttachmentImage(context.Background(), "img-1", "image/jpeg")
+	if err != nil {
+		t.Fatalf("buildAttachmentImage() error = %v", err)
+	}
+	if image.URL == nil || *image.URL != server.URL+"/drive/files/img-1" {
+		t.Fatalf("image = %#v", image)
+	}
+	if image.MIMEType != "image/jpeg" {
+		t.Fatalf("mime type = %q", image.MIMEType)
+	}
+}
+
+// What the provider is actually handed: a run carrying an attachment sends the
+// bytes in the request body as a data URL, which is the only form that needs no
+// second fetch from whoever answers the call.
+func TestStreamRunSendsAttachmentBytesInTheRequest(t *testing.T) {
+	var mu sync.Mutex
+	var requestBodies []map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode completion request: %v", err)
+			return
+		}
+		mu.Lock()
+		requestBodies = append(requestBodies, body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant", "content": "A picture."}, "finish_reason": nil,
+			}},
+		})))
+		_, _ = w.Write([]byte(sseStreamData(map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+			}},
+		})))
+	}))
+	defer modelServer.Close()
+
+	imageBytes := bytes.Repeat([]byte("RIFF"), 3000)
+	fileServer, _ := imageFileServer(t, imageBytes, "")
+
+	cfg := &config.Config{
+		SolarNetwork: config.SolarNetworkConfig{BaseURL: fileServer.URL},
+		Providers: []config.ProviderConfig{{
+			ID: "openai", Type: "openai-compatible", APIKey: "test",
+			BaseURL: modelServer.URL + "/v1", Timeout: time.Second,
+			// Declared image input: without it the picture is summarized into
+			// text before it ever reaches the request.
+			Models: []config.ModelConfig{{Name: "model", Modalities: []string{"image"}}},
+		}},
+	}
+	registry, err := agent.NewRegistry([]config.AgentConfig{{
+		ID: "vision-maid", Name: "Vision Maid", Model: "openai/model",
+		Abilities: []string{"chat"}, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(cfg)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	db := openTestDB(t)
+	svc := NewConversationService(db, cfg, registry, executor)
+
+	thread := &database.ConversationThread{
+		ID: "thread-vision-inline", AccountID: "acct-1", AgentID: "vision-maid", Title: "Pictures",
+	}
+	if err := db.Create(thread).Error; err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	if _, err := svc.StreamRun(context.Background(), "acct-1", thread.ID, RunInput{
+		Message:       "what is this?",
+		AttachmentIDs: []string{"img-1"},
+	}, StreamCallbacks{}); err != nil {
+		t.Fatalf("StreamRun() error = %v", err)
+	}
+
+	mu.Lock()
+	bodies := append([]map[string]any(nil), requestBodies...)
+	mu.Unlock()
+	if len(bodies) == 0 {
+		t.Fatal("expected the provider to be called")
+	}
+	messages, _ := bodies[0]["messages"].([]any)
+	imageURL := ""
+	for _, raw := range messages {
+		message, _ := raw.(map[string]any)
+		content, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range content {
+			part, _ := rawPart.(map[string]any)
+			if part["type"] != "image_url" {
+				continue
+			}
+			image, _ := part["image_url"].(map[string]any)
+			imageURL, _ = image["url"].(string)
+		}
+	}
+	if !strings.HasPrefix(imageURL, "data:image/webp;base64,") {
+		t.Fatalf("expected the picture inline as a data url, got %q", imageURL)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(imageURL, "data:image/webp;base64,"))
+	if err != nil || !bytes.Equal(decoded, imageBytes) {
+		t.Fatalf("inline payload did not survive the wire (err %v, %d bytes)", err, len(decoded))
 	}
 }
 

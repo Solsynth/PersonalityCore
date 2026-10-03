@@ -126,15 +126,19 @@ type AuthConfig struct {
 }
 
 type PersonalityConfig struct {
-	MaxHistoryMessages    int                    `mapstructure:"maxHistoryMessages"`
-	SSEHeartbeat          time.Duration          `mapstructure:"sseHeartbeat"`
-	ChatInboundDebounce   time.Duration          `mapstructure:"chatInboundDebounce"`
-	VisionModel           string                 `mapstructure:"visionModel"`
-	DefaultEmbeddingModel string                 `mapstructure:"defaultEmbeddingModel"`
-	OnlyAllowListedModels bool                   `mapstructure:"onlyAllowListedModels"`
-	DynamicSkills         bool                   `mapstructure:"dynamicSkills"`
-	Surfing               SurfingConfig          `mapstructure:"surfing"`
-	PerkTiers             map[int]PerkTierConfig `mapstructure:"perkTiers"`
+	MaxHistoryMessages    int           `mapstructure:"maxHistoryMessages"`
+	SSEHeartbeat          time.Duration `mapstructure:"sseHeartbeat"`
+	ChatInboundDebounce   time.Duration `mapstructure:"chatInboundDebounce"`
+	VisionModel           string        `mapstructure:"visionModel"`
+	DefaultEmbeddingModel string        `mapstructure:"defaultEmbeddingModel"`
+	OnlyAllowListedModels bool          `mapstructure:"onlyAllowListedModels"`
+	DynamicSkills         bool          `mapstructure:"dynamicSkills"`
+	// ImageInlineMaxBytes is the size an image may reach before it is handed to
+	// the model as a signed link rather than as base64 bytes in the request.
+	// Zero uses the default.
+	ImageInlineMaxBytes int                    `mapstructure:"imageInlineMaxBytes"`
+	Surfing             SurfingConfig          `mapstructure:"surfing"`
+	PerkTiers           map[int]PerkTierConfig `mapstructure:"perkTiers"`
 }
 
 type SurfingConfig struct {
@@ -230,18 +234,18 @@ type ProviderConfig struct {
 }
 
 type ModelConfig struct {
-	Name                string                    `mapstructure:"name"`
-	Type                string                    `mapstructure:"type"`
-	Modalities          []string                  `mapstructure:"modalities"`
-	MaxCompletionTokens int                       `mapstructure:"maxCompletionTokens"`
+	Name                string   `mapstructure:"name"`
+	Type                string   `mapstructure:"type"`
+	Modalities          []string `mapstructure:"modalities"`
+	MaxCompletionTokens int      `mapstructure:"maxCompletionTokens"`
 	// ContextWindow is the model's total input-token ceiling, used only to
 	// report how full a run's context was. Zero means unknown; the service then
 	// falls back to the built-in presets and the provider's own /models reply.
-	ContextWindow       int                       `mapstructure:"contextWindow"`
-	Temperature         float32                   `mapstructure:"temperature"`
-	TopP                float32                   `mapstructure:"topP"`
-	Pricing             *ModelPricingConfig       `mapstructure:"pricing"`
-	PerkOverrides       map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
+	ContextWindow int                       `mapstructure:"contextWindow"`
+	Temperature   float32                   `mapstructure:"temperature"`
+	TopP          float32                   `mapstructure:"topP"`
+	Pricing       *ModelPricingConfig       `mapstructure:"pricing"`
+	PerkOverrides map[int]ModelPerkOverride `mapstructure:"perkOverrides"`
 }
 
 // ModelPricingConfig prices one million input/output tokens in one Wallet
@@ -354,6 +358,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("personality.chatInboundDebounce", 2*time.Second)
 	v.SetDefault("personality.defaultEmbeddingModel", "")
 	v.SetDefault("personality.dynamicSkills", true)
+	v.SetDefault("personality.imageInlineMaxBytes", 1<<20)
 	v.SetDefault("personality.surfing.enabled", false)
 	v.SetDefault("personality.surfing.interval", 1*time.Hour)
 	v.SetDefault("sentry.dsn", "")

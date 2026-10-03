@@ -106,6 +106,25 @@ func TestConversationGroupEndpoints(t *testing.T) {
 		t.Fatalf("patch status = %d body = %s", patch.Code, patch.Body.String())
 	}
 
+	// `archived` alone is a complete PATCH, and the flag appears on the list
+	// payload the client renders its Archived section from.
+	archive := httptest.NewRecorder()
+	r.ServeHTTP(archive, httptest.NewRequest(http.MethodPatch, "/api/conversation-groups/"+group.ID, strings.NewReader(`{"archived":true}`)))
+	if archive.Code != http.StatusOK || !strings.Contains(archive.Body.String(), `"archived":true`) {
+		t.Fatalf("archive status = %d body = %s", archive.Code, archive.Body.String())
+	}
+	archivedList := httptest.NewRecorder()
+	r.ServeHTTP(archivedList, httptest.NewRequest(http.MethodGet, "/api/conversation-groups", nil))
+	if archivedList.Code != http.StatusOK || !strings.Contains(archivedList.Body.String(), `"archived":true`) {
+		t.Fatalf("archived list status = %d body = %s", archivedList.Code, archivedList.Body.String())
+	}
+	// A PATCH with no usable field is still a 400.
+	empty := httptest.NewRecorder()
+	r.ServeHTTP(empty, httptest.NewRequest(http.MethodPatch, "/api/conversation-groups/"+group.ID, strings.NewReader(`{}`)))
+	if empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty patch status = %d, want 400; body = %s", empty.Code, empty.Body.String())
+	}
+
 	// Another account cannot touch it; an unknown id is a 404.
 	other := newAgentTestRouter(svc, "acct-2")
 	forbidden := httptest.NewRecorder()

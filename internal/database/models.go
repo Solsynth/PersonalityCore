@@ -9,12 +9,16 @@ import (
 
 // ConversationGroup is a named collection of an account's threads. Threads in a
 // group are the ones the account called important: what the agent learns in them
-// is pinned in the memory store instead of competing for the long-term budget.
+// is pinned in the memory store instead of competing for the long-term budget. An
+// archived group leaves the account's list while keeping the retention it
+// granted: its threads stay filed and their memories stay pinned, so archiving
+// hides the collection without releasing what it taught the agent.
 type ConversationGroup struct {
 	ID          string         `gorm:"primaryKey;size:26" json:"id"`
 	AccountID   string         `gorm:"size:128;index:idx_groups_account_deleted,priority:1" json:"account_id"`
 	Name        string         `gorm:"size:128" json:"name"`
 	Description string         `gorm:"type:text" json:"description"`
+	Archived    bool           `gorm:"default:false" json:"archived"`
 	DeletedAt   gorm.DeletedAt `gorm:"index:idx_groups_account_deleted,priority:2" json:"deleted_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

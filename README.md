@@ -61,7 +61,7 @@ For Solar chat, humanizer state is keyed by the inbound sender's `account_id`, n
 The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
 Agent-global notes are different: they represent the agent's own stable identity, preferences, lore, and ongoing projects. They are stored as `agent`-scope rows in the same memory table (`scope = "agent"`, no `account_id`) and are injected into the system prompt for every run of that agent.
 
-Conversation groups are account-owned named collections a conversation can belong to. Filing a conversation under a group pins the memories already learned from it and everything it teaches afterwards: they are written `confirmed`, tagged with the group, and rendered ahead of the long-term summary. Deleting a group releases that retention and ungroups its conversations rather than deleting either.
+Conversation groups are account-owned named collections a conversation can belong to. Filing a conversation under a group pins the memories already learned from it and everything it teaches afterwards: they are written `confirmed`, tagged with the group, and rendered ahead of the long-term summary. A group can be archived, which hides it and its conversations from the client's list without touching that retention — the threads stay filed, the memories stay pinned, and later runs in them keep pinning. Deleting a group is the irreversible action: it releases the pinned retention and ungroups its conversations rather than deleting either.
 
 ## Project Layout
 
@@ -646,8 +646,12 @@ returns `{"deleted":n}`, skipping ids the account does not own.
 `POST /api/conversations/group` takes `{"ids":[...],"group_id":"..."}` and
 returns `{"updated":n}`; an empty `group_id` ungroups, and a non-empty one must
 name a live group the account owns. Groups carry a live `conversation_count` on
-every response. Deleting a group ungroups its conversations and releases the
-pinned retention it granted; it does not delete conversations or memories.
+every response. `PATCH /api/conversation-groups/:id` accepts `name`,
+`description`, and `archived`; `{"archived":true}` on its own is a complete
+request. Archiving only hides the group from the client's list — its
+conversations stay grouped and their pinned memories stay pinned — while
+deleting a group releases that retention and ungroups its conversations; neither
+deletes conversations or memories.
 
 List endpoints follow Solar pagination style:
 - request: `take`, `offset`

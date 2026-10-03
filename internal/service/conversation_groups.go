@@ -30,6 +30,10 @@ type ConversationGroupInput struct {
 type ConversationGroupUpdateInput struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	// Archived is the reversible "hide from the list" flag. A present value is
+	// applied as-is and, on its own, counts as a complete request: a client
+	// archives or unarchives a group without naming it again.
+	Archived *bool `json:"archived"`
 }
 
 // ConversationGroupView is a group as the API returns it: its own fields plus
@@ -140,7 +144,7 @@ func (s *ConversationService) UpdateConversationGroup(ctx context.Context, accou
 	if err != nil {
 		return nil, err
 	}
-	updates := make(map[string]any, 2)
+	updates := make(map[string]any, 3)
 	changed := false
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
@@ -161,6 +165,13 @@ func (s *ConversationService) UpdateConversationGroup(ctx context.Context, accou
 		if description != "" {
 			changed = true
 		}
+	}
+	if input.Archived != nil {
+		// Archiving only flips this flag: threads keep their group_id, memories
+		// keep their pinned tier and provenance, and runs keep pinning. It is a
+		// complete request on its own, and unarchiving is the flag set back.
+		updates["archived"] = *input.Archived
+		changed = true
 	}
 	if !changed {
 		return nil, fmt.Errorf("at least one field is required")

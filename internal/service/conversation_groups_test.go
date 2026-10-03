@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"src.solsynth.dev/sosys/persona/internal/agent"
 	"src.solsynth.dev/sosys/persona/internal/config"
 	"src.solsynth.dev/sosys/persona/internal/database"
 )
@@ -308,5 +309,107 @@ func assertSoftDeletedCount(t *testing.T, svc *ConversationService, model any, q
 	}
 	if total == 0 {
 		t.Fatalf("expected the soft-deleted rows to remain on disk")
+	}
+}
+
+func TestArchiveConversationGroupKeepsRetentionUntilDeleted(t *testing.T) {
+	svc := newConversationGroupTestService(t)
+	ctx := t.Context()
+	thread := createTestThread(t, svc, "acct-1", newID())
+	message := &database.ConversationMessage{ID: newID(), ThreadID: thread.ID, AccountID: "acct-1", Role: "user", Content: "My name is Jamie.", Sequence: 1}
+	if err := svc.db.Create(message).Error; err != nil {
+		t.Fatal(err)
+	}
+	memory := &database.AgentMemory{
+		ID: newID(), AccountID: "acct-1", AgentID: "mochi", Scope: "user",
+		Category: "name", Key: "name", Content: "The user's name is Jamie.",
+		Status: "active", SourceMessageID: message.ID,
+	}
+	if err := svc.db.Create(memory).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	group := mustCreateGroup(t, svc, "acct-1", "Important")
+	if _, err := svc.SetConversationGroup(ctx, "acct-1", []string{thread.ID}, group.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// `archived` alone is a complete PATCH: the group flips and the flag rides
+	// back on the response.
+	archived, err := svc.UpdateConversationGroup(ctx, "acct-1", group.ID, ConversationGroupUpdateInput{Archived: new(true)})
+	if err != nil {
+		t.Fatalf("archive error = %v", err)
+	}
+	if !archived.Archived {
+		t.Fatalf("group not archived: %#v", archived)
+	}
+
+	// An archived group still shows up in the list payload, flag and all.
+	groups, err := svc.ListConversationGroups(ctx, "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].ID != group.ID || !groups[0].Archived {
+		t.Fatalf("archived group missing from list: %#v", groups)
+	}
+
+	// Archiving is only the flag: the thread stays filed and the memory it
+	// taught stays pinned under the group.
+	stored, err := svc.GetConversation(ctx, "acct-1", thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.GroupID == nil || *stored.GroupID != group.ID {
+		t.Fatalf("archiving ungrouped the thread: %v", stored.GroupID)
+	}
+	var pinned database.AgentMemory
+	if err := svc.db.First(&pinned, "id = ?", memory.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !pinned.Pinned || pinned.GroupID != group.ID {
+		t.Fatalf("archiving released the retention: %#v", pinned)
+	}
+
+	// A run in the archived group's thread still pins new facts: the run path
+	// derives retention from the thread's group, which archiving leaves alone.
+	def := agent.Definition{ID: "mochi", Abilities: []string{"memory"}}
+	if err := svc.humanize.ObserveInteraction(ctx, "acct-1", def, memoryRetentionFor(stored), "I work at Acme.", "Good to know.", "msg-new", "run-new"); err != nil {
+		t.Fatal(err)
+	}
+	var learned database.AgentMemory
+	if err := svc.db.First(&learned, "account_id = ? AND agent_id = ? AND content LIKE ?", "acct-1", "mochi", "%Acme%").Error; err != nil {
+		t.Fatalf("new fact was not extracted: %v", err)
+	}
+	if !learned.Pinned || learned.GroupID != group.ID {
+		t.Fatalf("new fact in archived group not pinned: %#v", learned)
+	}
+
+	// Unarchiving is the flag set back, and the group leaves the archived set.
+	unarchived, err := svc.UpdateConversationGroup(ctx, "acct-1", group.ID, ConversationGroupUpdateInput{Archived: new(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unarchived.Archived {
+		t.Fatalf("group still archived after unarchive: %#v", unarchived)
+	}
+
+	// Deleting an archived group releases the pin exactly like an active one.
+	if _, err := svc.UpdateConversationGroup(ctx, "acct-1", group.ID, ConversationGroupUpdateInput{Archived: new(true)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteConversationGroup(ctx, "acct-1", group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.First(&pinned, "id = ?", memory.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pinned.Pinned || pinned.GroupID != "" {
+		t.Fatalf("deleting an archived group did not release retention: %#v", pinned)
+	}
+	if err := svc.db.First(&learned, "id = ?", learned.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if learned.Pinned || learned.GroupID != "" {
+		t.Fatalf("deleting an archived group did not release the new fact: %#v", learned)
 	}
 }

@@ -904,7 +904,7 @@ func (s *ConversationService) ExecuteRun(ctx context.Context, accountID, threadI
 	s.recordBilling(ctx, run, agentDef, usage.tokenUsage())
 	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
-		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, responseContent, requestMessage.ID, run.ID); err != nil {
+		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, memoryRetentionFor(thread), requestMessage.Content, responseContent, requestMessage.ID, run.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -1269,7 +1269,7 @@ func (s *ConversationService) StreamRun(ctx context.Context, accountID, threadID
 	s.recordBilling(ctx, run, agentDef, usage.tokenUsage())
 	thread = s.reloadThread(ctx, accountID, threadID, thread)
 	if s.humanize != nil {
-		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, requestMessage.Content, builder.String(), requestMessage.ID, run.ID); err != nil {
+		if err := s.humanize.ObserveInteraction(ctx, s.resolveImpressionAccountIDFromRecord(accountID, requestMessage), agentDef, memoryRetentionFor(thread), requestMessage.Content, builder.String(), requestMessage.ID, run.ID); err != nil {
 			return nil, err
 		}
 	}

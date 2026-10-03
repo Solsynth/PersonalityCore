@@ -429,7 +429,7 @@ func (s *ConversationService) runWithChatTools(
 					return "", err
 				}
 			} else if isMemoryToolName(call.Function.Name) {
-				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, memoryRetentionFor(thread), call)
 				if err != nil {
 					return "", err
 				}
@@ -438,7 +438,7 @@ func (s *ConversationService) runWithChatTools(
 				if err != nil {
 					return "", err
 				}
-		} else {
+			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err
@@ -563,7 +563,7 @@ func (s *ConversationService) runWithGeneralTools(
 					return "", err
 				}
 			} else if isMemoryToolName(call.Function.Name) {
-				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, memoryRetentionFor(thread), call)
 				if err != nil {
 					return "", err
 				}
@@ -572,7 +572,7 @@ func (s *ConversationService) runWithGeneralTools(
 				if err != nil {
 					return "", err
 				}
-		} else {
+			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err
@@ -881,7 +881,7 @@ func (s *ConversationService) streamWithGeneralTools(
 					return "", err
 				}
 			} else if isMemoryToolName(call.Function.Name) {
-				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, call)
+				result, err = s.executeMemoryToolCall(ctx, agentDef, accountID, memoryRetentionFor(thread), call)
 				if err != nil {
 					return "", err
 				}
@@ -890,7 +890,7 @@ func (s *ConversationService) streamWithGeneralTools(
 				if err != nil {
 					return "", err
 				}
-		} else {
+			} else {
 				result, err = s.executeChatToolCall(ctx, agentDef.ID, call)
 				if err != nil {
 					return "", err

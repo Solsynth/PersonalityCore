@@ -32,7 +32,10 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 	{
 		conv.POST("", func(c *gin.Context) { createConversation(c, conversations) })
 		conv.GET("", func(c *gin.Context) { listConversations(c, conversations) })
+		conv.POST("/batch-delete", func(c *gin.Context) { batchDeleteConversations(c, conversations) })
+		conv.POST("/group", func(c *gin.Context) { setConversationsGroup(c, conversations) })
 		conv.GET("/:id", func(c *gin.Context) { getConversation(c, conversations) })
+		conv.DELETE("/:id", func(c *gin.Context) { deleteConversation(c, conversations) })
 		conv.GET("/:id/messages", func(c *gin.Context) { listMessages(c, conversations) })
 		conv.POST("/:id/messages", func(c *gin.Context) { addMessage(c, conversations) })
 		conv.POST("/:id/runs", func(c *gin.Context) { createRun(c, conversations) })
@@ -41,6 +44,13 @@ func RegisterRoutes(r *gin.RouterGroup, conversations *service.ConversationServi
 		conv.GET("/:id/usage", func(c *gin.Context) { getConversationUsage(c, conversations) })
 		conv.POST("/:id/runs/:runId/tool-results", func(c *gin.Context) { submitRunToolResult(c, conversations) })
 		conv.POST("/:id/compact", func(c *gin.Context) { compactConversation(c, conversations) })
+	}
+	groups := r.Group("/conversation-groups")
+	{
+		groups.GET("", func(c *gin.Context) { listConversationGroups(c, conversations) })
+		groups.POST("", func(c *gin.Context) { createConversationGroup(c, conversations) })
+		groups.PATCH("/:id", func(c *gin.Context) { updateConversationGroup(c, conversations) })
+		groups.DELETE("/:id", func(c *gin.Context) { deleteConversationGroup(c, conversations) })
 	}
 	RegisterResponseRoutes(r, conversations)
 }

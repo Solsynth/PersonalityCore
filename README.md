@@ -54,11 +54,14 @@ For humanization, the current server behavior includes:
 - cross-conversation recall from other recent threads for the same user account + agent
 - a distinct agent-owned saved-memory bucket for messages like `remember that ...`, `please remember ...`, or `don't forget ...`
 - a separate agent-global note bucket stored as agent-scope memories, keyed by `agent_id` with no account, shared across every conversation that uses the same agent
+- pinned retention: what the agent learns while talking in a conversation filed under a group is written pre-confirmed and injected into later runs outside the 12-slot long-term budget, prefixed with the group name
 
 For Solar chat, humanizer state is keyed by the inbound sender's `account_id`, not the per-room synthetic conversation account. That lets impressions and memory carry across rooms and the direct run API when the same user account is involved.
 
 The saved-memory bucket is meant to represent deliberate agentic memory, even though the current implementation still uses server-side heuristics until explicit tool-calling is added.
 Agent-global notes are different: they represent the agent's own stable identity, preferences, lore, and ongoing projects. They are stored as `agent`-scope rows in the same memory table (`scope = "agent"`, no `account_id`) and are injected into the system prompt for every run of that agent.
+
+Conversation groups are account-owned named collections a conversation can belong to. Filing a conversation under a group pins the memories already learned from it and everything it teaches afterwards: they are written `confirmed`, tagged with the group, and rendered ahead of the long-term summary. Deleting a group releases that retention and ungroups its conversations rather than deleting either.
 
 ## Project Layout
 
@@ -624,11 +627,27 @@ curl http://localhost:8090/api/agents \
 - `POST /api/conversations`
 - `GET /api/conversations?take=20&offset=0`
 - `GET /api/conversations/:id`
+- `DELETE /api/conversations/:id`
+- `POST /api/conversations/batch-delete`
+- `POST /api/conversations/group`
 - `GET /api/conversations/:id/messages?take=20&offset=0`
 - `POST /api/conversations/:id/messages`
 - `POST /api/conversations/:id/runs`
 - `GET /api/conversations/:id/runs?take=20&offset=0`
 - `GET /api/conversations/:id/runs/:runId`
+- `GET /api/conversation-groups`
+- `POST /api/conversation-groups`
+- `PATCH /api/conversation-groups/:id`
+- `DELETE /api/conversation-groups/:id`
+
+`DELETE /api/conversations/:id` soft-deletes the conversation with its messages
+and runs; `POST /api/conversations/batch-delete` takes `{"ids":[...]}` and
+returns `{"deleted":n}`, skipping ids the account does not own.
+`POST /api/conversations/group` takes `{"ids":[...],"group_id":"..."}` and
+returns `{"updated":n}`; an empty `group_id` ungroups, and a non-empty one must
+name a live group the account owns. Groups carry a live `conversation_count` on
+every response. Deleting a group ungroups its conversations and releases the
+pinned retention it granted; it does not delete conversations or memories.
 
 List endpoints follow Solar pagination style:
 - request: `take`, `offset`

@@ -15,7 +15,7 @@ func TestMemoryToolsSaveAndSearchUseAccountScopedStore(t *testing.T) {
 	ctx := context.Background()
 	def := agent.Definition{ID: "michan"}
 
-	saved, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+	saved, err := svc.executeMemoryToolCall(ctx, def, "acct-1", humanize.MemoryRetention{}, schema.ToolCall{
 		ID: "call-save",
 		Function: schema.FunctionCall{
 			Name:      memorySaveToolName,
@@ -29,7 +29,7 @@ func TestMemoryToolsSaveAndSearchUseAccountScopedStore(t *testing.T) {
 		t.Fatalf("unexpected save result: %s", saved.Content)
 	}
 
-	searched, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+	searched, err := svc.executeMemoryToolCall(ctx, def, "acct-1", humanize.MemoryRetention{}, schema.ToolCall{
 		ID: "call-search",
 		Function: schema.FunctionCall{
 			Name:      memorySearchToolName,

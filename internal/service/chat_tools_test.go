@@ -233,7 +233,7 @@ func TestExecuteMemoryToolCallKeepsAgentNotesAndUserMemoriesApart(t *testing.T) 
 
 	run := func(t *testing.T, id, name, arguments string) string {
 		t.Helper()
-		result, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+		result, err := svc.executeMemoryToolCall(ctx, def, "acct-1", humanize.MemoryRetention{}, schema.ToolCall{
 			ID:       id,
 			Function: schema.FunctionCall{Name: name, Arguments: arguments},
 		})
@@ -291,7 +291,7 @@ func TestExecuteMemoryToolCallKeepsAgentNotesAndUserMemoriesApart(t *testing.T) 
 		t.Fatalf("forgotten memory still listed: %#v", afterForget.Memories)
 	}
 
-	if _, err := svc.executeMemoryToolCall(ctx, def, "acct-1", schema.ToolCall{
+	if _, err := svc.executeMemoryToolCall(ctx, def, "acct-1", humanize.MemoryRetention{}, schema.ToolCall{
 		ID:       "call-bad-scope",
 		Function: schema.FunctionCall{Name: memorySearchToolName, Arguments: `{"query":"drink","scope":"global"}`},
 	}); err == nil {

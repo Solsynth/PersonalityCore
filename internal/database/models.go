@@ -7,13 +7,30 @@ import (
 	"gorm.io/gorm"
 )
 
+// ConversationGroup is a named collection of an account's threads. Threads in a
+// group are the ones the account called important: what the agent learns in them
+// is pinned in the memory store instead of competing for the long-term budget.
+type ConversationGroup struct {
+	ID          string         `gorm:"primaryKey;size:26" json:"id"`
+	AccountID   string         `gorm:"size:128;index:idx_groups_account_deleted,priority:1" json:"account_id"`
+	Name        string         `gorm:"size:128" json:"name"`
+	Description string         `gorm:"type:text" json:"description"`
+	DeletedAt   gorm.DeletedAt `gorm:"index:idx_groups_account_deleted,priority:2" json:"deleted_at"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
 type ConversationThread struct {
-	ID             string `gorm:"primaryKey;size:26" json:"id"`
-	AccountID      string `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
-	AgentID        string `gorm:"size:64;index" json:"agent_id"`
-	Title          string `gorm:"size:255" json:"title"`
-	PerkLevel      int32  `gorm:"default:0" json:"perk_level"`
-	ContextSummary string `gorm:"type:text" json:"context_summary"`
+	ID        string `gorm:"primaryKey;size:26" json:"id"`
+	AccountID string `gorm:"size:128;index:idx_threads_account_deleted,priority:1" json:"account_id"`
+	AgentID   string `gorm:"size:64;index" json:"agent_id"`
+	// GroupID is the account-owned group this thread was filed under. It is a
+	// pointer so "ungrouped" is distinguishable from any real group id, and
+	// because clearing membership is a null update, not an empty string.
+	GroupID        *string `gorm:"size:26;index" json:"group_id,omitempty"`
+	Title          string  `gorm:"size:255" json:"title"`
+	PerkLevel      int32   `gorm:"default:0" json:"perk_level"`
+	ContextSummary string  `gorm:"type:text" json:"context_summary"`
 	// ActivatedSkills names the server-owned skills this conversation has
 	// switched on, so a run rebuilds the same tool set it had last time
 	// instead of making the model ask again. Caller-owned capabilities are
@@ -166,22 +183,29 @@ type AgentManualMemory struct {
 }
 
 type AgentMemory struct {
-	ID              string     `gorm:"primaryKey;size:26" json:"id"`
-	AccountID       string     `gorm:"size:128;index:idx_agent_memories_scope_status,priority:1;index:idx_agent_memories_lookup,priority:1" json:"account_id"`
-	AgentID         string     `gorm:"size:64;index:idx_agent_memories_scope_status,priority:2;index:idx_agent_memories_lookup,priority:2" json:"agent_id"`
-	Scope           string     `gorm:"size:32;index:idx_agent_memories_scope_status,priority:3" json:"scope"`
-	Category        string     `gorm:"size:64;index:idx_agent_memories_lookup,priority:3" json:"category"`
-	Key             string     `gorm:"size:128;index:idx_agent_memories_lookup,priority:4" json:"key"`
-	Content         string     `gorm:"type:text" json:"content"`
-	Confidence      float32    `json:"confidence"`
-	Confirmed       bool       `json:"confirmed"`
-	SourceMessageID string     `gorm:"size:26;index" json:"source_message_id"`
-	SourceRunID     string     `gorm:"size:26;index" json:"source_run_id"`
-	SupersedesID    string     `gorm:"size:26;index" json:"supersedes_id"`
-	Status          string     `gorm:"size:24;index:idx_agent_memories_scope_status,priority:4" json:"status"`
-	LastObservedAt  *time.Time `json:"last_observed_at"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              string  `gorm:"primaryKey;size:26" json:"id"`
+	AccountID       string  `gorm:"size:128;index:idx_agent_memories_scope_status,priority:1;index:idx_agent_memories_lookup,priority:1" json:"account_id"`
+	AgentID         string  `gorm:"size:64;index:idx_agent_memories_scope_status,priority:2;index:idx_agent_memories_lookup,priority:2" json:"agent_id"`
+	Scope           string  `gorm:"size:32;index:idx_agent_memories_scope_status,priority:3" json:"scope"`
+	Category        string  `gorm:"size:64;index:idx_agent_memories_lookup,priority:3" json:"category"`
+	Key             string  `gorm:"size:128;index:idx_agent_memories_lookup,priority:4" json:"key"`
+	Content         string  `gorm:"type:text" json:"content"`
+	Confidence      float32 `json:"confidence"`
+	Confirmed       bool    `json:"confirmed"`
+	SourceMessageID string  `gorm:"size:26;index" json:"source_message_id"`
+	SourceRunID     string  `gorm:"size:26;index" json:"source_run_id"`
+	SupersedesID    string  `gorm:"size:26;index" json:"supersedes_id"`
+	// GroupID records which conversation group taught the agent this fact; it
+	// is provenance for pinned memories and is cleared when that group dies.
+	GroupID string `gorm:"size:26;index" json:"group_id"`
+	// Pinned marks the retention tier: pinned facts are written pre-confirmed
+	// and injected outside the long-term budget, so an important conversation
+	// keeps influencing the agent long after its messages scroll away.
+	Pinned         bool       `gorm:"default:false;index" json:"pinned"`
+	Status         string     `gorm:"size:24;index:idx_agent_memories_scope_status,priority:4" json:"status"`
+	LastObservedAt *time.Time `json:"last_observed_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type ExternalChatBinding struct {

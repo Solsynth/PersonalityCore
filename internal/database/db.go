@@ -34,6 +34,7 @@ func (d *DB) AutoMigrate() error {
 		&ConversationThread{},
 		&ConversationMessage{},
 		&ConversationRun{},
+		&ConversationGroup{},
 		&BillingAccountPolicy{},
 		&BillingUsage{},
 		&BillingPayment{},

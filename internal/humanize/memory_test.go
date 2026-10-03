@@ -100,7 +100,7 @@ func TestObserveInteractionWritesStructuredFactsAndPromptUsesThem(t *testing.T) 
 	def := agent.Definition{ID: "michan", Abilities: []string{"memory"}}
 	ctx := context.Background()
 
-	if err := manager.ObserveInteraction(ctx, "acct-1", def, "My name is Jamie. I live in Taipei.", "Nice to meet you.", "msg-1", "run-1"); err != nil {
+	if err := manager.ObserveInteraction(ctx, "acct-1", def, MemoryRetention{}, "My name is Jamie. I live in Taipei.", "Nice to meet you.", "msg-1", "run-1"); err != nil {
 		t.Fatalf("ObserveInteraction() error = %v", err)
 	}
 	memories, err := manager.ListMemories(ctx, "acct-1", "michan", "", 10)

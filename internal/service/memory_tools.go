@@ -89,7 +89,7 @@ func memoryScope(value string) (string, error) {
 	}
 }
 
-func (s *ConversationService) executeMemoryToolCall(ctx context.Context, def agent.Definition, accountID string, call schema.ToolCall) (*executedChatToolResult, error) {
+func (s *ConversationService) executeMemoryToolCall(ctx context.Context, def agent.Definition, accountID string, retention humanize.MemoryRetention, call schema.ToolCall) (*executedChatToolResult, error) {
 	var payload any
 	switch call.Function.Name {
 	case memorySearchToolName:
@@ -143,9 +143,14 @@ func (s *ConversationService) executeMemoryToolCall(ctx context.Context, def age
 		if err != nil {
 			return nil, err
 		}
+		// Retention is about what a grouped conversation taught about the
+		// person; an agent-scope note is global identity and carries no group.
+		if scope != humanize.MemoryScopeUser {
+			retention = humanize.MemoryRetention{}
+		}
 		memory, err := s.SaveMemory(ctx, accountID, def.ID, humanize.MemoryInput{
 			Scope: scope, Category: input.Category, Key: input.Key, Content: input.Content,
-			Confidence: 1, Confirmed: true,
+			Confidence: 1, Confirmed: true, Pinned: retention.Pinned, GroupID: retention.GroupID,
 		})
 		if err != nil {
 			return nil, err
@@ -182,11 +187,14 @@ type memoryRecord struct {
 	Content    string  `json:"content"`
 	Confidence float32 `json:"confidence"`
 	Confirmed  bool    `json:"confirmed"`
+	Pinned     bool    `json:"pinned"`
+	GroupID    string  `json:"group_id"`
 }
 
 func newMemoryRecord(record database.AgentMemory) memoryRecord {
 	return memoryRecord{
 		ID: record.ID, Scope: record.Scope, Category: record.Category, Key: record.Key,
 		Content: record.Content, Confidence: record.Confidence, Confirmed: record.Confirmed,
+		Pinned: record.Pinned, GroupID: record.GroupID,
 	}
 }

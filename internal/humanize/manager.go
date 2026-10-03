@@ -22,6 +22,7 @@ type Manager struct {
 
 type PromptState struct {
 	MemorySummary       string
+	PinnedMemorySummary string
 	SavedMemorySummary  string
 	CrossConversation   string
 	RelationshipSummary string
@@ -50,17 +51,23 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 		}
 	}
 	memorySummary := strings.TrimSpace(state.MemorySummary)
+	pinnedSummary := ""
 	if hasAbility(def, abilityMemory) {
-		structured, listErr := m.ListMemories(ctx, impressionAccountID, def.ID, "", 12)
+		// Pinned facts live outside the long-term budget: they are read on
+		// their own and excluded from the summary below, so each one renders
+		// once, in the pinned section. Reinforced memories (confirmed first)
+		// come first because they are the ones the agent has leaned on most.
+		longTerm := new(false)
+		structured, listErr := m.listMemories(ctx, impressionAccountID, def.ID, "", 12, longTerm)
 		if listErr != nil {
 			return nil, listErr
 		}
 		if len(structured) == 0 {
 			if legacy := decodeMemoryFacts(state.MemoryItems); len(legacy) > 0 {
-				if err := m.upsertExtractedFacts(ctx, impressionAccountID, def.ID, legacy, "", ""); err != nil {
+				if err := m.upsertExtractedFacts(ctx, impressionAccountID, def.ID, legacy, MemoryRetention{}, "", ""); err != nil {
 					return nil, err
 				}
-				structured, listErr = m.ListMemories(ctx, impressionAccountID, def.ID, "", 12)
+				structured, listErr = m.listMemories(ctx, impressionAccountID, def.ID, "", 12, longTerm)
 				if listErr != nil {
 					return nil, listErr
 				}
@@ -69,6 +76,19 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 		if summary := summarizeStructuredMemories(structured); summary != "" {
 			memorySummary = summary
 		}
+		// The thread's group is already part of each memory's provenance, so
+		// the prefix names the group a fact was learned in, not the thread's
+		// current group; a released or deleted group simply has no name.
+		pinned := new(true)
+		pinnedMemories, pinnedErr := m.listMemories(ctx, impressionAccountID, def.ID, "", 24, pinned)
+		if pinnedErr != nil {
+			return nil, pinnedErr
+		}
+		rendered, renderErr := m.renderPinnedMemorySummary(ctx, pinnedMemories)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		pinnedSummary = rendered
 	}
 	crossConversation := ""
 	if hasAbility(def, abilityCrossConversationMemory) {
@@ -79,6 +99,7 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 	}
 	return &PromptState{
 		MemorySummary:       memorySummary,
+		PinnedMemorySummary: pinnedSummary,
 		SavedMemorySummary:  summarizeManualMemories(savedMemories),
 		CrossConversation:   strings.TrimSpace(crossConversation),
 		RelationshipSummary: strings.TrimSpace(state.RelationshipSummary),
@@ -87,7 +108,7 @@ func (m *Manager) BuildPromptState(ctx context.Context, impressionAccountID, thr
 	}, nil
 }
 
-func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def agent.Definition, userMessage, assistantMessage string, sourceIDs ...string) error {
+func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def agent.Definition, retention MemoryRetention, userMessage, assistantMessage string, sourceIDs ...string) error {
 	if m == nil || m.db == nil || !usesHumanState(def) {
 		return nil
 	}
@@ -115,7 +136,7 @@ func (m *Manager) ObserveInteraction(ctx context.Context, accountID string, def 
 		memories = MergeMemoryFacts(memories, incoming)
 		state.MemoryItems = encodeMemoryFacts(memories)
 		state.MemorySummary = summarizeMemoryFacts(memories)
-		if err := m.upsertExtractedFacts(ctx, accountID, def.ID, incoming, sourceMessageID, sourceRunID); err != nil {
+		if err := m.upsertExtractedFacts(ctx, accountID, def.ID, incoming, retention, sourceMessageID, sourceRunID); err != nil {
 			return err
 		}
 	}
@@ -143,6 +164,9 @@ func RenderSystemOverlay(def agent.Definition, state *PromptState) string {
 	var sections []string
 	if hasAbility(def, abilityRelationship) && state.RelationshipSummary != "" {
 		sections = append(sections, "Relationship context:\n"+state.RelationshipSummary)
+	}
+	if hasAbility(def, abilityMemory) && state.PinnedMemorySummary != "" {
+		sections = append(sections, "Pinned memories from your important conversations:\n"+state.PinnedMemorySummary)
 	}
 	if hasAbility(def, abilityMemory) && state.MemorySummary != "" {
 		sections = append(sections, "Long-term memory:\n"+state.MemorySummary)

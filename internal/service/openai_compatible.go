@@ -6,11 +6,12 @@ import (
 	"io"
 	"strings"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 
 	"src.solsynth.dev/sosys/persona/internal/agent"
+	"src.solsynth.dev/sosys/persona/internal/humanize"
 )
 
 // OpenAICompletionInput is intentionally stateless: no conversation, message,
@@ -277,7 +278,7 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 		result, _ := s.executeActivateSkillToolCall(call, activeSkills, def, nil)
 		return result, nil
 	case memorySearchToolName, memorySaveToolName, memoryForgetToolName:
-		return s.executeMemoryToolCall(ctx, def, accountID, call)
+		return s.executeMemoryToolCall(ctx, def, accountID, humanize.MemoryRetention{}, call)
 	}
 	if call.Function.Name == getCurrentUserProfileToolName {
 		return s.executeGetCurrentUserProfileToolCall(ctx, def.ID, nil, call)
@@ -290,7 +291,6 @@ func (s *ConversationService) executeOpenAIServerTool(ctx context.Context, def a
 	}
 	return s.executeChatToolCall(ctx, def.ID, call)
 }
-
 
 // OpenAIStreamCallbacks forwards the streamed parts of one completion.
 type OpenAIStreamCallbacks struct {
@@ -448,8 +448,8 @@ func (s *ConversationService) StreamOpenAICompletion(ctx context.Context, input 
 				genOpts = append(genOpts, einoopenai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
 			}
 			round, roundErr = s.streamToolRound(ctx, toolModel, messages, genOpts, StreamCallbacks{
-				OnChunk:      callbacks.OnContent,
-				OnReasoning:  callbacks.OnReasoning,
+				OnChunk:     callbacks.OnContent,
+				OnReasoning: callbacks.OnReasoning,
 			})
 			if roundErr == nil {
 				break

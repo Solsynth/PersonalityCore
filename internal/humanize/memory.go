@@ -33,12 +33,34 @@ type MemoryInput struct {
 	Confirmed       bool
 	SourceMessageID string
 	SourceRunID     string
+	// Pinned and GroupID carry the retention tier the fact was learned under.
+	// A pinned fact is pre-confirmed and injected outside the long-term
+	// budget; GroupID is the conversation group whose thread taught it.
+	Pinned  bool
+	GroupID string
+}
+
+// MemoryRetention is the tier facts extracted during one run are written at.
+// The zero value is the ordinary long-term budget; a pinned value marks the
+// group whose conversation taught the fact and keeps it out of that budget.
+type MemoryRetention struct {
+	GroupID string
+	Pinned  bool
 }
 
 // ListMemories returns the talking account's durable memories. Agent-scope
 // notes live in the same store but are not the user's, so they are excluded
-// here and read through ListSelfNotes.
+// here and read through ListSelfNotes. Pinned memories are included: they are
+// still the account's memories, just retained outside the long-term budget.
 func (m *Manager) ListMemories(ctx context.Context, accountID, agentID, query string, limit int) ([]database.AgentMemory, error) {
+	return m.listMemories(ctx, accountID, agentID, query, limit, nil)
+}
+
+// listMemories is ListMemories with an optional retention filter. A nil
+// pinned returns every row; a set value narrows to the pinned or long-term
+// tier, which is how the prompt keeps a pinned fact out of the long-term
+// summary and renders it exactly once.
+func (m *Manager) listMemories(ctx context.Context, accountID, agentID, query string, limit int, pinned *bool) ([]database.AgentMemory, error) {
 	if m == nil || m.db == nil {
 		return nil, nil
 	}
@@ -55,6 +77,9 @@ func (m *Manager) ListMemories(ctx context.Context, accountID, agentID, query st
 	}
 	query = strings.TrimSpace(query)
 	db := m.db.WithContext(ctx).Where("account_id = ? AND agent_id = ? AND scope = ? AND status = ?", accountID, agentID, MemoryScopeUser, "active")
+	if pinned != nil {
+		db = db.Where("pinned = ?", *pinned)
+	}
 	if query != "" {
 		pattern := "%" + strings.ToLower(query) + "%"
 		db = db.Where("LOWER(content) LIKE ? OR LOWER(category) LIKE ? OR LOWER(key) LIKE ?", pattern, pattern, pattern)
@@ -184,6 +209,13 @@ func (m *Manager) SaveMemory(ctx context.Context, accountID, agentID string, inp
 			existing.Category = input.Category
 			existing.Confidence = input.Confidence
 			existing.Confirmed = existing.Confirmed || input.Confirmed
+			// Retention follows the fact: re-observing a pinned memory without
+			// the tier does not demote it, and the first group to record it is
+			// kept when a later observation carries none.
+			existing.Pinned = existing.Pinned || input.Pinned
+			if trimmed := strings.TrimSpace(input.GroupID); trimmed != "" {
+				existing.GroupID = trimmed
+			}
 			if strings.TrimSpace(input.SourceMessageID) != "" {
 				existing.SourceMessageID = input.SourceMessageID
 			}
@@ -212,9 +244,19 @@ func (m *Manager) SaveMemory(ctx context.Context, accountID, agentID string, inp
 		Confirmed:       input.Confirmed,
 		SourceMessageID: input.SourceMessageID,
 		SourceRunID:     input.SourceRunID,
+		GroupID:         strings.TrimSpace(input.GroupID),
+		Pinned:          input.Pinned,
 		SupersedesID:    existing.ID,
 		Status:          "active",
 		LastObservedAt:  &now,
+	}
+	// A superseded memory hands its retention to its replacement, so a later
+	// correction of a pinned fact stays pinned and keeps its provenance.
+	if existing.ID != "" {
+		record.Pinned = existing.Pinned || input.Pinned
+		if record.GroupID == "" {
+			record.GroupID = existing.GroupID
+		}
 	}
 	return record, m.db.WithContext(ctx).Create(record).Error
 }
@@ -240,7 +282,7 @@ func (m *Manager) ForgetMemory(ctx context.Context, accountID, agentID, memoryID
 	return nil
 }
 
-func (m *Manager) upsertExtractedFacts(ctx context.Context, accountID, agentID string, facts []MemoryFact, sourceMessageID, sourceRunID string) error {
+func (m *Manager) upsertExtractedFacts(ctx context.Context, accountID, agentID string, facts []MemoryFact, retention MemoryRetention, sourceMessageID, sourceRunID string) error {
 	for _, fact := range facts {
 		key := strings.TrimSpace(fact.Category)
 		if key == "" || strings.TrimSpace(fact.Content) == "" {
@@ -252,6 +294,9 @@ func (m *Manager) upsertExtractedFacts(ctx context.Context, accountID, agentID s
 			Key:             key,
 			Content:         fact.Content,
 			Confidence:      0.7,
+			Confirmed:       retention.Pinned,
+			Pinned:          retention.Pinned,
+			GroupID:         retention.GroupID,
 			SourceMessageID: sourceMessageID,
 			SourceRunID:     sourceRunID,
 		}); err != nil {
@@ -283,4 +328,54 @@ func summarizeStructuredMemories(records []database.AgentMemory) string {
 		lines = append(lines, "- "+record.Content)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderPinnedMemorySummary renders the account's pinned memories with the
+// name of the group each was learned in. A group that no longer exists yields
+// no prefix, so a released memory reads as a plain fact instead of pointing at
+// a deleted collection.
+func (m *Manager) renderPinnedMemorySummary(ctx context.Context, records []database.AgentMemory) (string, error) {
+	if len(records) == 0 {
+		return "", nil
+	}
+	names, err := m.memoryGroupNames(ctx, records)
+	if err != nil {
+		return "", err
+	}
+	lines := make([]string, 0, len(records))
+	for _, record := range records {
+		line := record.Content
+		if name := names[strings.TrimSpace(record.GroupID)]; name != "" {
+			line = "[" + name + "] " + line
+		}
+		lines = append(lines, "- "+line)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// memoryGroupNames resolves the distinct groups referenced by the given
+// memories in one query.
+func (m *Manager) memoryGroupNames(ctx context.Context, records []database.AgentMemory) (map[string]string, error) {
+	ids := make([]string, 0, len(records))
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		id := strings.TrimSpace(record.GroupID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	names := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	var groups []database.ConversationGroup
+	if err := m.db.WithContext(ctx).Where("id IN ?", ids).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		names[group.ID] = strings.TrimSpace(group.Name)
+	}
+	return names, nil
 }

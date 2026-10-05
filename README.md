@@ -736,6 +736,40 @@ immediate-settlement spending quota with `PUT /api/billing/me/spending-quota`.
 This does not grant access to change administrator-set limits or blacklist
 status.
 
+#### Billing audit ledger
+
+Every billable call writes one row to the ledger (`billing_usages`), and that
+ledger is the audit trail: it records what was consumed and by which call. A row
+keeps the operation (`action`: `generation`, `web_search/<engine>`, …), the
+priced artifact (`model`), the tokens and amount, and the request attribution
+captured when the call arrived:
+
+- `surface` — the API endpoint or gRPC method, for example
+  `/api/conversations/:id/runs` or `/api/web/search`
+- `credential_id` — the AI access credential a third-party key used, empty for
+  the account's own session
+- `client_ip` — the caller's address
+- `device_id` — the caller-declared `X-Device-Id` header, empty when absent
+- `user_agent` — the request's user agent
+
+Generation rows link to their run (`run_id`, and through it the thread and
+agent); non-generation rows such as a web search have no run. The audit is
+written whenever `[billing].enabled` is true, including for free models, so a
+call that cost nothing is still visible.
+
+Both surfaces expose the same read, filterable by `action`, `model`, `surface`,
+`currency`, `credential_id`, `client_ip`, `device_id`, `run_id`, `from`/`to`
+(RFC3339; `from` inclusive, `to` exclusive), `unpaid` (`1` for rows no payment
+has settled), and the usual `take`/`offset`. The list carries the matching count
+in `X-Total`. The summary aggregates the same filter by action, endpoint, model,
+currency, address, device, credential and day; every bucket keeps its own
+currency because summing currencies is meaningless.
+
+- `GET /api/billing/me/ledger`
+- `GET /api/billing/me/ledger/summary`
+- `GET /api/admin/billing/accounts/:accountId/ledger`
+- `GET /api/admin/billing/accounts/:accountId/ledger/summary`
+
 ### Create a conversation
 
 ```bash

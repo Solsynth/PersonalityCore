@@ -83,6 +83,7 @@ func (s *PersonalityService) RunConversation(ctx context.Context, req *gen.DyRun
 		threadID = thread.ID
 	}
 
+	ctx = service.WithAuditAttribution(ctx, service.AuditAttribution{Surface: "grpc.DyPersonalityService/RunConversation"})
 	result, err := s.conversations.ExecuteRun(ctx, accountID, threadID, service.RunInput{
 		Message: message,
 		Stream:  false,
@@ -138,6 +139,7 @@ func (s *PersonalityService) Complete(ctx context.Context, req *gen.DyCompletePe
 		input.MaxTokens = &v
 	}
 
+	ctx = service.WithAuditAttribution(ctx, service.AuditAttribution{Surface: "grpc.DyPersonalityService/Complete"})
 	result, err := s.conversations.CompleteOnce(ctx, input)
 	if err != nil {
 		return nil, mapError(err)

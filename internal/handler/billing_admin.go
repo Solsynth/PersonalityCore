@@ -3,6 +3,8 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
@@ -17,6 +19,8 @@ func RegisterBillingAdminRoutes(r *gin.RouterGroup, conversations *service.Conve
 	r.PUT("/accounts/:accountId", func(c *gin.Context) { putBillingAccount(c, conversations) })
 	r.POST("/accounts/:accountId/unblacklist", func(c *gin.Context) { unblacklistBillingAccount(c, conversations) })
 	r.GET("/accounts/:accountId/usage", func(c *gin.Context) { getBillingAccountUsage(c, conversations) })
+	r.GET("/accounts/:accountId/ledger", func(c *gin.Context) { listBillingAccountLedger(c, conversations) })
+	r.GET("/accounts/:accountId/ledger/summary", func(c *gin.Context) { getBillingAccountLedgerSummary(c, conversations) })
 	r.POST("/accounts/:accountId/settle", func(c *gin.Context) { settleBillingAccount(c, conversations) })
 	r.GET("/accounts/:accountId/openai-credentials", func(c *gin.Context) { listBillingAccountCredentials(c, conversations) })
 	r.DELETE("/accounts/:accountId/openai-credentials/:credentialId", func(c *gin.Context) { revokeBillingAccountCredential(c, conversations) })
@@ -124,6 +128,44 @@ func getBillingAccountUsage(c *gin.Context, conversations *service.ConversationS
 		return
 	}
 	c.JSON(http.StatusOK, usage)
+}
+
+// listBillingAccountLedger is the audit read: every billable call the account
+// made, filterable by action, endpoint, model, credential, address, device and
+// time, with the total matching count in X-Total.
+func listBillingAccountLedger(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	query, err := parseLedgerQuery(c, strings.TrimSpace(c.Param("accountId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries, total, err := conversations.Billing().Ledger(c.Request.Context(), query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.FormatInt(total, 10))
+	c.JSON(http.StatusOK, entries)
+}
+
+func getBillingAccountLedgerSummary(c *gin.Context, conversations *service.ConversationService) {
+	if !requireBillingAdmin(c, conversations) {
+		return
+	}
+	query, err := parseLedgerQuery(c, strings.TrimSpace(c.Param("accountId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	summary, err := conversations.Billing().LedgerSummary(c.Request.Context(), query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
 }
 
 func settleBillingAccount(c *gin.Context, conversations *service.ConversationService) {

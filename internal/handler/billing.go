@@ -1,7 +1,11 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,6 +20,96 @@ func RegisterBillingRoutes(r *gin.RouterGroup, conversations *service.Conversati
 	r.GET("/me", func(c *gin.Context) { getMyBilling(c, conversations) })
 	r.PUT("/me/spending-quota", func(c *gin.Context) { setMySpendingQuota(c, conversations) })
 	r.POST("/me/settle", func(c *gin.Context) { settleMyBilling(c, conversations) })
+	r.GET("/me/ledger", func(c *gin.Context) { listMyBillingLedger(c, conversations) })
+	r.GET("/me/ledger/summary", func(c *gin.Context) { getMyBillingLedgerSummary(c, conversations) })
+}
+
+// parseLedgerQuery reads the shared audit filters from the request query
+// string. accountID pins the query to one account: the self surface passes the
+// caller's own id, the admin surface the account in the path.
+func parseLedgerQuery(c *gin.Context, accountID string) (service.BillingLedgerQuery, error) {
+	query := service.BillingLedgerQuery{
+		AccountID:    accountID,
+		Action:       c.Query("action"),
+		Model:        c.Query("model"),
+		Surface:      c.Query("surface"),
+		Currency:     c.Query("currency"),
+		CredentialID: c.Query("credential_id"),
+		ClientIP:     c.Query("client_ip"),
+		DeviceID:     c.Query("device_id"),
+		RunID:        c.Query("run_id"),
+		UnpaidOnly:   parseBoolQuery(c, "unpaid"),
+	}
+	list := parseListInput(c)
+	query.Take, query.Offset = list.Take, list.Offset
+	from, err := parseTimeQuery(c, "from")
+	if err != nil {
+		return query, err
+	}
+	to, err := parseTimeQuery(c, "to")
+	if err != nil {
+		return query, err
+	}
+	query.From, query.To = from, to
+	return query, nil
+}
+
+func parseTimeQuery(c *gin.Context, name string) (*time.Time, error) {
+	raw := strings.TrimSpace(c.Query(name))
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be an RFC3339 timestamp", name)
+	}
+	return &parsed, nil
+}
+
+func parseBoolQuery(c *gin.Context, name string) bool {
+	switch strings.ToLower(strings.TrimSpace(c.Query(name))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func listMyBillingLedger(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	query, err := parseLedgerQuery(c, accountID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries, total, err := conversations.Billing().Ledger(c.Request.Context(), query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("X-Total", strconv.FormatInt(total, 10))
+	c.JSON(http.StatusOK, entries)
+}
+
+func getMyBillingLedgerSummary(c *gin.Context, conversations *service.ConversationService) {
+	accountID, ok := identity.RequireAccountID(c)
+	if !ok {
+		return
+	}
+	query, err := parseLedgerQuery(c, accountID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	summary, err := conversations.Billing().LedgerSummary(c.Request.Context(), query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
 }
 
 func settleMyBilling(c *gin.Context, conversations *service.ConversationService) {

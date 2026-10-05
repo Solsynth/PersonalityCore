@@ -17,6 +17,7 @@ import (
 func NewRouter(cfg *config.Config, conversations *service.ConversationService) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(auditMiddleware())
 	r.Use(authMiddleware(cfg))
 
 	r.GET("/health", func(c *gin.Context) {
@@ -33,6 +34,28 @@ func NewRouter(cfg *config.Config, conversations *service.ConversationService) *
 	internal.Use(autonomousSecretMiddleware(cfg))
 	handler.RegisterInternalRoutes(internal, conversations)
 	return r
+}
+
+// auditMiddleware records the request's transport attribution on the request
+// context so any billing ledger row written while serving it can be traced
+// back to the call that spent the money. The matched route pattern (FullPath)
+// is the surface label, which is why this runs as a normal middleware — gin
+// resolves the route before the handler chain starts.
+func auditMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		surface := c.FullPath()
+		if surface == "" {
+			surface = c.Request.URL.Path
+		}
+		ctx := service.WithAuditAttribution(c.Request.Context(), service.AuditAttribution{
+			Surface:   surface,
+			ClientIP:  c.ClientIP(),
+			DeviceID:  strings.TrimSpace(c.GetHeader("X-Device-Id")),
+			UserAgent: c.Request.UserAgent(),
+		})
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
 }
 
 func authMiddleware(cfg *config.Config) gin.HandlerFunc {

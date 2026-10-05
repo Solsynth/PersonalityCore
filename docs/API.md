@@ -619,6 +619,89 @@ resolved by an administrator.
 administrators inspect safe credential metadata and revoke a credential owned by
 the selected account; raw `sat_...` tokens are never returned.
 
+### Billing audit ledger
+
+Every billable call writes one ledger row recording what was consumed and which
+call consumed it. The account owner reads their own ledger; a billing
+administrator reads any account's.
+
+```
+GET /api/billing/me/ledger
+GET /api/billing/me/ledger/summary
+GET /api/admin/billing/accounts/:accountId/ledger
+GET /api/admin/billing/accounts/:accountId/ledger/summary
+```
+
+Both the list and the summary accept the same optional filters:
+
+| Query | Meaning |
+| --- | --- |
+| `action` | Billable operation, for example `generation` or `web_search/tavily`. |
+| `model` | Priced model, or the legacy action label a non-generation row carries. |
+| `surface` | API endpoint or gRPC method. |
+| `currency` | Billing currency. |
+| `credential_id` | AI access credential the call used. |
+| `client_ip` | Caller address. |
+| `device_id` | Caller's `X-Device-Id` header. |
+| `run_id` | Conversation run the charge belongs to. |
+| `from`, `to` | RFC3339 window; `from` inclusive, `to` exclusive. |
+| `unpaid` | `1` keeps only rows no payment has settled. |
+| `take`, `offset` | Page window for the list (default 20, max 200). |
+
+The list is newest first and carries the matching count in `X-Total`.
+
+**Response** `200 OK`
+
+```json
+[
+  {
+    "id": "01J0000000000000000000000A",
+    "action": "generation",
+    "surface": "/api/conversations/:id/runs",
+    "model": "openai/gpt-4o",
+    "run_id": "01J0000000000000000000000B",
+    "thread_id": "01J0000000000000000000000C",
+    "agent_id": "mochi",
+    "account_id": "acct-1",
+    "currency": "golds",
+    "input_tokens": 1200,
+    "output_tokens": 300,
+    "amount": "1.50000000",
+    "original_amount": "1.50000000",
+    "client_ip": "203.0.113.7",
+    "device_id": "web-1",
+    "user_agent": "PersonaClient/1.0",
+    "created_at": "2026-03-01T10:00:00Z"
+  }
+]
+```
+
+`amount` is the outstanding balance on the row and `original_amount` the price
+the usage was incurred at, so an audit reads `original_amount`. `payment_id`
+appears once a payment settled the row, and `credential_id` when a third-party
+AI credential made the call. `thread_id` and `agent_id` come from the linked run
+and stay empty for charges that have no run.
+
+The summary aggregates the same filter along every audit dimension at once.
+Each bucket keeps a single currency, so a key that spans currencies yields one
+bucket per currency.
+
+**Response** `200 OK`
+
+```json
+{
+  "entries": 42,
+  "by_action": [{"key": "generation", "currency": "golds", "entries": 40, "input_tokens": 12000, "output_tokens": 3000, "amount": "12.50000000"}],
+  "by_surface": [],
+  "by_model": [],
+  "by_currency": [],
+  "by_client_ip": [],
+  "by_device_id": [],
+  "by_credential": [],
+  "by_day": []
+}
+```
+
 ## Runs
 
 A run executes the agent model against the conversation history and produces an assistant response.

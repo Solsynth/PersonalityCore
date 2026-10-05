@@ -100,16 +100,39 @@ type BillingAccountPolicy struct {
 	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
-// BillingUsage is one billable generation. It is retained as the audit ledger
-// and linked to a payment once its UTC-day (or instant) charge succeeds.
+// BillingUsage is one billable action. It is retained as the audit ledger and
+// linked to a payment once its UTC-day (or instant) charge succeeds.
+//
+// A row records two orthogonal things: what was consumed (Action, Model,
+// tokens, Amount) and who consumed it (AccountID, RunID, and the request
+// attribution in Surface/CredentialID/ClientIP/DeviceID/UserAgent). The
+// attribution is copied from the request that caused the charge, so the ledger
+// can answer "which call from which address spent this" without a join back to
+// a request log that does not exist.
 type BillingUsage struct {
-	ID             string    `gorm:"primaryKey;size:26" json:"id"`
-	RunID          *string   `gorm:"size:26;uniqueIndex" json:"run_id"`
-	AccountID      string    `gorm:"size:128;index:idx_billing_usage_account_created,priority:1;index:idx_billing_usage_account_payment,priority:1" json:"account_id"`
-	Model          string    `gorm:"size:128" json:"model"`
-	Currency       string    `gorm:"size:32;index:idx_billing_usage_account_payment,priority:2" json:"currency"`
-	InputTokens    int       `json:"input_tokens"`
-	OutputTokens   int       `json:"output_tokens"`
+	ID        string  `gorm:"primaryKey;size:26" json:"id"`
+	RunID     *string `gorm:"size:26;uniqueIndex" json:"run_id"`
+	AccountID string  `gorm:"size:128;index:idx_billing_usage_account_created,priority:1;index:idx_billing_usage_account_payment,priority:1" json:"account_id"`
+	// Action is the canonical billable operation: "generation" for a model
+	// call, or the charge name a non-generation action was written under
+	// (for example "web_search/tavily"). Model keeps the historical label for
+	// those non-generation rows so existing ledger readers keep working.
+	Action string `gorm:"size:64;index:idx_billing_usage_account_action,priority:2" json:"action"`
+	Model  string `gorm:"size:128" json:"model"`
+	// Surface is the API endpoint or RPC that admitted the caller, for
+	// example "/api/conversations/:id/runs" or a gRPC full method name.
+	Surface string `gorm:"size:128" json:"surface"`
+	// CredentialID is the AI access credential (sat_ token) the call was made
+	// with, nil when it used the account's own session.
+	CredentialID *string `gorm:"size:26;index" json:"credential_id,omitempty"`
+	ClientIP     string  `gorm:"size:64;index:idx_billing_usage_account_ip,priority:2" json:"client_ip"`
+	DeviceID     string  `gorm:"size:128;index:idx_billing_usage_account_device,priority:2" json:"device_id"`
+	UserAgent    string  `gorm:"size:256" json:"user_agent"`
+	Currency     string  `gorm:"size:32;index:idx_billing_usage_account_payment,priority:2" json:"currency"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	// Amount is the outstanding balance on the row; a partial payment reduces
+	// it while OriginalAmount keeps the price the usage was incurred at.
 	Amount         string    `gorm:"size:64" json:"amount"`
 	OriginalAmount string    `gorm:"size:64" json:"original_amount"`
 	PaymentID      *string   `gorm:"size:26;index:idx_billing_usage_account_payment,priority:3" json:"payment_id"`
@@ -157,6 +180,18 @@ type BillingPayment struct {
 	PeriodEnd   time.Time `gorm:"index" json:"period_end"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// WebSearchPreference is the account's choice of where its web searches run:
+// the single engine its searches are restricted to. It exists so a caller can
+// keep searches on the engine whose price it is willing to pay instead of the
+// server's own order, which may reach a metered provider. One row per account;
+// an absent row, or an empty engine, leaves the choice to the server.
+type WebSearchPreference struct {
+	AccountID string    `gorm:"primaryKey;size:128" json:"account_id"`
+	Engine    string    `gorm:"size:64" json:"engine"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type AgentHumanState struct {

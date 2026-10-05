@@ -21,6 +21,10 @@ import (
 
 const PermissionBillingManage = "personality.billing.manage"
 
+// billingActionGeneration is the ledger action recorded for a model call. A
+// non-generation charge carries its own action name instead.
+const billingActionGeneration = "generation"
+
 var ErrBillingBlacklisted = errors.New("account is blocked from Personality services")
 var ErrBillingQuotaExceeded = errors.New("Personality usage threshold exceeded")
 var ErrPaymentWalletRequired = errors.New("a payment wallet is required for paid models")
@@ -102,7 +106,16 @@ func (s *BillingService) AuthorizeRun(ctx context.Context, accountID string, def
 	if err := s.checkUsageLimit(ctx, accountID, currency, utcDay(now), s.usageLimits(policy, false)); err != nil {
 		return "", err
 	}
-	usage := &database.BillingUsage{ID: newID(), AccountID: accountID, Model: def.Model, Amount: "0", CreatedAt: now}
+	audit := ledgerAttribution(ctx)
+	usage := &database.BillingUsage{
+		ID: newID(), AccountID: accountID, Action: billingActionGeneration, Model: def.Model,
+		Surface: audit.Surface, CredentialID: nullIfEmpty(audit.CredentialID),
+		ClientIP: audit.ClientIP, DeviceID: audit.DeviceID, UserAgent: audit.UserAgent,
+		// The currency is known from the model here, so a reservation is
+		// already attributable even before RecordUsage fills in the price.
+		Currency: currency,
+		Amount:   "0", CreatedAt: now,
+	}
 	if err := s.db.WithContext(ctx).Create(usage).Error; err != nil {
 		return "", err
 	}
@@ -297,10 +310,17 @@ func (s *BillingService) chargeAction(ctx context.Context, accountID, action, cu
 	if strings.TrimSpace(currency) == "" {
 		currency = s.defaultCurrency()
 	}
+	audit := ledgerAttribution(ctx)
 	record := &database.BillingUsage{
 		ID:             newID(),
 		AccountID:      accountID,
+		Action:         action,
 		Model:          action,
+		Surface:        audit.Surface,
+		CredentialID:   nullIfEmpty(audit.CredentialID),
+		ClientIP:       audit.ClientIP,
+		DeviceID:       audit.DeviceID,
+		UserAgent:      audit.UserAgent,
 		Currency:       currency,
 		InputTokens:    inputTokens,
 		OutputTokens:   outputTokens,

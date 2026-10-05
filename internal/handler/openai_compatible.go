@@ -83,9 +83,12 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 		openAIError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	ctx := c.Request.Context()
+	if credentialID != "" {
+		ctx = service.WithAuditCredential(ctx, credentialID)
+	}
 	// Third-party credential tokens (sat_) represent a different caller than
 	// the authenticated request, so their identity is not propagated.
-	ctx := c.Request.Context()
 	var accountName, accountNick string
 	if credentialID == "" {
 		accountName, accountNick = identity.GetAccountProfile(c)
@@ -125,6 +128,9 @@ func openAIChatCompletion(c *gin.Context, conversations *service.ConversationSer
 // must execute itself.
 func streamOpenAIChatCompletion(c *gin.Context, conversations *service.ConversationService, input service.OpenAICompletionInput) {
 	ctx := c.Request.Context()
+	if input.CredentialID != "" {
+		ctx = service.WithAuditCredential(ctx, input.CredentialID)
+	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Writer.Flush()

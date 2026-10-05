@@ -90,6 +90,45 @@ timeout = "45s"
 	}
 }
 
+func TestLoad_ParsesHiddenAgentFlag(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(mainFile, []byte(`
+[[providers]]
+id = "openai"
+type = "openai"
+apiKey = "test-key"
+timeout = "30s"
+
+[[agents.items]]
+id = "visible"
+name = "Visible"
+enabled = true
+
+[[agents.items]]
+id = "internal"
+name = "Internal"
+enabled = true
+hidden = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(mainFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Agents.Items) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(cfg.Agents.Items))
+	}
+	if cfg.Agents.Items[0].Hidden {
+		t.Fatal("visible agent parsed as hidden")
+	}
+	if !cfg.Agents.Items[1].Hidden {
+		t.Fatal("hidden = true was not parsed")
+	}
+}
+
 func TestLoad_AgentPromptFileSupportsRootRelativePath(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := filepath.Join(dir, "config.toml")

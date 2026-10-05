@@ -34,6 +34,39 @@ func TestRegistry_ListOnlyEnabled(t *testing.T) {
 	}
 }
 
+func TestRegistry_HiddenAgentsStayOutOfListButRemainAddressable(t *testing.T) {
+	registry, err := NewRegistry([]config.AgentConfig{
+		{ID: "public", Name: "Public", Enabled: true},
+		{ID: "internal", Name: "Internal", Enabled: true, Hidden: true},
+		{ID: "off", Name: "Off", Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	listed := registry.List()
+	if len(listed) != 1 || listed[0].ID != "public" {
+		t.Fatalf("List() = %#v, want only the public agent", listed)
+	}
+
+	all := registry.All()
+	if len(all) != 2 {
+		t.Fatalf("All() returned %d agents, want 2 enabled", len(all))
+	}
+
+	def, ok := registry.Get("internal")
+	if !ok {
+		t.Fatal("hidden agent must stay resolvable by id")
+	}
+	if !def.Hidden {
+		t.Fatal("Definition.Hidden not carried over from config")
+	}
+
+	if _, ok := registry.Get("off"); ok {
+		t.Fatal("disabled agent must not be resolvable")
+	}
+}
+
 func TestExecutor_ResolveModelRequiresProviderModelFormat(t *testing.T) {
 	executor, err := NewExecutor(&config.Config{
 		Providers: []config.ProviderConfig{

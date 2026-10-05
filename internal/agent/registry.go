@@ -9,22 +9,26 @@ import (
 )
 
 type Definition struct {
-	ID                      string                              `json:"id"`
-	Name                    string                              `json:"name"`
-	Description             string                              `json:"description"`
-	SystemPrompt            string                              `json:"system_prompt,omitempty"`
-	Model                   string                              `json:"model"`
-	Temperature             *float32                            `json:"temperature,omitempty"`
-	TopP                    *float32                            `json:"top_p,omitempty"`
-	MaxCompletionTokens     *int                                `json:"max_completion_tokens,omitempty"`
-	ChatMaxCompletionTokens *int                                `json:"-"`
-	BillingMultiplier       *float64                            `json:"billing_multiplier,omitempty"`
-	DisableThinking         *bool                               `json:"disable_thinking,omitempty"`
-	Abilities               []string                            `json:"abilities"`
-	Enabled                 bool                                `json:"enabled"`
-	Autonomous              config.AgentAutonomousConfig        `json:"-"`
-	SolarIntegration        config.AgentSolarNetworkIntegration `json:"-"`
-	PerkOverrides           map[int]config.AgentPerkOverride    `json:"-"`
+	ID                      string   `json:"id"`
+	Name                    string   `json:"name"`
+	Description             string   `json:"description"`
+	SystemPrompt            string   `json:"system_prompt,omitempty"`
+	Model                   string   `json:"model"`
+	Temperature             *float32 `json:"temperature,omitempty"`
+	TopP                    *float32 `json:"top_p,omitempty"`
+	MaxCompletionTokens     *int     `json:"max_completion_tokens,omitempty"`
+	ChatMaxCompletionTokens *int     `json:"-"`
+	BillingMultiplier       *float64 `json:"billing_multiplier,omitempty"`
+	DisableThinking         *bool    `json:"disable_thinking,omitempty"`
+	Abilities               []string `json:"abilities"`
+	Enabled                 bool     `json:"enabled"`
+	// Hidden agents stay out of Registry.List (the client-facing catalog) but
+	// remain reachable through Registry.Get, so callers that know the id can
+	// still create conversations and runs against them.
+	Hidden           bool                                `json:"hidden"`
+	Autonomous       config.AgentAutonomousConfig        `json:"-"`
+	SolarIntegration config.AgentSolarNetworkIntegration `json:"-"`
+	PerkOverrides    map[int]config.AgentPerkOverride    `json:"-"`
 	// PerkMaxTokens is set by the perk resolver; executor checks this first.
 	PerkMaxTokens *int `json:"-"`
 	// ReasoningEffort is set per request by the run's caller and consumed by
@@ -69,6 +73,7 @@ func NewRegistry(cfgs []config.AgentConfig) (*Registry, error) {
 			DisableThinking:         cfg.DisableThinking,
 			Abilities:               append([]string(nil), cfg.Abilities...),
 			Enabled:                 cfg.Enabled,
+			Hidden:                  cfg.Hidden,
 			Autonomous:              cfg.Autonomous,
 			SolarIntegration:        cfg.SolarNetworkIntegration,
 			PerkOverrides:           cfg.PerkOverrides,
@@ -90,7 +95,28 @@ func HasAbility(def Definition, ability string) bool {
 	return false
 }
 
+// List returns the enabled agents discoverable in the catalog. Hidden agents
+// are omitted here but stay resolvable through Get; internal callers that must
+// also see hidden agents use All instead.
 func (r *Registry) List() []Definition {
+	if r == nil {
+		return nil
+	}
+	result := make([]Definition, 0, len(r.order))
+	for _, id := range r.order {
+		agent := r.agents[id]
+		if !agent.Enabled || agent.Hidden {
+			continue
+		}
+		result = append(result, agent)
+	}
+	return result
+}
+
+// All returns every enabled agent, hidden ones included. It backs internal
+// automation (autonomous wakes, surfing, Solar Network connections) so hidden
+// agents keep running; it is not a client-facing catalog.
+func (r *Registry) All() []Definition {
 	if r == nil {
 		return nil
 	}

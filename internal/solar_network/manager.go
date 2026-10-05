@@ -60,7 +60,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.ctx, m.cancel = context.WithCancel(ctx)
-	for _, def := range m.registry.List() {
+	for _, def := range m.registry.All() {
 		if !agent.HasAbility(def, "chat") {
 			continue
 		}

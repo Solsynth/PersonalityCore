@@ -198,8 +198,12 @@ type AgentConfig struct {
 	Autonomous              AgentAutonomousConfig        `mapstructure:"autonomous"`
 	SolarNetworkIntegration AgentSolarNetworkIntegration `mapstructure:"solar-network-integration"`
 	Enabled                 bool                         `mapstructure:"enabled"`
-	PerkOverrides           map[int]AgentPerkOverride    `mapstructure:"perkOverrides"`
-	sourceDir               string                       `mapstructure:"-"`
+	// Hidden keeps an enabled agent out of every catalog listing while it stays
+	// addressable by id. Use it for internal or preset agents that clients must
+	// be able to run but should not discover.
+	Hidden        bool                      `mapstructure:"hidden"`
+	PerkOverrides map[int]AgentPerkOverride `mapstructure:"perkOverrides"`
+	sourceDir     string                    `mapstructure:"-"`
 }
 
 type AgentAutonomousConfig struct {

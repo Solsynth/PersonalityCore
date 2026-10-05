@@ -32,6 +32,7 @@ func newAgentTestService(t *testing.T) *service.ConversationService {
 	registry, err := agent.NewRegistry([]config.AgentConfig{
 		{ID: "mochi", Name: "Mochi", Model: "test", SystemPrompt: "You are Mochi.", Abilities: []string{"memory"}, Enabled: true},
 		{ID: "general", Name: "General", Model: "test", Enabled: true},
+		{ID: "planner", Name: "Planner", Model: "test", Enabled: true, Hidden: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,8 +66,34 @@ func TestListAgentsReturnsEveryEnabledAgentWithoutSystemPrompts(t *testing.T) {
 	if len(agents) != 2 {
 		t.Fatalf("returned %d agents, want 2", len(agents))
 	}
+	if body := response.Body.String(); strings.Contains(body, `"planner"`) {
+		t.Fatalf("hidden agent leaked into the agent list: %s", body)
+	}
 	if body := response.Body.String(); strings.Contains(body, "You are Mochi.") {
 		t.Fatalf("system prompt leaked into the agent list: %s", body)
+	}
+}
+
+func TestHiddenAgentStaysUsableById(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAgentTestService(t)
+	r := newAgentTestRouter(svc, "acct-1")
+
+	// The hidden agent is not in the catalog...
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
+	if strings.Contains(response.Body.String(), `"planner"`) {
+		t.Fatalf("hidden agent leaked into the agent list: %s", response.Body.String())
+	}
+
+	// ...but it still resolves by id and can back a conversation.
+	response = httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/agents/planner", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get hidden agent status = %d, want 200; body = %s", response.Code, response.Body.String())
+	}
+	if _, err := svc.CreateConversation(t.Context(), "acct-1", service.CreateConversationInput{AgentID: "planner", Title: "Internal"}); err != nil {
+		t.Fatalf("creating a conversation for the hidden agent failed: %v", err)
 	}
 }
 

@@ -41,7 +41,7 @@ func (s *AutonomousWakeScheduler) Run(ctx context.Context) {
 }
 
 func (s *AutonomousWakeScheduler) tick(ctx context.Context, now time.Time) {
-	for _, def := range s.registry.List() {
+	for _, def := range s.registry.All() {
 		if !agent.HasAbility(def, autonomousAbility) {
 			continue
 		}

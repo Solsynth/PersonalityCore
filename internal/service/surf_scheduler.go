@@ -76,7 +76,7 @@ func (ss *SurfScheduler) tick() {
 	ctx, cancel := context.WithTimeout(ss.ctx, 10*time.Minute)
 	defer cancel()
 
-	defs := ss.registry.List()
+	defs := ss.registry.All()
 	for _, def := range defs {
 		if !agent.HasAbility(def, "surfing") {
 			continue

@@ -25,6 +25,7 @@ Each agent can define:
 - optional chat-specific output cap via `chatMaxCompletionTokens`
 - `abilities`
 - `enabled`
+- `hidden` (optional)
 
 At runtime:
 - clients list available agents
@@ -151,6 +152,8 @@ enabled = true
 
 The service merges inline agents and `agents.dir/*.toml` at startup.
 `systemPromptFile` is resolved relative to the config file that declares the agent, so split agent files can safely point at nearby prompt files.
+
+Set `hidden = true` on an enabled agent to keep it out of every catalog listing (`GET /api/agents`, gRPC `ListAgents`) while it stays fully usable: clients that already know the id can still create conversations, start runs, and open the agent by id. Automation for hidden agents keeps running too — autonomous wakes, surfing, and Solar Network connections iterate the full enabled set. This suits internal helpers and preset agents that should not be browsable but must be runnable.
 
 Agents with `abilities = ["chat"]` also require a Solar bot integration block:
 

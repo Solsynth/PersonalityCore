@@ -279,6 +279,20 @@ model = "openai/gpt-4.1-mini"
 abilities = ["memory", "mood", "relationship"]
 enabled = true
 
+# Agent: an internal preset hidden from the catalog.
+# `hidden = true` keeps the agent out of GET /api/agents and gRPC ListAgents,
+# but clients that know the id can still create conversations and runs, and
+# autonomous/surfing/Solar automation keeps running for it.
+[[agents.items]]
+id = "planner"
+name = "Planner"
+description = "Internal planning helper, not browsable"
+systemPrompt = "You break tasks into steps."
+model = "openai/gpt-4.1-mini"
+abilities = []
+enabled = true
+hidden = true
+
 # Agent: a chat bot connected to Solar Network
 [[agents.items]]
 id = "support-bot"

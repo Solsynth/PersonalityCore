@@ -48,7 +48,7 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(registry.List()) == 0 {
+	if len(registry.All()) == 0 {
 		return nil, fmt.Errorf("at least one enabled agent is required")
 	}
 

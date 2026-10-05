@@ -18,11 +18,17 @@ const webSearchToolName = "web_search"
 // upstream calls.
 type WebSearchEngine interface {
 	Search(ctx context.Context, query websearch.Query) (*websearch.Response, error)
-	// Billed reports whether any configured engine charges per query.
-	Billed() bool
-	// Metered reports whether any configured engine spends model tokens per
-	// query, which the caller is billed for at the provider's pricing.
-	Metered() bool
+	// Billed reports whether the search that would run charges per query. The
+	// preferred engine, when the caller has one, is what decides: a preference
+	// that keeps searches on a free engine must not require a payment wallet
+	// because some other engine on the server is priced.
+	Billed(preferred string) bool
+	// Metered reports whether that same search spends provider tokens, which
+	// the caller is billed for at the provider's model pricing.
+	Metered(preferred string) bool
+	// Catalog lists the configured engines with what each costs, so a caller
+	// can choose the one its searches run on.
+	Catalog() []websearch.EngineInfo
 }
 
 // WebSearchInput is the request shape shared by the tool and the HTTP endpoint.
@@ -38,14 +44,21 @@ type WebSearchInput struct {
 // websearch.ErrNotConfigured when the server has no web search engines, and
 // websearch.ErrInvalidQuery for caller-side request problems.
 //
-// Engines that charge per query are authorized before the search and charged in
-// golds afterwards, so the account pays for API-backed search and cached or
-// scraped answers stay free.
+// The account's preferred engine, when it has one, restricts the search to that
+// engine: the price the account is willing to pay decides where its searches
+// run, and a preference for a free engine means the search needs no wallet even
+// when other engines on the server are metered. Engines that charge per query
+// are authorized before the search and charged in golds afterwards, so the
+// account pays for API-backed search and cached or scraped answers stay free.
 func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, input WebSearchInput) (*websearch.Response, error) {
 	if s.webSearch == nil {
 		return nil, websearch.ErrNotConfigured
 	}
-	if s.webSearch.Billed() || s.webSearch.Metered() {
+	preferred, err := s.preferredWebSearchEngine(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if s.webSearch.Billed(preferred) || s.webSearch.Metered(preferred) {
 		// The search costs the caller either way: the per-query price of a
 		// configured engine, or the provider tokens a metered engine spends.
 		if err := s.billing.AuthorizeAction(ctx, accountID); err != nil {
@@ -53,11 +66,12 @@ func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, i
 		}
 	}
 	response, err := s.webSearch.Search(ctx, websearch.Query{
-		Text:      strings.TrimSpace(input.Query),
-		Limit:     input.Limit,
-		Freshness: websearch.Freshness(strings.ToLower(strings.TrimSpace(input.Freshness))),
-		Domains:   input.Domains,
-		Language:  strings.TrimSpace(input.Language),
+		Text:            strings.TrimSpace(input.Query),
+		Limit:           input.Limit,
+		Freshness:       websearch.Freshness(strings.ToLower(strings.TrimSpace(input.Freshness))),
+		Domains:         input.Domains,
+		Language:        strings.TrimSpace(input.Language),
+		PreferredEngine: preferred,
 	})
 	if err != nil {
 		return nil, err

@@ -50,6 +50,26 @@ type Query struct {
 	Freshness Freshness
 	Domains   []string
 	Language  string
+	// PreferredEngine restricts the query to one configured engine id, which is
+	// how a caller keeps a search on the provider it chose. Empty queries every
+	// engine the server is configured with. An unknown id falls back to the
+	// full set rather than failing the search.
+	PreferredEngine string
+}
+
+// EngineInfo describes one configured engine for a caller that chooses between
+// them, so the choice can be made on what each costs.
+type EngineInfo struct {
+	ID string `json:"id"`
+	// Price is what one query through this engine costs the caller, in the
+	// server's billing currency. Empty when the engine is free.
+	Price string `json:"price,omitempty"`
+	// Metered marks an engine that also spends provider tokens per query,
+	// which the caller is billed for on top of any configured price.
+	Metered bool `json:"metered"`
+	// Free marks an engine that costs the caller nothing: no price and no
+	// provider tokens.
+	Free bool `json:"free"`
 }
 
 // Usage is what one engine's query spent on a metered provider, in that
@@ -162,9 +182,11 @@ type Searcher struct {
 	// prices holds the per-query price of every engine that charges for one,
 	// keyed by engine id. Engines absent from the map are free.
 	prices map[string]string
-	// metered is set when some engine spends provider tokens per query, which
-	// costs the caller golds even when no engine states a price.
-	metered      bool
+	// metered holds the engines that spend provider tokens per query, keyed by
+	// engine id; those cost the caller golds even when no engine states a
+	// price. It is a set rather than a flag so a caller's preference can be
+	// answered about the engine it chose instead of about the whole server.
+	metered      map[string]bool
 	defaultLimit int
 	maxLimit     int
 	language     string
@@ -197,16 +219,18 @@ func New(cfg config.WebSearchConfig, store PageStore) (*Searcher, error) {
 		mode = ModeParallel
 	}
 	prices := make(map[string]string, len(cfg.Engines))
-	for _, engineCfg := range cfg.Engines {
+	for i, engineCfg := range cfg.Engines {
+		// Keyed by the engine's own name rather than the configured id: an
+		// engine whose id was left out answers to its type, and a price keyed
+		// by anything else would never be charged.
 		if amount := strings.TrimSpace(engineCfg.Price); amount != "" && amount != "0" {
-			prices[strings.TrimSpace(engineCfg.ID)] = amount
+			prices[engines[i].Name()] = amount
 		}
 	}
-	metered := false
+	metered := map[string]bool{}
 	for _, engine := range engines {
 		if reporter, ok := engine.(MeteredEngine); ok && reporter.Metered() {
-			metered = true
-			break
+			metered[engine.Name()] = true
 		}
 	}
 	searcher := &Searcher{
@@ -226,10 +250,21 @@ func New(cfg config.WebSearchConfig, store PageStore) (*Searcher, error) {
 	return searcher, nil
 }
 
-// Metered reports whether any configured engine spends provider tokens, which
-// the caller is billed for at the provider's model pricing.
-func (s *Searcher) Metered() bool {
-	return s != nil && s.metered
+// Metered reports whether a search spends provider tokens, which the caller is
+// billed for at the provider's model pricing. When preferred names a configured
+// engine, only that engine is considered: a preference is how a caller keeps a
+// metered engine out of its bill, so the answer must be about the engine that
+// will actually answer.
+func (s *Searcher) Metered(preferred string) bool {
+	if s == nil {
+		return false
+	}
+	for _, engine := range s.enginesFor(preferred) {
+		if s.metered[engine.Name()] {
+			return true
+		}
+	}
+	return false
 }
 
 // EngineNames returns the configured engine ids in query order.
@@ -241,10 +276,54 @@ func (s *Searcher) EngineNames() []string {
 	return names
 }
 
-// Billed reports whether any configured engine charges per query. Callers use it
-// to decide whether a search needs authorization and a ledger entry.
-func (s *Searcher) Billed() bool {
-	return s != nil && len(s.prices) > 0
+// Catalog lists the configured engines with what each costs, so a caller can
+// choose the one its searches run on. Prices are the configured per-query
+// amount in the server's billing currency; the caller attaches the currency
+// name, which this package has no notion of.
+func (s *Searcher) Catalog() []EngineInfo {
+	if s == nil {
+		return nil
+	}
+	out := make([]EngineInfo, 0, len(s.engines))
+	for _, engine := range s.engines {
+		id := engine.Name()
+		price := strings.TrimSpace(s.prices[id])
+		metered := s.metered[id]
+		out = append(out, EngineInfo{ID: id, Price: price, Metered: metered, Free: price == "" && !metered})
+	}
+	return out
+}
+
+// Billed reports whether a search charges per query. When preferred names a
+// configured engine, only that engine's price counts, for the same reason
+// Metered narrows: a free engine the caller chose must not require a payment
+// wallet because some other engine on the server is priced.
+func (s *Searcher) Billed(preferred string) bool {
+	if s == nil {
+		return false
+	}
+	for _, engine := range s.enginesFor(preferred) {
+		if amount, ok := s.prices[engine.Name()]; ok && amount != "" && amount != "0" {
+			return true
+		}
+	}
+	return false
+}
+
+// enginesFor narrows the query set to the caller's preferred engine. An empty
+// or unknown preference keeps the full configured set, so a stale preference
+// degrades to the server default instead of breaking search.
+func (s *Searcher) enginesFor(preferred string) []Engine {
+	preferred = strings.TrimSpace(preferred)
+	if preferred == "" {
+		return s.engines
+	}
+	for _, engine := range s.engines {
+		if engine.Name() == preferred {
+			return []Engine{engine}
+		}
+	}
+	return s.engines
 }
 
 // Search runs one query. An engine failure is reported per engine and does not
@@ -265,7 +344,8 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 		query.Language = s.language
 	}
 
-	key := cacheKey(query, s.engines)
+	engines := s.enginesFor(query.PreferredEngine)
+	key := cacheKey(query, engines)
 	if cached, ok := s.cache.get(key); ok {
 		cached.Cached = true
 		// A cached answer made no upstream call, so it is never billed, and the
@@ -276,7 +356,7 @@ func (s *Searcher) Search(ctx context.Context, query Query) (*Response, error) {
 		return &cached, nil
 	}
 
-	outcomes := s.query(ctx, query)
+	outcomes := s.query(ctx, query, engines)
 	perEngine := make([][]Result, 0, len(outcomes))
 	reports := make([]EngineReport, 0, len(outcomes))
 	failures := make([]string, 0, len(outcomes))
@@ -381,20 +461,20 @@ func withoutUsage(reports []EngineReport) []EngineReport {
 	return copied
 }
 
-// query runs the configured engines according to the configured mode.
-func (s *Searcher) query(ctx context.Context, query Query) []outcome {
+// query runs the given engines according to the configured mode.
+func (s *Searcher) query(ctx context.Context, query Query, engines []Engine) []outcome {
 	if s.mode == ModePrefer {
-		return s.queryInOrder(ctx, query)
+		return s.queryInOrder(ctx, query, engines)
 	}
-	return s.fanOut(ctx, query)
+	return s.fanOut(ctx, query, engines)
 }
 
 // queryInOrder asks each engine in configured order and stops at the first one
 // that answers. Engines that were never asked are absent from the outcome list,
 // so a response only reports the engines that actually ran.
-func (s *Searcher) queryInOrder(ctx context.Context, query Query) []outcome {
-	outcomes := make([]outcome, 0, len(s.engines))
-	for _, engine := range s.engines {
+func (s *Searcher) queryInOrder(ctx context.Context, query Query, engines []Engine) []outcome {
+	outcomes := make([]outcome, 0, len(engines))
+	for _, engine := range engines {
 		response, err := engine.Search(ctx, query)
 		outcomes = append(outcomes, outcome{name: engine.Name(), results: response.Results, usage: response.Usage, err: err})
 		if err == nil && len(response.Results) > 0 {
@@ -404,10 +484,10 @@ func (s *Searcher) queryInOrder(ctx context.Context, query Query) []outcome {
 	return outcomes
 }
 
-func (s *Searcher) fanOut(ctx context.Context, query Query) []outcome {
-	outcomes := make([]outcome, len(s.engines))
+func (s *Searcher) fanOut(ctx context.Context, query Query, engines []Engine) []outcome {
+	outcomes := make([]outcome, len(engines))
 	var wg sync.WaitGroup
-	for i, engine := range s.engines {
+	for i, engine := range engines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

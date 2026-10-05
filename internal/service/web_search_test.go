@@ -20,6 +20,7 @@ type stubWebSearchEngine struct {
 	err       error
 	billed    bool
 	metered   bool
+	catalog   []websearch.EngineInfo
 	lastQuery websearch.Query
 }
 
@@ -31,9 +32,11 @@ func (e *stubWebSearchEngine) Search(_ context.Context, query websearch.Query) (
 	return e.response, nil
 }
 
-func (e *stubWebSearchEngine) Billed() bool { return e.billed }
+func (e *stubWebSearchEngine) Billed(string) bool { return e.billed }
 
-func (e *stubWebSearchEngine) Metered() bool { return e.metered }
+func (e *stubWebSearchEngine) Metered(string) bool { return e.metered }
+
+func (e *stubWebSearchEngine) Catalog() []websearch.EngineInfo { return e.catalog }
 
 func webSearchCall(arguments string) schema.ToolCall {
 	return schema.ToolCall{
@@ -453,6 +456,91 @@ func TestSearchWebRefusesBilledSearchForBlacklistedAccount(t *testing.T) {
 	}
 	if rows := ledgerRows(t, db); len(rows) != 0 {
 		t.Fatalf("a refused search must not be charged, got %#v", rows)
+	}
+}
+
+// A preference round-trips, rejects an engine the server does not have, and
+// clears back to the server's own order.
+func TestWebSearchPreferenceRoundTrip(t *testing.T) {
+	engine := &stubWebSearchEngine{catalog: []websearch.EngineInfo{
+		{ID: "tavily", Price: "0.5"},
+		{ID: "duckduckgo", Free: true},
+	}}
+	svc, _ := newBilledTestService(t, engine)
+	ctx := context.Background()
+
+	engines, err := svc.WebSearchEngines()
+	if err != nil {
+		t.Fatalf("WebSearchEngines() error = %v", err)
+	}
+	if engines.Currency != "golds" || len(engines.Engines) != 2 {
+		t.Fatalf("engines = %+v, want two priced in golds", engines)
+	}
+
+	// An account that never chose reads back empty: the server decides.
+	preference, err := svc.WebSearchPreference(ctx, "acct-1")
+	if err != nil {
+		t.Fatalf("WebSearchPreference() error = %v", err)
+	}
+	if preference.Engine != "" {
+		t.Fatalf("engine = %q, want empty for an account that never chose", preference.Engine)
+	}
+
+	if _, err := svc.SetWebSearchPreference(ctx, "acct-1", "duckduckgo"); err != nil {
+		t.Fatalf("SetWebSearchPreference() error = %v", err)
+	}
+	if preference, err = svc.WebSearchPreference(ctx, "acct-1"); err != nil || preference.Engine != "duckduckgo" {
+		t.Fatalf("stored preference = %+v (err %v), want duckduckgo", preference, err)
+	}
+
+	if _, err := svc.SetWebSearchPreference(ctx, "acct-1", "nope"); !errors.Is(err, websearch.ErrInvalidQuery) {
+		t.Fatalf("unknown engine error = %v, want ErrInvalidQuery", err)
+	}
+	if preference, _ = svc.WebSearchPreference(ctx, "acct-1"); preference.Engine != "duckduckgo" {
+		t.Fatal("a rejected preference must not change the stored one")
+	}
+
+	if _, err := svc.SetWebSearchPreference(ctx, "acct-1", ""); err != nil {
+		t.Fatalf("clearing the preference: %v", err)
+	}
+	if preference, _ = svc.WebSearchPreference(ctx, "acct-1"); preference.Engine != "" {
+		t.Fatalf("engine = %q, want empty after clearing", preference.Engine)
+	}
+}
+
+// The stored preference is what the search actually runs on, including for a
+// search the model asked for through the tool.
+func TestSearchWebRunsOnThePreferredEngine(t *testing.T) {
+	engine := &stubWebSearchEngine{
+		catalog:  []websearch.EngineInfo{{ID: "duckduckgo", Free: true}},
+		response: &websearch.Response{Query: "postgres 18"},
+	}
+	svc, _ := newBilledTestService(t, engine)
+	ctx := context.Background()
+
+	if _, err := svc.SetWebSearchPreference(ctx, "acct-1", "duckduckgo"); err != nil {
+		t.Fatalf("SetWebSearchPreference() error = %v", err)
+	}
+	if _, err := svc.SearchWeb(ctx, "acct-1", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if engine.lastQuery.PreferredEngine != "duckduckgo" {
+		t.Fatalf("preferred engine = %q, want the stored duckduckgo", engine.lastQuery.PreferredEngine)
+	}
+
+	if _, err := svc.executeWebSearchToolCall(ctx, "acct-1", webSearchCall(`{"query":"postgres 18"}`)); err != nil {
+		t.Fatalf("executeWebSearchToolCall() error = %v", err)
+	}
+	if engine.lastQuery.PreferredEngine != "duckduckgo" {
+		t.Fatalf("a tool search ran on %q, want the stored duckduckgo", engine.lastQuery.PreferredEngine)
+	}
+
+	// The preference is per account: another account still gets the full set.
+	if _, err := svc.SearchWeb(ctx, "acct-2", WebSearchInput{Query: "postgres 18"}); err != nil {
+		t.Fatalf("SearchWeb() error = %v", err)
+	}
+	if engine.lastQuery.PreferredEngine != "" {
+		t.Fatalf("preferred engine = %q, want empty for an account with no preference", engine.lastQuery.PreferredEngine)
 	}
 }
 

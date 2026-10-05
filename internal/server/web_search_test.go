@@ -525,3 +525,83 @@ func TestWebSearchEndpointRefusesBilledEngineWithoutPaymentWallet(t *testing.T) 
 		t.Fatalf("a refused search must not be charged: %#v", rows)
 	}
 }
+
+// The engine catalog and the account's preference are what let a user keep
+// searches on the provider whose price it accepts: the catalog states each
+// price, and a preference names one engine for this account alone.
+func TestWebSearchPreferenceEndpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stack := newSearchStack(t)
+	cfg := webSearchConfig(stack)
+	cfg.WebSearch.Engines[0].Price = "1.5"
+	router, _, _ := newWebSearchRouterWithService(t, cfg)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/web/search/engines", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("engines status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var catalog struct {
+		Currency string `json:"currency"`
+		Engines  []struct {
+			ID    string `json:"id"`
+			Price string `json:"price"`
+			Free  bool   `json:"free"`
+		} `json:"engines"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	if catalog.Currency != "golds" {
+		t.Errorf("currency = %q, want golds", catalog.Currency)
+	}
+	if len(catalog.Engines) != 1 || catalog.Engines[0].ID != "stack" {
+		t.Fatalf("engines = %+v, want the configured stack engine", catalog.Engines)
+	}
+	if catalog.Engines[0].Price != "1.5" || catalog.Engines[0].Free {
+		t.Fatalf("stack = %+v, want a priced engine", catalog.Engines[0])
+	}
+
+	preference := func() string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/web/search/preference", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("preference status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+		}
+		var payload struct {
+			Engine string `json:"engine"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode preference: %v", err)
+		}
+		return payload.Engine
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPut, "/api/web/search/preference", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	if engine := preference(); engine != "" {
+		t.Fatalf("engine = %q, want empty before the account chooses", engine)
+	}
+	if recorder := put(`{"engine":"nope"}`); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown engine status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := put(`{"engine":"stack"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("choose status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if engine := preference(); engine != "stack" {
+		t.Fatalf("engine = %q, want the chosen stack", engine)
+	}
+	if recorder := put(`{"engine":""}`); recorder.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if engine := preference(); engine != "" {
+		t.Fatalf("engine = %q, want empty after clearing", engine)
+	}
+}

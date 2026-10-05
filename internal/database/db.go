@@ -40,6 +40,7 @@ func (d *DB) AutoMigrate() error {
 		&BillingPayment{},
 		&OpenAIAccessCredential{},
 		&OpenAICredentialUsage{},
+		&WebSearchPreference{},
 		&AgentHumanState{},
 		&AgentManualMemory{},
 		&AgentMemory{},

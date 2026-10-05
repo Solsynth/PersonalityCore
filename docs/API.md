@@ -1012,6 +1012,68 @@ token counts kept on the row), count toward the hourly and daily golds limits,
 and settle on the normal billing cycle. A metered search also requires a payment
 wallet, like a paid model, even when no engine states a price.
 
+### Choosing the search engine
+
+Which engine answers is what decides the price, so an account may keep its
+searches on one engine. The engines the server offers are readable, each with
+what one query costs, and the account's choice is stored beside it.
+
+```
+GET /api/web/search/engines
+GET /api/web/search/preference
+PUT /api/web/search/preference
+```
+
+**Response** `200 OK` (`GET /api/web/search/engines`)
+
+```json
+{
+  "currency": "golds",
+  "engines": [
+    {"id": "duckduckgo"},
+    {"id": "exa", "price": "1.5"},
+    {"id": "deepseek", "metered": true}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `currency` | string | The billing currency every `price` is stated in. |
+| `engines[].id` | string | The engine id the preference names. |
+| `engines[].price` | string | What one query costs, per answered query. Absent when the engine is free. |
+| `engines[].metered` | bool | The engine spends provider tokens, which are billed on top of any price. |
+| `engines[].free` | bool | The engine costs nothing at all. |
+
+**Response** `200 OK` (`GET` / `PUT .../preference`)
+
+```json
+{
+  "engine": "exa",
+  "currency": "golds"
+}
+```
+
+`PUT` takes `{"engine": "exa"}`. An empty `engine` hands the choice back to the
+server's own order. A name the server does not offer is rejected with `400`, so
+the account cannot be left paying for an engine it did not choose.
+
+A preference restricts every search the account makes to that engine — including
+a `web_search` the model runs during a conversation — and the billing
+consequences follow the engine that will actually run: an account keeping its
+searches on a free engine needs no payment wallet, and is charged nothing, even
+when other engines on the server are priced or metered. A preference for an
+engine that is later removed from the configuration degrades to the server's
+own order rather than failing the search.
+
+**Status codes**
+
+| Status | Meaning |
+|--------|---------|
+| 200 | The catalog or the stored preference. |
+| 400 | `PUT` named an engine the server does not offer, or sent no `engine` field. |
+| 503 | Web search is not configured. |
+
 ### Running the search on the client
 
 Search engines challenge datacenter egresses, so a client on a residential

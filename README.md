@@ -697,6 +697,17 @@ Status codes:
 | 502 | Every engine failed |
 | 503 | Web search is not configured |
 
+Which engine answers decides the price, so an account may keep its searches on
+one engine. `GET /api/web/search/engines` lists the configured engines with what
+one query costs each, and the account's choice lives at
+`GET`/`PUT /api/web/search/preference` (`{"engine": "exa"}`, empty for the
+server's own order). The preference restricts every search the account makes,
+including a `web_search` the model runs mid-conversation, and billing follows
+the engine that will actually run: keeping searches on a free engine needs no
+payment wallet and costs nothing even when other engines are priced. A name the
+server does not offer is rejected, and one later removed from the configuration
+falls back to the server's own order.
+
 ### Billing
 
 Optional Wallet-backed billing is configured with `[billing]`. Every configured

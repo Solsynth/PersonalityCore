@@ -375,7 +375,7 @@ func TestSearcherChargesOnlyPricedEnginesThatAnswered(t *testing.T) {
 	searcher := newTestSearcher(0, paid, free, broken)
 	searcher.prices = map[string]string{"exa": "1.5", "tavily": "0.5"}
 
-	if !searcher.Billed() {
+	if !searcher.Billed("") {
 		t.Fatal("a searcher with priced engines must report itself as billed")
 	}
 	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
@@ -403,7 +403,7 @@ func TestSearchReportsEngineUsage(t *testing.T) {
 		usage:   spent,
 	}
 	searcher := newTestSearcher(0, engine)
-	searcher.metered = true
+	searcher.metered = map[string]bool{"deepseek": true}
 
 	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
 	if err != nil {
@@ -415,7 +415,7 @@ func TestSearchReportsEngineUsage(t *testing.T) {
 	if got := response.Engines[0].Usage; got.InputTokens != 3_000 || got.Searches != 1 {
 		t.Fatalf("unexpected usage: %#v", got)
 	}
-	if !searcher.Metered() {
+	if !searcher.Metered("") {
 		t.Fatal("a searcher with a metered engine must report itself as metered")
 	}
 }
@@ -472,10 +472,10 @@ func TestNewReportsMeteredFromConfiguredEngines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if !searcher.Metered() {
+	if !searcher.Metered("") {
 		t.Fatal("an engine that spends provider tokens must mark the searcher as metered")
 	}
-	if searcher.Billed() {
+	if searcher.Billed("") {
 		t.Fatal("a price of zero is not a per-query charge")
 	}
 }
@@ -489,7 +489,7 @@ func TestNewReportsBilledFromConfiguredPrices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if searcher.Billed() {
+	if searcher.Billed("") {
 		t.Fatal("engines without a price must not make search billed")
 	}
 
@@ -501,7 +501,92 @@ func TestNewReportsBilledFromConfiguredPrices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if !searcher.Billed() {
+	if !searcher.Billed("") {
 		t.Fatal("a priced engine must mark the searcher as billed")
+	}
+}
+
+// A preference keeps the query on the chosen engine: the other engines are not
+// asked at all, so the caller is never billed for one it did not choose.
+func TestSearcherPreferredEngineRestrictsTheQuery(t *testing.T) {
+	paid := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/paid")}}
+	free := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/free")}}
+	searcher := newTestSearcher(0, paid, free)
+	searcher.prices = map[string]string{"exa": "2"}
+
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18", PreferredEngine: "duckduckgo"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if paid.callCount() != 0 {
+		t.Fatalf("the engine the caller did not choose was queried %d times", paid.callCount())
+	}
+	if free.callCount() != 1 {
+		t.Fatalf("the preferred engine was queried %d times, want 1", free.callCount())
+	}
+	if len(response.Engines) != 1 || response.Engines[0].Name != "duckduckgo" {
+		t.Fatalf("only the preferred engine may report: %#v", response.Engines)
+	}
+	if len(response.Charges) != 0 {
+		t.Fatalf("a free preferred engine must not be charged: %#v", response.Charges)
+	}
+}
+
+// The billing predicates answer about the engine that will run, so a preference
+// for a free engine does not require a payment wallet just because a priced
+// engine is configured beside it.
+func TestSearcherBillingFollowsThePreferredEngine(t *testing.T) {
+	paid := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/paid")}}
+	metered := &stubEngine{name: "deepseek", meters: true, results: []Result{result("deepseek", "https://example.com/1")}}
+	free := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/free")}}
+	searcher := newTestSearcher(0, paid, metered, free)
+	searcher.prices = map[string]string{"exa": "2"}
+	searcher.metered = map[string]bool{"deepseek": true}
+
+	if !searcher.Billed("") || !searcher.Metered("") {
+		t.Fatal("with no preference the whole configured set decides")
+	}
+	if searcher.Billed("duckduckgo") || searcher.Metered("duckduckgo") {
+		t.Fatal("a free preferred engine costs nothing")
+	}
+	if !searcher.Billed("exa") {
+		t.Fatal("a priced preferred engine is billed")
+	}
+	if !searcher.Metered("deepseek") {
+		t.Fatal("a metered preferred engine is metered")
+	}
+	if searcher.Billed("deepseek") {
+		t.Fatal("a metered engine with no price is billable for its tokens, not per query")
+	}
+	// An unknown preference degrades to the server default instead of failing.
+	if !searcher.Billed("nope") {
+		t.Fatal("an unknown preference must fall back to the configured set")
+	}
+}
+
+func TestCatalogReportsWhatEachEngineCosts(t *testing.T) {
+	paid := &stubEngine{name: "tavily"}
+	metered := &stubEngine{name: "deepseek", meters: true}
+	free := &stubEngine{name: "duckduckgo"}
+	searcher := newTestSearcher(0, paid, metered, free)
+	searcher.prices = map[string]string{"tavily": "0.5"}
+	searcher.metered = map[string]bool{"deepseek": true}
+
+	catalog := searcher.Catalog()
+	if len(catalog) != 3 {
+		t.Fatalf("catalog = %#v, want three engines", catalog)
+	}
+	byID := map[string]EngineInfo{}
+	for _, info := range catalog {
+		byID[info.ID] = info
+	}
+	if info := byID["tavily"]; info.Price != "0.5" || info.Free || info.Metered {
+		t.Errorf("tavily = %+v, want a priced, unmetered engine", info)
+	}
+	if info := byID["deepseek"]; !info.Metered || info.Free || info.Price != "" {
+		t.Errorf("deepseek = %+v, want a metered engine with no query price", info)
+	}
+	if info := byID["duckduckgo"]; !info.Free || info.Metered || info.Price != "" {
+		t.Errorf("duckduckgo = %+v, want a free engine", info)
 	}
 }

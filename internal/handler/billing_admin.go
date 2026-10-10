@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
-	sharedauth "src.solsynth.dev/sosys/go/pkg/auth"
 
 	"src.solsynth.dev/sosys/persona/internal/identity"
 	"src.solsynth.dev/sosys/persona/internal/service"
@@ -31,7 +30,7 @@ func requireBillingAdmin(c *gin.Context, conversations *service.ConversationServ
 	if !ok {
 		return false
 	}
-	if result, _, ok := sharedauth.GetAuth(c); ok && result != nil && result.Account != nil && result.Account.GetIsSuperuser() {
+	if identity.IsSuperuser(c) {
 		return true
 	}
 	if err := conversations.RequireAccountPermission(c.Request.Context(), accountID, service.PermissionBillingManage); err != nil {

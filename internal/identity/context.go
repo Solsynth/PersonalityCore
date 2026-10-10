@@ -61,6 +61,14 @@ func GetPerkLevel(c *gin.Context) int32 {
 	return level
 }
 
+// IsSuperuser reports whether the authenticated account in the context was
+// flagged as a superuser by the auth service. Unauthenticated and offline
+// requests are never superusers.
+func IsSuperuser(c *gin.Context) bool {
+	result, _, ok := sharedauth.GetAuth(c)
+	return ok && result != nil && result.Account != nil && result.Account.GetIsSuperuser()
+}
+
 func ExtractAccountIDFromAuth(c *gin.Context) (string, bool) {
 	result, _, ok := sharedauth.GetAuth(c)
 	if !ok || result == nil || result.Account == nil {

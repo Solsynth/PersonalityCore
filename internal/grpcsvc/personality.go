@@ -28,8 +28,10 @@ func New(conversations *service.ConversationService) *PersonalityService {
 	return &PersonalityService{conversations: conversations}
 }
 
+// The gRPC surface is internal and its proto carries no billing parameters,
+// so it only needs the public catalog.
 func (s *PersonalityService) ListAgents(context.Context, *gen.DyListPersonalityAgentsRequest) (*gen.DyListPersonalityAgentsResponse, error) {
-	items := s.conversations.ListAgents()
+	items := s.conversations.ListAgents(false)
 	out := make([]*gen.DyPersonalityAgent, 0, len(items))
 	for _, item := range items {
 		out = append(out, &gen.DyPersonalityAgent{

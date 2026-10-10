@@ -283,11 +283,17 @@ func NewConversationService(db *database.DB, cfg *config.Config, registry *agent
 
 func (s *ConversationService) Billing() *BillingService { return s.billing }
 
-func (s *ConversationService) ListAgents() []agent.Definition {
+// ListAgents returns the client-facing agent catalog. Internal billing
+// parameters (the agent's billing multiplier) are only populated when
+// includeInternal is true, i.e. for privileged callers.
+func (s *ConversationService) ListAgents(includeInternal bool) []agent.Definition {
 	items := s.registry.List()
 	result := make([]agent.Definition, 0, len(items))
 	for _, def := range items {
 		def.SystemPrompt = ""
+		if !includeInternal {
+			def.BillingMultiplier = nil
+		}
 		result = append(result, def)
 	}
 	return result
@@ -297,14 +303,22 @@ func (s *ConversationService) GetAgent(id string) (agent.Definition, bool) {
 	return s.registry.Get(id)
 }
 
-func (s *ConversationService) ListModels() []ModelInfo {
+// ListModels returns the configured model catalog. Internal billing metadata
+// (pricing and perk overrides) is only populated when includeInternal is true,
+// i.e. for privileged callers.
+func (s *ConversationService) ListModels(includeInternal bool) []ModelInfo {
 	if s == nil || s.cfg == nil {
 		return nil
 	}
 	models := make([]ModelInfo, 0)
 	for _, provider := range s.cfg.Providers {
 		for _, model := range provider.Models {
-			models = append(models, ModelInfo{ID: strings.TrimSpace(provider.ID) + "/" + strings.TrimSpace(model.Name), Provider: provider.ID, Name: model.Name, Type: model.Type, Modalities: append([]string(nil), model.Modalities...), Pricing: model.Pricing, PerkOverrides: model.PerkOverrides})
+			info := ModelInfo{ID: strings.TrimSpace(provider.ID) + "/" + strings.TrimSpace(model.Name), Provider: provider.ID, Name: model.Name, Type: model.Type, Modalities: append([]string(nil), model.Modalities...)}
+			if includeInternal {
+				info.Pricing = model.Pricing
+				info.PerkOverrides = model.PerkOverrides
+			}
+			models = append(models, info)
 		}
 	}
 	return models

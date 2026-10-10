@@ -60,18 +60,30 @@ func RegisterInternalRoutes(r *gin.RouterGroup, conversations *service.Conversat
 }
 
 func listAgents(c *gin.Context, conversations *service.ConversationService) {
-	c.JSON(http.StatusOK, conversations.ListAgents())
+	if _, ok := identity.RequireAccountID(c); !ok {
+		return
+	}
+	c.JSON(http.StatusOK, conversations.ListAgents(identity.IsSuperuser(c)))
 }
 
 func listModels(c *gin.Context, conversations *service.ConversationService) {
-	c.JSON(http.StatusOK, conversations.ListModels())
+	if _, ok := identity.RequireAccountID(c); !ok {
+		return
+	}
+	c.JSON(http.StatusOK, conversations.ListModels(identity.IsSuperuser(c)))
 }
 
 func getAgent(c *gin.Context, conversations *service.ConversationService) {
+	if _, ok := identity.RequireAccountID(c); !ok {
+		return
+	}
 	agent, ok := conversations.GetAgent(c.Param("id"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
 		return
+	}
+	if !identity.IsSuperuser(c) {
+		agent.BillingMultiplier = nil
 	}
 	c.JSON(http.StatusOK, agent)
 }

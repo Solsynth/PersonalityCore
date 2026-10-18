@@ -21,7 +21,7 @@ type WebSearchEngines struct {
 }
 
 // WebSearchPreference is the account's chosen search engine. An empty Engine
-// means the server's own order decides, which may reach a metered provider.
+// means the server's own order decides, which may reach a priced engine.
 type WebSearchPreference struct {
 	Engine   string `json:"engine"`
 	Currency string `json:"currency"`

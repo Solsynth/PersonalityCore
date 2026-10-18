@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,18 +26,29 @@ import (
 )
 
 // searchStack is a fake search engine plus a page host on one origin: the
-// engine's result list points back at its own article, so the endpoint can be
-// exercised end to end (query, crawl, index, fallback) without touching the
-// network.
+// engines' result lists point back at the article the same server serves, so
+// the endpoint can be exercised end to end (query, read, index, fallback)
+// without touching the network.
 type searchStack struct {
 	*httptest.Server
 
-	mu         sync.Mutex
-	failing    bool
-	queries    []string
-	exaQueries []string
-	deepseek   int
+	mu            sync.Mutex
+	failing       bool
+	queries       []string
+	exaQueries    []string
+	deepseekCalls int
+	deepseekQuery string
+	fetchCalls    int
+	articleHits   int
 }
+
+// fixturePageBody is the article text the search returns for /article. It is
+// past the crawler's minimum for usable page text.
+const fixturePageBody = "PostgreSQL 18 introduces an asynchronous I/O subsystem that changes how the server reads heap pages, index pages, and WAL. It also adds a new skip scan plan for multicolumn indexes with a low cardinality leading column, and reworks the wait event reporting that operators rely on during a rollout."
+
+// fixtureMarkdown is what the provider's fetch endpoint returns for a page the
+// search did not already hand over, also past that minimum.
+const fixtureMarkdown = "A skip scan plan reads a multicolumn index without a constraint on the leading column. The planner picks it when the leading column has few distinct values and the remaining columns are selective, which turns an index that was previously unusable into one that answers the query without a sequential scan."
 
 func newSearchStack(t *testing.T) *searchStack {
 	t.Helper()
@@ -65,19 +77,36 @@ func newSearchStack(t *testing.T) *searchStack {
 			stack.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"results":[{"title":"PostgreSQL 18 AIO","url":"%s/article","text":"An asynchronous I/O subsystem that improves sequential scans."}]}`, stack.URL)
-		case "/deepseek-provider/anthropic/v1/messages":
+		case "/deepseek-provider/v1/tools/search":
+			raw, _ := io.ReadAll(r.Body)
 			stack.mu.Lock()
-			stack.deepseek++
+			stack.deepseekCalls++
+			stack.deepseekQuery = string(raw)
 			stack.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			// DeepSeek returns the search hits themselves: a title and a URL,
-			// with no snippet text, which is what the local index is for. It
-			// also reports what the query spent, which the caller is billed for.
-			fmt.Fprintf(w, `{"content":[{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[
-				{"type":"web_search_result","url":"%s/article","title":"PostgreSQL 18 AIO"}]}],
-				"stop_reason":"end_turn",
-				"usage":{"input_tokens":3000,"output_tokens":500,"server_tool_use":{"web_search_requests":1}}}`, stack.URL)
+			// DeepSeek's search answers with the hits themselves: a display
+			// snippet, the model-readable summary, and — because the engine asks
+			// for it — the page content, so that hit needs no further read. The
+			// second hit carries none, and its page is not fetchable directly:
+			// only the provider's fetch endpoint can answer for it.
+			fmt.Fprintf(w, `{"results":[
+				{"title":"PostgreSQL 18 AIO","url":"%s/article",
+				 "snippet":"Short display summary.",
+				 "summary":"PostgreSQL 18 adds an asynchronous I/O subsystem that improves sequential scans and vacuum throughput.",
+				 "content":"%s","site_name":"PostgreSQL","authority":4,"rerank_score":2.4},
+				{"title":"Skip scan guide","url":"%s/docs",
+				 "snippet":"A thin one-liner.","summary":"","content":"","site_name":"Example","authority":2,"rerank_score":1.7}
+			]}`, stack.URL, fixturePageBody, stack.URL)
+		case "/deepseek-provider/v1/tools/fetch":
+			stack.mu.Lock()
+			stack.fetchCalls++
+			stack.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"title":"Skip scan guide","content":"`+fixtureMarkdown+`"}`)
 		case "/article":
+			stack.mu.Lock()
+			stack.articleHits++
+			stack.mu.Unlock()
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, `<html><head><title>Upgrading to PostgreSQL 18</title></head><body>
 				<nav><a href="/">Home</a></nav>
@@ -97,6 +126,28 @@ func (s *searchStack) setFailing(failing bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failing = failing
+}
+
+// deepseekSearches reports how many search requests the provider saw and the
+// body of the last one.
+func (s *searchStack) deepseekSearches() (int, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deepseekCalls, s.deepseekQuery
+}
+
+func (s *searchStack) fetchCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fetchCalls
+}
+
+// directPageReads counts requests for the article page itself, which is how a
+// test proves a page the engine already returned is not read a second time.
+func (s *searchStack) directPageReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.articleHits
 }
 
 func (s *searchStack) exaQueryCount() int {
@@ -239,32 +290,25 @@ func TestWebSearchEndpointCrawlsAndIndexesResults(t *testing.T) {
 	}
 }
 
-// TestWebSearchEndpointRunsDeepseekSearch drives the LLM-backed engine through
-// the public endpoint. DeepSeek answers with the hits themselves and no snippet
-// text, so the crawler is what makes the result answerable.
+// TestWebSearchEndpointRunsDeepseekSearch drives the API-backed engine through
+// the public endpoint. DeepSeek answers with real text — a summary per hit and
+// the page content of one — so the result is answerable from the search alone,
+// and the page the search already read is never read a second time.
 func TestWebSearchEndpointRunsDeepseekSearch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	stack := newSearchStack(t)
 	cfg := webSearchConfig(stack)
 	// Shaped the way config.Load leaves it: the engine names a provider entry,
 	// and resolution has already copied that provider's key and base URL in.
-	inputPrice, outputPrice := "0.15", "0.6"
 	cfg.Providers = []config.ProviderConfig{{
 		ID: "deepseek", Type: "openai", APIKey: "sk-test", BaseURL: stack.URL + "/deepseek-provider",
-		Models: []config.ModelConfig{{
-			Name:    "deepseek-flash",
-			Pricing: &config.ModelPricingConfig{Input: &inputPrice, Output: &outputPrice},
-		}},
 	}}
-	// The metered tokens are priced with the same service fee a generation
-	// would carry.
-	cfg.Billing = config.BillingConfig{ServiceFeePercentage: "0"}
 	cfg.WebSearch.Engines = []config.WebSearchEngineConfig{{
 		ID:       "deepseek",
 		Type:     "deepseek",
 		Provider: "deepseek",
 		APIKey:   "sk-test",
-		Price:    "2",
+		Price:    "0.1",
 		BaseURL:  stack.URL + "/deepseek-provider",
 	}}
 	router := newWebSearchRouter(t, cfg)
@@ -282,16 +326,10 @@ func TestWebSearchEndpointRunsDeepseekSearch(t *testing.T) {
 			Provider string `json:"provider"`
 		} `json:"results"`
 		Engines []struct {
-			Name    string `json:"name"`
-			Results int    `json:"results"`
-			Error   string `json:"error"`
-			Usage   *struct {
-				Provider     string `json:"provider"`
-				Model        string `json:"model"`
-				InputTokens  int    `json:"input_tokens"`
-				OutputTokens int    `json:"output_tokens"`
-				Searches     int    `json:"searches"`
-			} `json:"usage"`
+			Name    string          `json:"name"`
+			Results int             `json:"results"`
+			Error   string          `json:"error"`
+			Usage   json.RawMessage `json:"usage"`
 		} `json:"engines"`
 		Charges []struct {
 			Engine string `json:"engine"`
@@ -304,48 +342,53 @@ func TestWebSearchEndpointRunsDeepseekSearch(t *testing.T) {
 		t.Fatalf("decode response: %v (%s)", err, response.Body.String())
 	}
 
-	// The search runs on the caller's DeepSeek account, so what it spent is
-	// reported and charged: 3000 input at 0.15 per million and 500 output at
-	// 0.6 per million.
-	if len(payload.Engines) != 1 || payload.Engines[0].Usage == nil {
-		t.Fatalf("the provider spend must be reported: %s", response.Body.String())
-	}
-	usage := payload.Engines[0].Usage
-	if usage.Provider != "deepseek" || usage.Model != "deepseek-flash" || usage.InputTokens != 3000 || usage.OutputTokens != 500 || usage.Searches != 1 {
-		t.Fatalf("unexpected usage: %#v", usage)
-	}
-	// The engine's configured price and the tokens it spent are two charges.
-	if len(payload.Charges) != 2 {
+	// The search is billed per request, so the caller owes the engine's price
+	// and nothing else: no model tokens are spent, and none are reported.
+	if len(payload.Charges) != 1 || payload.Charges[0].Kind != "query" || payload.Charges[0].Amount != "0.1" {
 		t.Fatalf("unexpected charges: %#v", payload.Charges)
 	}
-	if payload.Charges[0].Kind != "query" || payload.Charges[0].Amount != "2" {
-		t.Fatalf("unexpected per-query charge: %#v", payload.Charges[0])
+	if len(payload.Engines) != 1 || payload.Engines[0].Usage != nil {
+		t.Fatalf("no engine reports a token spend any more: %s", response.Body.String())
 	}
-	last := payload.Charges[1]
-	if last.Engine != "deepseek" || last.Kind != "usage" || last.Amount != "0.00075000" {
-		t.Fatalf("unexpected usage charge: %#v", last)
-	}
-	if len(payload.Results) != 1 {
-		t.Fatalf("got %d results: %s", len(payload.Results), response.Body.String())
-	}
-	result := payload.Results[0]
-	if result.Provider != "deepseek" || result.URL != stack.URL+"/article" {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-	if !strings.Contains(result.Snippet, "asynchronous I/O subsystem") {
-		t.Fatalf("the crawled page must supply the snippet: %q", result.Snippet)
-	}
-	if payload.PagesCrawled != 1 {
-		t.Fatalf("pages_crawled = %d, want 1", payload.PagesCrawled)
-	}
-	if len(payload.Engines) != 1 || payload.Engines[0].Name != "deepseek" || payload.Engines[0].Results != 1 || payload.Engines[0].Error != "" {
+	if payload.Engines[0].Name != "deepseek" || payload.Engines[0].Results != 2 || payload.Engines[0].Error != "" {
 		t.Fatalf("unexpected engine report: %#v", payload.Engines)
 	}
 
-	stack.mu.Lock()
-	defer stack.mu.Unlock()
-	if stack.deepseek != 1 {
-		t.Fatalf("deepseek endpoint was called %d times, want 1", stack.deepseek)
+	if len(payload.Results) != 2 {
+		t.Fatalf("got %d results: %s", len(payload.Results), response.Body.String())
+	}
+	first := payload.Results[0]
+	if first.Provider != "deepseek" || first.URL != stack.URL+"/article" {
+		t.Fatalf("unexpected result: %#v", first)
+	}
+	// The provider's own page text supplies the snippet, without an HTTP GET
+	// for the article.
+	if !strings.Contains(first.Snippet, "asynchronous I/O subsystem") {
+		t.Fatalf("snippet = %q, want text from the content the search returned", first.Snippet)
+	}
+	// The second hit carried no content, so its page was read through the
+	// provider's fetch endpoint.
+	second := payload.Results[1]
+	if !strings.Contains(second.Snippet, "skip scan plan") {
+		t.Fatalf("second snippet = %q, want text fetched through the provider", second.Snippet)
+	}
+
+	// Both pages reach the index: one from the search reply, one from the fetch.
+	if payload.PagesCrawled != 2 {
+		t.Fatalf("pages_crawled = %d, want 2", payload.PagesCrawled)
+	}
+	calls, body := stack.deepseekSearches()
+	if calls != 1 {
+		t.Fatalf("deepseek search was called %d times, want 1", calls)
+	}
+	if !strings.Contains(body, `"need_content":true`) {
+		t.Fatalf("search request must ask for page content: %s", body)
+	}
+	if stack.fetchCount() != 1 {
+		t.Fatalf("provider fetch was called %d times, want 1 for the one page without content", stack.fetchCount())
+	}
+	if hits := stack.directPageReads(); hits != 0 {
+		t.Fatalf("the article was fetched directly %d times although the search returned its text", hits)
 	}
 }
 

@@ -14,8 +14,7 @@ import (
 type stubEngine struct {
 	name    string
 	results []Result
-	usage   *Usage
-	meters  bool
+	pages   []Page
 	err     error
 
 	mu        sync.Mutex
@@ -29,15 +28,13 @@ func (e *stubEngine) Search(_ context.Context, query Query) (EngineResponse, err
 	e.mu.Lock()
 	e.calls++
 	e.lastQuery = query
-	usage := e.usage
+	pages := e.pages
 	e.mu.Unlock()
 	if e.err != nil {
 		return EngineResponse{}, e.err
 	}
-	return EngineResponse{Results: e.results, Usage: usage}, nil
+	return EngineResponse{Results: e.results, Pages: pages}, nil
 }
-
-func (e *stubEngine) Metered() bool { return e.meters }
 
 func (e *stubEngine) callCount() int {
 	e.mu.Lock()
@@ -394,29 +391,59 @@ func TestSearcherChargesOnlyPricedEnginesThatAnswered(t *testing.T) {
 	}
 }
 
-func TestSearchReportsEngineUsage(t *testing.T) {
-	spent := &Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 3_000, OutputTokens: 500, Searches: 1}
+// TestSearcherIndexesPagesTheEngineReturned: page text that came back with the
+// results is stored without a second request, and the count reported covers it.
+func TestSearcherIndexesPagesTheEngineReturned(t *testing.T) {
 	engine := &stubEngine{
 		name:    "deepseek",
-		meters:  true,
 		results: []Result{result("deepseek", "https://example.com/1")},
-		usage:   spent,
+		pages: []Page{{
+			URL: "https://example.com/1", Title: "Page one",
+			Text: strings.Repeat("Read once by the engine. ", 30),
+		}},
 	}
+	store := &stubStore{}
 	searcher := newTestSearcher(0, engine)
-	searcher.metered = map[string]bool{"deepseek": true}
+	searcher.store = store
+	searcher.crawler = testCrawler(t, 0)
 
 	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(response.Engines) != 1 || response.Engines[0].Usage == nil {
-		t.Fatalf("the provider spend must be reported per engine: %#v", response.Engines)
+	if response.PagesCrawled != 1 {
+		t.Fatalf("pages_crawled = %d, want the page the engine read", response.PagesCrawled)
 	}
-	if got := response.Engines[0].Usage; got.InputTokens != 3_000 || got.Searches != 1 {
-		t.Fatalf("unexpected usage: %#v", got)
+	if store.upserts != 1 || len(store.pages) != 1 || store.pages[0].URL != "https://example.com/1" {
+		t.Fatalf("the engine's page must reach the index: upserts=%d pages=%#v", store.upserts, store.pages)
 	}
-	if !searcher.Metered("") {
-		t.Fatal("a searcher with a metered engine must report itself as metered")
+}
+
+// TestSearcherKeepsNoIndexWithoutCrawling: `webSearch.crawl.enabled = false`
+// means this server keeps no page index, and that holds for page text an engine
+// handed over for free as well — the switch decides, not how the text arrived.
+func TestSearcherKeepsNoIndexWithoutCrawling(t *testing.T) {
+	engine := &stubEngine{
+		name:    "deepseek",
+		results: []Result{result("deepseek", "https://example.com/1")},
+		pages: []Page{{
+			URL: "https://example.com/1", Title: "Page one",
+			Text: strings.Repeat("Read once by the engine. ", 30),
+		}},
+	}
+	store := &stubStore{}
+	searcher := newTestSearcher(0, engine)
+	searcher.store = store
+
+	response, err := searcher.Search(context.Background(), Query{Text: "postgres 18"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if response.PagesCrawled != 0 || store.upserts != 0 {
+		t.Fatalf("crawling is off, so nothing may be indexed: pages_crawled=%d upserts=%d", response.PagesCrawled, store.upserts)
+	}
+	if len(response.Results) != 1 {
+		t.Fatalf("results = %#v, want the engine's hits regardless", response.Results)
 	}
 }
 
@@ -424,7 +451,6 @@ func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
 	engine := &stubEngine{
 		name:    "exa",
 		results: []Result{result("exa", "https://example.com/1")},
-		usage:   &Usage{Provider: "deepseek", Model: "deepseek-flash", InputTokens: 10},
 	}
 	searcher := newTestSearcher(time.Minute, engine)
 	searcher.prices = map[string]string{"exa": "1"}
@@ -444,9 +470,6 @@ func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
 	if !second.Cached || len(second.Charges) != 0 {
 		t.Fatalf("a cached search makes no upstream call and must not be charged: %#v", second)
 	}
-	if reported := second.Engines; len(reported) == 0 || reported[0].Usage != nil {
-		t.Fatalf("a cached answer must not claim the cached query's token spend: %#v", reported)
-	}
 
 	// The index fallback answers without calling any engine either.
 	indexSearcher := newTestSearcher(0, &stubEngine{name: "exa", err: errors.New("boom")})
@@ -461,7 +484,9 @@ func TestSearcherDoesNotChargeCachedOrIndexAnswers(t *testing.T) {
 	}
 }
 
-func TestNewReportsMeteredFromConfiguredEngines(t *testing.T) {
+// TestNewTreatsAZeroPricedAPiEngineAsFree: a per-request engine is billed only
+// through its configured price, so "0" leaves the search free.
+func TestNewTreatsAZeroPricedAPIEngineAsFree(t *testing.T) {
 	cfg := config.WebSearchConfig{
 		Enabled: true,
 		Engines: []config.WebSearchEngineConfig{{
@@ -472,11 +497,12 @@ func TestNewReportsMeteredFromConfiguredEngines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if !searcher.Metered("") {
-		t.Fatal("an engine that spends provider tokens must mark the searcher as metered")
-	}
 	if searcher.Billed("") {
 		t.Fatal("a price of zero is not a per-query charge")
+	}
+	catalog := searcher.Catalog()
+	if len(catalog) != 1 || !catalog[0].Free || catalog[0].Price != "" {
+		t.Fatalf("catalog = %#v, want one free engine", catalog)
 	}
 }
 
@@ -532,31 +558,27 @@ func TestSearcherPreferredEngineRestrictsTheQuery(t *testing.T) {
 	}
 }
 
-// The billing predicates answer about the engine that will run, so a preference
+// The billing predicate answers about the engine that will run, so a preference
 // for a free engine does not require a payment wallet just because a priced
 // engine is configured beside it.
 func TestSearcherBillingFollowsThePreferredEngine(t *testing.T) {
 	paid := &stubEngine{name: "exa", results: []Result{result("exa", "https://example.com/paid")}}
-	metered := &stubEngine{name: "deepseek", meters: true, results: []Result{result("deepseek", "https://example.com/1")}}
+	api := &stubEngine{name: "deepseek", results: []Result{result("deepseek", "https://example.com/1")}}
 	free := &stubEngine{name: "duckduckgo", results: []Result{result("duckduckgo", "https://example.com/free")}}
-	searcher := newTestSearcher(0, paid, metered, free)
+	searcher := newTestSearcher(0, paid, api, free)
 	searcher.prices = map[string]string{"exa": "2"}
-	searcher.metered = map[string]bool{"deepseek": true}
 
-	if !searcher.Billed("") || !searcher.Metered("") {
+	if !searcher.Billed("") {
 		t.Fatal("with no preference the whole configured set decides")
 	}
-	if searcher.Billed("duckduckgo") || searcher.Metered("duckduckgo") {
+	if searcher.Billed("duckduckgo") {
 		t.Fatal("a free preferred engine costs nothing")
 	}
 	if !searcher.Billed("exa") {
 		t.Fatal("a priced preferred engine is billed")
 	}
-	if !searcher.Metered("deepseek") {
-		t.Fatal("a metered preferred engine is metered")
-	}
 	if searcher.Billed("deepseek") {
-		t.Fatal("a metered engine with no price is billable for its tokens, not per query")
+		t.Fatal("an API engine the operator left unpriced is not billed")
 	}
 	// An unknown preference degrades to the server default instead of failing.
 	if !searcher.Billed("nope") {
@@ -566,11 +588,10 @@ func TestSearcherBillingFollowsThePreferredEngine(t *testing.T) {
 
 func TestCatalogReportsWhatEachEngineCosts(t *testing.T) {
 	paid := &stubEngine{name: "tavily"}
-	metered := &stubEngine{name: "deepseek", meters: true}
+	api := &stubEngine{name: "deepseek"}
 	free := &stubEngine{name: "duckduckgo"}
-	searcher := newTestSearcher(0, paid, metered, free)
-	searcher.prices = map[string]string{"tavily": "0.5"}
-	searcher.metered = map[string]bool{"deepseek": true}
+	searcher := newTestSearcher(0, paid, api, free)
+	searcher.prices = map[string]string{"tavily": "0.5", "deepseek": "2"}
 
 	catalog := searcher.Catalog()
 	if len(catalog) != 3 {
@@ -580,13 +601,13 @@ func TestCatalogReportsWhatEachEngineCosts(t *testing.T) {
 	for _, info := range catalog {
 		byID[info.ID] = info
 	}
-	if info := byID["tavily"]; info.Price != "0.5" || info.Free || info.Metered {
-		t.Errorf("tavily = %+v, want a priced, unmetered engine", info)
+	if info := byID["tavily"]; info.Price != "0.5" || info.Free {
+		t.Errorf("tavily = %+v, want a priced engine", info)
 	}
-	if info := byID["deepseek"]; !info.Metered || info.Free || info.Price != "" {
-		t.Errorf("deepseek = %+v, want a metered engine with no query price", info)
+	if info := byID["deepseek"]; info.Price != "2" || info.Free {
+		t.Errorf("deepseek = %+v, want the per-request engine priced by query", info)
 	}
-	if info := byID["duckduckgo"]; !info.Free || info.Metered || info.Price != "" {
+	if info := byID["duckduckgo"]; !info.Free || info.Price != "" {
 		t.Errorf("duckduckgo = %+v, want a free engine", info)
 	}
 }

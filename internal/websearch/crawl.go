@@ -40,12 +40,15 @@ type pageCrawler struct {
 	maxBytes     int64
 	perHostDelay time.Duration
 	robots       *robotsCache
+	// reader, when a configured engine offers one, reads a page through that
+	// provider's own API instead of a request from this process.
+	reader PageReader
 
 	mu        sync.Mutex
 	lastFetch map[string]time.Time
 }
 
-func newPageCrawler(cfg config.WebSearchCrawlConfig, userAgent string, fallbackTimeout time.Duration) *pageCrawler {
+func newPageCrawler(cfg config.WebSearchCrawlConfig, userAgent string, fallbackTimeout time.Duration, reader PageReader) *pageCrawler {
 	timeout := cfg.PageTimeout
 	if timeout <= 0 {
 		timeout = fallbackTimeout
@@ -75,29 +78,51 @@ func newPageCrawler(cfg config.WebSearchCrawlConfig, userAgent string, fallbackT
 		maxBytes:     maxBytes,
 		perHostDelay: delay,
 		robots:       newRobotsCache(),
+		reader:       reader,
 		lastFetch:    make(map[string]time.Time),
 	}
 }
 
-// enrich fetches the top-ranked results that carry a thin snippet, replaces
-// those snippets with extracted page text, and returns the pages that were
-// successfully read. Fetch failures are best-effort: the live engine results
-// stay usable and the failure is logged.
-func (c *pageCrawler) enrich(ctx context.Context, results []Result) ([]Result, []Page) {
-	candidates := make([]int, 0, c.maxPages)
-	for index, result := range results {
-		if len(candidates) >= c.maxPages {
-			break
+// enrich fills in the top-ranked results that carry a thin snippet and returns
+// the pages it had to read itself. Fetch failures are best-effort: the live
+// engine results stay usable and the failure is logged.
+//
+// `known` is page text an engine already returned for this query. A result
+// whose page is in that set is filled from it and never fetched, so a provider
+// that hands back page content is not asked for the same page a second time.
+func (c *pageCrawler) enrich(ctx context.Context, results []Result, known []Page) ([]Result, []Page) {
+	available := make(map[string]Page, len(known))
+	for _, page := range known {
+		if key := normalizeURL(page.URL); key != "" {
+			available[key] = page
 		}
-		if len([]rune(result.Snippet)) < snippetTargetRunes {
-			candidates = append(candidates, index)
-		}
-	}
-	if len(candidates) == 0 {
-		return results, nil
 	}
 
 	enriched := append([]Result(nil), results...)
+	candidates := make([]int, 0, c.maxPages)
+	for index, result := range enriched {
+		if len([]rune(result.Snippet)) >= snippetTargetRunes {
+			continue
+		}
+		if key := normalizeURL(result.URL); key != "" {
+			if page, ok := available[key]; ok {
+				// The page text is already in hand; only the display snippet
+				// needs cutting from it, so no request is made for this URL.
+				if excerpt := excerptText(page.Text, snippetTargetRunes); len([]rune(excerpt)) > len([]rune(result.Snippet)) {
+					enriched[index].Snippet = excerpt
+				}
+				continue
+			}
+		}
+		if len(candidates) >= c.maxPages {
+			break
+		}
+		candidates = append(candidates, index)
+	}
+	if len(candidates) == 0 {
+		return enriched, nil
+	}
+
 	pages := make([]Page, 0, len(candidates))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -124,6 +149,14 @@ func (c *pageCrawler) enrich(ctx context.Context, results []Result) ([]Result, [
 }
 
 // fetch reads one page and returns its extracted text.
+//
+// A configured engine that reads pages through its provider's API is tried
+// first: the page comes back as text from an egress the open web is not
+// blocking, and needs no HTML parsing here. A provider failure still falls back
+// to a direct read, since a page the provider refuses is more often one it
+// blocks than one that does not exist. The site's robots policy is honoured
+// either way; the per-host delay only gates the direct path, because a proxied
+// read sends this process's requests to the provider, not to the site.
 func (c *pageCrawler) fetch(ctx context.Context, target string) (Page, error) {
 	parsed, err := url.Parse(strings.TrimSpace(target))
 	if err != nil {
@@ -140,6 +173,15 @@ func (c *pageCrawler) fetch(ctx context.Context, target string) (Page, error) {
 	if !allowed {
 		return Page{}, fmt.Errorf("robots.txt disallows %s", parsed.Path)
 	}
+
+	if c.reader != nil {
+		page, readerErr := c.reader.ReadPage(ctx, parsed.String())
+		if readerErr == nil {
+			return page, nil
+		}
+		logging.Log.Debug().Err(readerErr).Str("url", parsed.String()).Msg("web search provider fetch failed; reading directly")
+	}
+
 	if err := c.waitForHost(ctx, parsed.Host, crawlDelay); err != nil {
 		return Page{}, err
 	}

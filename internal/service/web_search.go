@@ -23,9 +23,6 @@ type WebSearchEngine interface {
 	// that keeps searches on a free engine must not require a payment wallet
 	// because some other engine on the server is priced.
 	Billed(preferred string) bool
-	// Metered reports whether that same search spends provider tokens, which
-	// the caller is billed for at the provider's model pricing.
-	Metered(preferred string) bool
 	// Catalog lists the configured engines with what each costs, so a caller
 	// can choose the one its searches run on.
 	Catalog() []websearch.EngineInfo
@@ -47,9 +44,9 @@ type WebSearchInput struct {
 // The account's preferred engine, when it has one, restricts the search to that
 // engine: the price the account is willing to pay decides where its searches
 // run, and a preference for a free engine means the search needs no wallet even
-// when other engines on the server are metered. Engines that charge per query
-// are authorized before the search and charged in golds afterwards, so the
-// account pays for API-backed search and cached or scraped answers stay free.
+// when other engines on the server are priced. Engines that charge per query are
+// authorized before the search and charged in golds afterwards, so the account
+// pays for API-backed search and cached or scraped answers stay free.
 func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, input WebSearchInput) (*websearch.Response, error) {
 	if s.webSearch == nil {
 		return nil, websearch.ErrNotConfigured
@@ -58,9 +55,7 @@ func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, i
 	if err != nil {
 		return nil, err
 	}
-	if s.webSearch.Billed(preferred) || s.webSearch.Metered(preferred) {
-		// The search costs the caller either way: the per-query price of a
-		// configured engine, or the provider tokens a metered engine spends.
+	if s.webSearch.Billed(preferred) {
 		if err := s.billing.AuthorizeAction(ctx, accountID); err != nil {
 			return nil, err
 		}
@@ -82,9 +77,9 @@ func (s *ConversationService) SearchWeb(ctx context.Context, accountID string, i
 	return response, nil
 }
 
-// chargeWebSearch records what the search owes. A search that ran no charged
-// engine and spent no provider tokens carries no charges, which is how scraped,
-// cached, and local-index answers stay free.
+// chargeWebSearch records what the search owes. A search that ran no priced
+// engine carries no charges, which is how scraped, cached, and local-index
+// answers stay free.
 func (s *ConversationService) chargeWebSearch(ctx context.Context, accountID string, response *websearch.Response) error {
 	if s.billing == nil || response == nil {
 		return nil
@@ -92,21 +87,6 @@ func (s *ConversationService) chargeWebSearch(ctx context.Context, accountID str
 	for _, charge := range response.Charges {
 		if err := s.billing.ChargeAction(ctx, accountID, "web_search/"+charge.Engine, charge.Amount); err != nil {
 			return err
-		}
-	}
-	// A metered engine spent the provider's tokens on top of the price the
-	// operator set for it, so they are billed separately, at the pricing of the
-	// model the search called.
-	for _, report := range response.Engines {
-		if report.Usage == nil {
-			continue
-		}
-		charge, err := s.billing.chargeSearchUsage(ctx, accountID, report.Name, *report.Usage)
-		if err != nil {
-			return err
-		}
-		if charge != nil {
-			response.Charges = append(response.Charges, *charge)
 		}
 	}
 	return nil

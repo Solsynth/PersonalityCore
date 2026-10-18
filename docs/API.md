@@ -911,15 +911,18 @@ request is answered without a model in the loop, so any authenticated caller can
 use it directly. Configure `[[webSearch.engines]]` (defaults to DuckDuckGo's
 no-JavaScript endpoint) plus the optional crawl settings described in
 `README.md`. An `exa`, `tavily`, or `deepseek` engine answers through that
-provider's own search API; `deepseek` is the only engine that involves a model,
-and it is called for the provider's server-side web search rather than to
-generate an answer. It takes its credentials from the `[[providers]]` entry
-named by its `provider` field rather than carrying its own `apiKey`. Engines
-differ in which request fields they honour: the scripted engines fold `domains`
-into the query and use `freshness`, `exa` and `tavily` map both to their own
-parameters, `deepseek` ignores `freshness` and `language` and applies `domains`
-by filtering the hits it returns, and it spends model tokens, which are charged
-to the caller at the provider's pricing for `deepseek-flash`.
+provider's own search API rather than a scraped result page. `deepseek` is
+DeepSeek's in-house search engine, reached through its raw JSON Search and Fetch
+APIs; it carries no credentials of its own and takes its `apiKey` and `baseUrl`
+from the `[[providers]]` entry named by its `provider` field.
+
+Engines differ in which request fields they honour. The scripted engines fold
+`domains` into the query and use `freshness`, and `exa` and `tavily` map both to
+their own parameters. `deepseek` sends `domains`, `language`, and `freshness` as
+the provider's `site:`, `lang:`, and `after:` query operators; because the
+provider caps a query at 128 characters, a clause that no longer fits is dropped
+from the request and the domain restriction is enforced on the returned hits
+instead, so a field the caller sent is never silently ignored.
 
 ```
 POST /api/web/search
@@ -971,10 +974,9 @@ POST /api/web/search
 |-------|------|-------------|
 | `results[].provider` | string | Engine that returned the hit, or `index` for a locally indexed page. |
 | `engines[]` | object[] | Per-engine outcome. `error` is set when that engine failed or answered a different question; the remaining engines still answer. |
-| `engines[].usage` | object | What that engine spent on its provider: `provider` and `model` name the pricing entry, `input_tokens` and `output_tokens` the tokens, `searches` the provider-side searches. Only metered engines report it. |
 | `cached` | bool | Served from the in-process response cache within `webSearch.cacheTTL`. |
 | `fallback` | bool | Every live engine failed and the results come from the local page index. Only present when true. |
-| `pages_crawled` | int | Pages fetched into the local index for this query. Only present when non-zero. |
+| `pages_crawled` | int | Pages added to the local index for this query: those the crawler read, plus page text an engine returned with its own results. Only present when non-zero. |
 
 **Status codes**
 
@@ -990,27 +992,24 @@ POST /api/web/search
 
 Engines configured with a `price` (the API-backed `exa`, `tavily`, and
 `deepseek`) cost that amount in golds per query they answered, charged to the
-authenticated account. An engine that spends provider tokens costs those on top
-of its price: the `deepseek` engine reports what the search spent, and the
-tokens are charged at the pricing the provider entry carries for the model the
-search called. The response reports every one of them:
+authenticated account. DeepSeek bills its Search and Fetch endpoints per
+successful request rather than by tokens, so the configured `price` is the whole
+cost of a search on that engine and no model spend is reported. That price is
+one flat amount in golds per answered query — normally `0.1` — covering every
+request the query made, search and fetch alike. The response lists every charge:
 
 ```json
 "charges": [
-  {"engine": "deepseek", "kind": "query", "amount": "2"},
-  {"engine": "deepseek", "kind": "usage", "amount": "0.00075000"}
+  {"engine": "deepseek", "kind": "query", "amount": "0.1"}
 ]
 ```
 
-`kind` is `query` for an engine's configured price and `usage` for metered
-tokens. `charges` is omitted when the answer came from a free engine, from the
-response cache, or from the local index, and a `usage` entry is omitted when the
-model carries no pricing — a search only costs golds when it actually reached a
-priced or metered engine. Charges land in the same ledger as model usage (with
-`web_search/<engine>` and `web_search/<engine>/tokens` as the model columns,
-token counts kept on the row), count toward the hourly and daily golds limits,
-and settle on the normal billing cycle. A metered search also requires a payment
-wallet, like a paid model, even when no engine states a price.
+`kind` is `query` for an engine's configured price. `charges` is omitted when the
+answer came from a free engine, from the response cache, or from the local index
+— a search only costs golds when it actually reached a priced engine. Charges
+land in the same ledger as model usage (`web_search/<engine>` as the model
+column), count toward the hourly and daily golds limits, and settle on the normal
+billing cycle. A priced search also requires a payment wallet, like a paid model.
 
 ### Choosing the search engine
 
@@ -1032,7 +1031,7 @@ PUT /api/web/search/preference
   "engines": [
     {"id": "duckduckgo"},
     {"id": "exa", "price": "1.5"},
-    {"id": "deepseek", "metered": true}
+    {"id": "deepseek", "price": "0.1"}
   ]
 }
 ```
@@ -1042,7 +1041,6 @@ PUT /api/web/search/preference
 | `currency` | string | The billing currency every `price` is stated in. |
 | `engines[].id` | string | The engine id the preference names. |
 | `engines[].price` | string | What one query costs, per answered query. Absent when the engine is free. |
-| `engines[].metered` | bool | The engine spends provider tokens, which are billed on top of any price. |
 | `engines[].free` | bool | The engine costs nothing at all. |
 
 **Response** `200 OK` (`GET` / `PUT .../preference`)
@@ -1062,7 +1060,7 @@ A preference restricts every search the account makes to that engine — includi
 a `web_search` the model runs during a conversation — and the billing
 consequences follow the engine that will actually run: an account keeping its
 searches on a free engine needs no payment wallet, and is charged nothing, even
-when other engines on the server are priced or metered. A preference for an
+when other engines on the server are priced. A preference for an
 engine that is later removed from the configuration degrades to the server's
 own order rather than failing the search.
 

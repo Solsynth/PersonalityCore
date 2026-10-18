@@ -2,12 +2,14 @@ package websearch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,7 +27,53 @@ func testCrawler(t *testing.T, perHostDelay time.Duration) *pageCrawler {
 		PageTimeout:      5 * time.Second,
 		PerHostDelay:     perHostDelay,
 		MaxPageBytes:     1 << 20,
-	}, testUserAgent, 5*time.Second)
+	}, testUserAgent, 5*time.Second, nil)
+}
+
+// readerCrawler is the same crawler with an engine's page API as its transport.
+func readerCrawler(t *testing.T, reader PageReader) *pageCrawler {
+	t.Helper()
+	return newPageCrawler(config.WebSearchCrawlConfig{
+		Enabled:          true,
+		MaxPagesPerQuery: 3,
+		PageTimeout:      5 * time.Second,
+		MaxPageBytes:     1 << 20,
+	}, testUserAgent, 5*time.Second, reader)
+}
+
+// stubReader is an engine's page API: it records what it was asked for and
+// either returns text or fails, so the crawler's fallback can be observed.
+type stubReader struct {
+	mu    sync.Mutex
+	read  []string
+	text  string
+	err   error
+	inner PageReader
+}
+
+func (r *stubReader) ReadPage(_ context.Context, target string) (Page, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.read = append(r.read, target)
+	if r.err != nil {
+		return Page{}, r.err
+	}
+	if r.inner != nil {
+		return r.inner.ReadPage(context.Background(), target)
+	}
+	return Page{URL: target, Title: "Provider title", Text: r.text, FetchedAt: time.Now().UTC()}, nil
+}
+
+func (r *stubReader) targets() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.read...)
+}
+
+func (r *stubReader) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.read)
 }
 
 // articleServer serves the article fixture at /post and robots.txt on demand.
@@ -178,7 +226,7 @@ func TestEnrichReplacesThinSnippetsWithPageText(t *testing.T) {
 		{Title: "Postgres 18", URL: server.URL + "/post", Snippet: "thin", Provider: "duckduckgo"},
 		{Title: "Missing", URL: server.URL + "/missing", Snippet: "thin", Provider: "bing"},
 	}
-	enriched, pages := crawler.enrich(context.Background(), results)
+	enriched, pages := crawler.enrich(context.Background(), results, nil)
 
 	if len(pages) != 1 {
 		t.Fatalf("got %d crawled pages, want 1: %#v", len(pages), pages)
@@ -200,13 +248,101 @@ func TestEnrichLeavesFullSnippetsAlone(t *testing.T) {
 
 	longSnippet := strings.Repeat("detailed engine snippet ", 12)
 	results := []Result{{Title: "Postgres 18", URL: server.URL + "/post", Snippet: longSnippet}}
-	enriched, pages := crawler.enrich(context.Background(), results)
+	enriched, pages := crawler.enrich(context.Background(), results, nil)
 
 	if len(pages) != 0 || enriched[0].Snippet != longSnippet {
 		t.Fatalf("a result with a full snippet must not be crawled: %#v", enriched)
 	}
 	if hits := atomic.LoadInt32(pageHits); hits != 0 {
 		t.Fatalf("page was fetched %d times for a result that needed no enrichment", hits)
+	}
+}
+
+// TestEnrichSkipsPagesTheEngineAlreadyRead: page text that came back with the
+// results is used as it is, so a provider that returns content is not asked for
+// the same page a second time.
+func TestEnrichSkipsPagesTheEngineAlreadyRead(t *testing.T) {
+	server, pageHits := articleServer(t, "", http.StatusNotFound)
+	crawler := testCrawler(t, 0)
+
+	target := server.URL + "/post"
+	results := []Result{{Title: "Postgres 18", URL: target, Snippet: "thin", Provider: "deepseek"}}
+	known := []Page{{URL: target, Title: "Postgres 18", Text: strings.Repeat("Text the engine read once. ", 30)}}
+
+	enriched, pages := crawler.enrich(context.Background(), results, known)
+	if len(pages) != 0 {
+		t.Fatalf("pages = %#v, want none read: the engine already returned it", pages)
+	}
+	if !strings.Contains(enriched[0].Snippet, "Text the engine read once") {
+		t.Fatalf("snippet = %q, want it cut from the page text in hand", enriched[0].Snippet)
+	}
+	if hits := atomic.LoadInt32(pageHits); hits != 0 {
+		t.Fatalf("page was fetched %d times although its text was known", hits)
+	}
+}
+
+// TestFetchUsesTheEnginePageReader: the provider reads the page from its own
+// egress and its Markdown is stored without any HTML parsing here.
+func TestFetchUsesTheEnginePageReader(t *testing.T) {
+	server, pageHits := articleServer(t, "", http.StatusNotFound)
+	reader := &stubReader{text: strings.Repeat("Provider-side text. ", 30)}
+	crawler := readerCrawler(t, reader)
+
+	target := server.URL + "/post"
+	page, err := crawler.fetch(context.Background(), target)
+	if err != nil {
+		t.Fatalf("fetch() error = %v", err)
+	}
+	if !strings.Contains(page.Text, "Provider-side text") {
+		t.Fatalf("page text = %q, want the provider's Markdown", page.Text)
+	}
+	if page.Title != "Provider title" {
+		t.Fatalf("page title = %q", page.Title)
+	}
+	if got := reader.targets(); len(got) != 1 || got[0] != target {
+		t.Fatalf("reader targets = %#v, want the one page", got)
+	}
+	if hits := atomic.LoadInt32(pageHits); hits != 0 {
+		t.Fatalf("the page was also fetched directly %d times", hits)
+	}
+}
+
+// TestFetchFallsBackWhenTheProviderRefuses: a page the provider cannot read is
+// still worth a direct request, since a refusal is usually a block rather than
+// a missing page.
+func TestFetchFallsBackWhenTheProviderRefuses(t *testing.T) {
+	server, _ := articleServer(t, "", http.StatusNotFound)
+	reader := &stubReader{err: errors.New("deepseek returned 403: rejected")}
+	crawler := readerCrawler(t, reader)
+
+	page, err := crawler.fetch(context.Background(), server.URL+"/post")
+	if err != nil {
+		t.Fatalf("fetch() error = %v, want the direct read to succeed", err)
+	}
+	if !strings.Contains(page.Text, "asynchronous I/O subsystem") {
+		t.Fatalf("page text = %q, want text parsed from the direct fetch", truncate(page.Text, 80))
+	}
+	if reader.calls() != 1 {
+		t.Fatalf("reader calls = %d, want one attempt before the fallback", reader.calls())
+	}
+}
+
+// TestFetchRefusesRobotsDisallowedPathEvenWithAReader: the proxy reads the page
+// for us, but the site's policy still decides whether it may be read at all.
+func TestFetchRefusesRobotsDisallowedPathEvenWithAReader(t *testing.T) {
+	server, pageHits := articleServer(t, "User-agent: *\nDisallow: /private\n", http.StatusOK)
+	reader := &stubReader{text: strings.Repeat("Provider-side text. ", 30)}
+	crawler := readerCrawler(t, reader)
+
+	_, err := crawler.fetch(context.Background(), server.URL+"/private")
+	if err == nil || !strings.Contains(err.Error(), "robots.txt") {
+		t.Fatalf("error = %v, want a robots.txt refusal", err)
+	}
+	if reader.calls() != 0 {
+		t.Fatal("a disallowed page must not be handed to the provider either")
+	}
+	if hits := atomic.LoadInt32(pageHits); hits != 0 {
+		t.Fatalf("disallowed page was requested %d times", hits)
 	}
 }
 

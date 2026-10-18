@@ -95,11 +95,10 @@ func newEngine(cfg config.WebSearchEngineConfig, root config.WebSearchConfig) (E
 			timeout = deepseekMinTimeout
 		}
 		return &deepseekEngine{
-			id:       id,
-			provider: strings.TrimSpace(cfg.Provider),
-			apiKey:   strings.TrimSpace(cfg.APIKey),
-			baseURL:  deepseekAnthropicBase(cfg.BaseURL),
-			client:   &http.Client{Timeout: timeout},
+			id:      id,
+			apiKey:  strings.TrimSpace(cfg.APIKey),
+			baseURL: deepseekAPIRoot(cfg.BaseURL),
+			client:  &http.Client{Timeout: timeout},
 		}, nil
 	default:
 		return nil, fmt.Errorf("web search engine %q uses unsupported type %q", id, cfg.Type)

@@ -185,7 +185,7 @@ type BillingPayment struct {
 // WebSearchPreference is the account's choice of where its web searches run:
 // the single engine its searches are restricted to. It exists so a caller can
 // keep searches on the engine whose price it is willing to pay instead of the
-// server's own order, which may reach a metered provider. One row per account;
+// server's own order, which may reach a priced engine. One row per account;
 // an absent row, or an empty engine, leaves the choice to the server.
 type WebSearchPreference struct {
 	AccountID string    `gorm:"primaryKey;size:128" json:"account_id"`
